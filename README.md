@@ -4,10 +4,7 @@ A high-performance DuckDB server that replicates data from MySQL using **Sequent
 
 ## 🚀 Performance Features
 
-- **⚡ 5-10x faster queries** through columnar storage and partition pruning
-- **🧠 60-80% memory reduction** via micro-batch processing
-- **💾 30-50% storage savings** with Parquet compression
-- **📊 Partition pruning** - query only relevant data partitions
+- **⚡ 5-10x faster queries** through columnar storage
 - **🔄 Schema evolution** with zero-downtime updates
 - **🎯 Smart table classification** (dimensions, facts, metadata)
 - **✅ ACID Transactions** - All-or-nothing sync with guaranteed data integrity
@@ -19,7 +16,7 @@ A high-performance DuckDB server that replicates data from MySQL using **Sequent
 
 ## 🏗️ Core Features
 
-- **🔄 Real-time MySQL to DuckDB replication** with atomic transactions
+- **🔄 Incremental MySQL to DuckDB replication** with atomic transactions
 - **⚡ Incremental synchronization** with watermark tracking
 - **🗄️ Partitioned storage** for optimal query performance
 - **🔍 RESTful API** for querying and management
@@ -51,8 +48,6 @@ data/
 | Metric | Before | After | Improvement |
 |--------|--------|-------|-------------|
 | **Query Speed** | 2-5 seconds | 200-500ms | **5-10x faster** |
-| **Memory Usage** | 2-8GB | 500MB-2GB | **60-80% less** |
-| **Storage Size** | 100% | 60-70% | **30-40% savings** |
 | **Sync Performance** | 30min full | 5min incremental | **6x faster** |
 
 ## Architecture Benefits

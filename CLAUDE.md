@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a high-performance DuckDB server service that replicates data from MySQL databases using a micro-batch Parquet architecture. It provides a scalable analytical layer over operational MySQL data with 5-10x better query performance than traditional approaches.
+This is a high-performance DuckDB server service that replicates data from MySQL databases using a Sequential Appender architecture with ACID transactions. It provides a scalable analytical layer over operational MySQL data with 5-10x better query performance than traditional approaches.
 
 ## Development Commands
 
@@ -63,66 +63,50 @@ docker compose restart duckdb-server
 
 ## Architecture Overview
 
-### Micro-Batch Parquet Architecture
+### Sequential Appender Architecture
 
-This service uses a modern **micro-batch Parquet architecture** that provides:
-- **5-10x faster queries** through columnar storage and partition pruning
-- **60-80% memory reduction** through streaming and batch processing  
-- **30-50% storage savings** through Parquet compression
+This service uses **Sequential Appender architecture** that provides:
+- **5-10x faster queries** through DuckDB's columnar storage
+- **ACID transactions** for guaranteed data integrity
 - **Schema evolution** with zero-downtime updates
-- **Partition management** with automatic cleanup
+- **Watermark-based incremental sync** for efficient updates
 
 ### Core Components
 
 #### Server Layer (`src/server.ts`)
 - Express.js application with comprehensive API endpoints
-- Parquet-specific endpoints for storage management
-- View management and migration capabilities
+- RESTful API for data access
+- View management capabilities
 - Enhanced metrics and monitoring
 
-#### Partitioned Storage (`src/storage/parquetStorage.ts`)
-- **Dimensions**: Small tables with daily snapshots (customers, products)
-- **Facts**: Large tables with micro-batch append (orders, events)  
-- **Metadata**: System tracking with configurable retention
-- Automatic table classification and optimization
-
 #### Database Connections
-- **DuckDB Connection** (`src/database/duckdb.ts`): In-memory DuckDB with Parquet views
+- **DuckDB Connection** (`src/database/duckdb.ts`): Native DuckDB with columnar storage
 - **MySQL Connection** (`src/database/mysql.ts`): Source database operations
-- **View Manager** (`src/services/viewManager.ts`): Automatic schema evolution handling
 
 #### Sync Service (`src/services/syncService.ts`)
-- Intelligent table classification (dimension vs fact vs metadata)
-- Micro-batch processing for optimal performance
-- Incremental sync with partition-aware operations
-- Automatic error recovery and retry logic
+- Sequential Appender for ACID transactions
+- Streaming batch processing for memory efficiency
+- Watermark-based incremental sync
+- Automatic error recovery with exponential backoff retry
 
 ### Data Flow
-1. **MySQL Source** → **Sync Service** → **Parquet Files** → **DuckDB Views** → **API Clients**
-2. Smart table classification based on patterns and size
-3. Micro-batch processing with configurable batch sizes
-4. Partition-aware incremental updates
-5. Automatic view creation and schema evolution
+1. **MySQL Source** → **Sequential Appender** → **DuckDB Native Storage** → **API Clients**
+2. Streaming batches from MySQL (10,000 records at a time)
+3. ACID transactions ensure all-or-nothing writes
+4. Watermark tracking for efficient incremental updates
+5. Automatic schema detection and evolution
 
 ### Storage Structure
 ```
 data/
-├── dimensions/          # Snapshot-based tables
-│   ├── customers/snapshot_date=2024-01-15/full-*.parquet
-│   └── products/snapshot_date=2024-01-15/full-*.parquet
-├── facts/              # Append-only tables  
-│   ├── orders/ingest_date=2024-01-15/batch-*.parquet
-│   └── events/ingest_date=2024-01-15/batch-*.parquet
-└── metadata/           # System metadata
-    ├── sync_metadata/current/metadata.parquet
-    └── sync_log/ingest_date=2024-01-15/log-*.parquet
+└── duckling.db  # Single DuckDB file (persistent, columnar)
 ```
 
 ### Query Performance Benefits
-- **Partition Pruning**: Only scan relevant date partitions
-- **Column Pruning**: Read only needed columns from Parquet files
-- **Compression**: 30-50% smaller storage footprint
-- **Parallel Processing**: Concurrent operations across partitions
+- **Columnar Storage**: DuckDB's native columnar format for fast analytical queries
+- **Column Pruning**: Read only needed columns
+- **Compressed Storage**: DuckDB's built-in compression
+- **In-Process Queries**: No network overhead
 
 ### Automatic Deduplication Strategy
 
