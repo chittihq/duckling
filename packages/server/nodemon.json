@@ -1,0 +1,11 @@
+{
+  "watch": ["packages/server/src", "packages/server/public", "packages/shared"],
+  "ext": "ts,js,json,html",
+  "ignore": ["dist", "node_modules", "logs", "*.log", ".nuxt", ".output"],
+  "exec": "ts-node packages/server/src/index.ts",
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "delay": 1000,
+  "verbose": true
+}

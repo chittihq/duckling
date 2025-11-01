@@ -1,0 +1,39 @@
+[Unit]
+Description=DuckDB Server with MySQL Replication
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=duckdb
+Group=duckdb
+WorkingDirectory=/opt/duckdb-server
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=30
+
+# Environment
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=DUCKDB_PATH=/var/lib/duckdb/duckling.db
+EnvironmentFile=/etc/duckdb-server/env
+
+# Security
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/duckdb /opt/duckdb-server/logs
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=duckdb-server
+
+[Install]
+WantedBy=multi-user.target

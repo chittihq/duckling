@@ -1,6 +1,15 @@
-# DuckDB Server with MySQL Replication
+# Duckling - DuckDB Server with MySQL Replication
 
 A high-performance DuckDB server that replicates data from MySQL using **Sequential Appender architecture** with ACID transactions for guaranteed data integrity and **5-10x faster query performance**.
+
+## 📦 Monorepo Structure
+
+This project uses pnpm workspaces to manage multiple packages:
+
+- **`packages/server`** - DuckDB server with MySQL replication (`@lmes/duckling-server`)
+- **`packages/frontend`** - Nuxt 4 web dashboard (`@lmes/duckling-frontend`)
+- **`packages/sdk`** - WebSocket SDK for DuckDB queries (`@lmes/duckling`)
+- **`packages/shared`** - Shared TypeScript types and constants (`@lmes/duckling-shared`)
 
 ## 🚀 Performance Features
 
@@ -68,28 +77,32 @@ data/
 ```bash
 # Clone and build
 git clone <repository>
-cd duckdb-server
+cd duckling
 pnpm install
 pnpm run build
 
-# Start with docker-compose
+# Start server and frontend with docker-compose
 docker-compose up -d
 
 # Check status
-curl http://localhost:3000/health
+curl http://localhost:3001/health  # Server on port 3001
+curl http://localhost:3000         # Frontend on port 3000
 ```
 
 ### Manual Installation
 
 ```bash
-# Install dependencies
+# Install all dependencies
 pnpm install
 
-# Build the project
+# Build all packages
 pnpm run build
 
 # Start the server
-pnpm run start
+pnpm run start:server
+
+# Start the frontend (in another terminal)
+pnpm run start:frontend
 
 # Health check
 curl http://localhost:3000/health
@@ -98,11 +111,13 @@ curl http://localhost:3000/health
 ### Development Mode
 
 ```bash
-# Start with hot reload
+# Start both server and frontend with hot reload
 pnpm run dev
 
-# Build with watch
-pnpm run dev:build
+# Or run individually:
+pnpm run dev:server      # Server on port 3000
+pnpm run dev:frontend    # Frontend on port 3000 (Nuxt dev server)
+pnpm run dev:sdk         # SDK build watch mode
 ```
 
 ## Security Configuration (REQUIRED)
@@ -273,16 +288,33 @@ pnpm run sync:incremental
 ### Advanced Operations
 ```bash
 # Execute queries on DuckDB
-node dist/cli.js query "SELECT COUNT(*) FROM orders WHERE order_date >= '2024-01-01'"
+node packages/server/dist/cli.js query "SELECT COUNT(*) FROM orders WHERE order_date >= '2024-01-01'"
 
 # List all tables
-node dist/cli.js tables
+node packages/server/dist/cli.js tables
 
 # Check sync status
-node dist/cli.js status
+node packages/server/dist/cli.js status
 
 # Validate data integrity
-node dist/cli.js validate
+node packages/server/dist/cli.js validate
+```
+
+### Package-Specific Commands
+```bash
+# Build specific package
+pnpm run build:server
+pnpm run build:frontend
+pnpm run build:sdk
+pnpm run build:shared
+
+# Run specific package in dev mode
+pnpm run dev:server
+pnpm run dev:frontend
+pnpm run dev:sdk
+
+# Type checking across all packages
+pnpm run typecheck
 ```
 
 ## How It Works
@@ -402,39 +434,12 @@ curl http://localhost:3000/sync/validate
 
 ## Docker Deployment
 
-### Production Dockerfile
+### Monorepo Multi-Stage Dockerfile
 
-```dockerfile
-FROM node:18-alpine
+The project uses multi-stage Docker builds for optimal image sizes:
 
-WORKDIR /app
-
-# Install dependencies
-COPY package*.json ./
-RUN npm install --production
-
-# Copy source code
-COPY . .
-
-# Build the application
-RUN npm run build
-
-# Create non-root user
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S nodejs -u 1001
-
-# Set permissions
-RUN chown -R nodejs:nodejs /app
-USER nodejs
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:3000/health || exit 1
-
-EXPOSE 3000
-
-CMD ["node", "dist/index.js"]
-```
+- **`Dockerfile`** - Production build with optimized layers for server and frontend
+- **`Dockerfile.dev`** - Development build with all dev dependencies
 
 ### docker-compose.yml
 
@@ -443,19 +448,40 @@ version: '3.8'
 
 services:
   duckdb-server:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
       - MYSQL_CONNECTION_STRING=mysql://root:password@mysql:3306/myapp
       - BATCH_SIZE=10000
       - SYNC_INTERVAL_MINUTES=15
     volumes:
+      - ./packages/server/src:/app/packages/server/src:ro
+      - ./packages/server/public:/app/packages/server/public:ro
+      - ./packages/shared:/app/packages/shared:ro
       - ./data:/app/data
       - ./logs:/app/logs
     depends_on:
       - mysql
     restart: unless-stopped
+    command: pnpm dev:server
+
+  duckdb-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3001"
+    volumes:
+      - ./packages/frontend:/app/packages/frontend:ro
+      - ./packages/shared:/app/packages/shared:ro
+      - ./packages/sdk:/app/packages/sdk:ro
+    depends_on:
+      - duckdb-server
+    restart: unless-stopped
+    command: pnpm dev:frontend
 
   mysql:
     image: mysql:8.0
@@ -468,8 +494,19 @@ services:
 
 volumes:
   mysql_data:
-  duckdb_data:
-    driver: local
+  node_modules:
+```
+
+### Production Build
+
+```bash
+# Build production images
+docker build --target server -t duckling-server .
+docker build --target frontend -t duckling-frontend .
+
+# Run production containers
+docker run -d -p 3000:3000 duckling-server
+docker run -d -p 3001:3001 duckling-frontend
 ```
 
 ## Security

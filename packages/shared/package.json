@@ -1,0 +1,36 @@
+{
+  "name": "@lmes/duckling-shared",
+  "version": "0.1.0",
+  "description": "Shared types, constants, and utilities for Duckling DuckDB Server",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.cjs",
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": [
+    "duckdb",
+    "types",
+    "shared",
+    "duckling"
+  ],
+  "author": "LMES Team",
+  "license": "MIT",
+  "devDependencies": {
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3"
+  }
+}

@@ -6,27 +6,64 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a high-performance DuckDB server service that replicates data from MySQL databases using a Sequential Appender architecture with ACID transactions. It provides a scalable analytical layer over operational MySQL data with 5-10x better query performance than traditional approaches.
 
+## Monorepo Structure
+
+This project uses **pnpm workspaces** to manage multiple packages:
+
+```
+duckling/
+├── packages/
+│   ├── server/          # @lmes/duckling-server - DuckDB server with MySQL replication
+│   │   ├── src/         # TypeScript source code
+│   │   ├── public/      # Static web dashboard files
+│   │   ├── dist/        # Compiled JavaScript (after build)
+│   │   └── package.json
+│   ├── frontend/        # @lmes/duckling-frontend - Nuxt 4 web dashboard
+│   │   ├── app/         # Nuxt pages, components, layouts
+│   │   ├── assets/      # CSS and static assets
+│   │   └── package.json
+│   ├── sdk/             # @lmes/duckling - WebSocket SDK for DuckDB queries
+│   │   ├── src/         # SDK source code
+│   │   ├── examples/    # Usage examples
+│   │   └── package.json
+│   └── shared/          # @lmes/duckling-shared - Shared TypeScript types
+│       ├── src/         # Shared types and constants
+│       └── package.json
+├── pnpm-workspace.yaml  # Workspace configuration
+├── package.json         # Root package with workspace scripts
+└── docker-compose.yml   # Development containers for server + frontend
+```
+
+### Package Dependencies
+
+- **server** depends on: `shared`
+- **frontend** depends on: `shared`, `sdk`
+- **sdk** depends on: `shared`
+- **shared** has no dependencies (foundation package)
+
 ## Development Commands
 
 ### Package Management
 - Use `pnpm` instead of npm for all dependency management
-- Install dependencies: `pnpm install`
-- Add packages: `pnpm add <package-name>`
+- Install all dependencies: `pnpm install` (from root)
+- Add package to specific workspace: `pnpm --filter @lmes/duckling-server add <package-name>`
+- Add package to root: `pnpm add -w <package-name>`
 
 ### Build & Development
-- Build for production: `pnpm run build`
-- Development with hot reload: `pnpm run dev`
-- Development build with watch: `pnpm run dev:build`
-- Start production server: `pnpm run start`
+- Build all packages: `pnpm run build`
+- Build specific package: `pnpm run build:server` | `build:frontend` | `build:sdk` | `build:shared`
+- Development with hot reload (all): `pnpm run dev`
+- Development (specific): `pnpm run dev:server` | `dev:frontend` | `dev:sdk`
+- Start production: `pnpm run start:server` | `start:frontend`
 
-### CLI Operations
-- Run full sync: `pnpm run sync` or `node dist/cli.js sync`
-- Run incremental sync: `pnpm run sync:incremental` or `node dist/cli.js sync-incremental`
-- Health check: `pnpm run health` or `node dist/cli.js health`
-- System status: `pnpm run status` or `node dist/cli.js status`
-- Validate data integrity: `pnpm run validate` or `node dist/cli.js validate`
-- List tables: `node dist/cli.js tables`
-- Execute query: `node dist/cli.js query "SELECT * FROM table_name"`
+### CLI Operations (Server)
+- Run full sync: `pnpm run sync` or `node packages/server/dist/cli.js sync`
+- Run incremental sync: `pnpm run sync:incremental` or `node packages/server/dist/cli.js sync-incremental`
+- Health check: `pnpm run health` or `node packages/server/dist/cli.js health`
+- System status: `pnpm run status` or `node packages/server/dist/cli.js status`
+- Validate data integrity: `pnpm run validate` or `node packages/server/dist/cli.js validate`
+- List tables: `node packages/server/dist/cli.js tables`
+- Execute query: `node packages/server/dist/cli.js query "SELECT * FROM table_name"`
 
 ### MySQL Query Utility
 Direct MySQL query execution (bypasses DuckDB, queries source directly):
@@ -37,28 +74,35 @@ node scripts/mysql.js "SELECT COUNT(*) FROM User"
 Returns JSON results. Uses `MYSQL_CONNECTION_STRING` from environment.
 
 ### Docker Development
-- Development with Docker: `docker-compose -f docker-compose.dev.yml up --build`
-- Production with Docker: `docker-compose up -d`
-- View logs: `docker-compose logs -f duckdb-server`
+- Start all services: `docker-compose up -d`
+- View server logs: `docker-compose logs -f duckdb-server`
+- View frontend logs: `docker-compose logs -f duckdb-frontend`
+- Restart specific service: `docker-compose restart duckdb-server`
+
+**Service Ports:**
+- Server: http://localhost:3001 (backend API)
+- Frontend: http://localhost:3000 (Nuxt 4 dashboard)
 
 **IMPORTANT - When to Rebuild Docker:**
 - ✅ **DO rebuild** (`--build` flag) when:
-  - Adding/removing npm packages (package.json changes)
+  - Adding/removing npm packages (any package.json changes)
   - Changing Dockerfile or docker-compose.yml
   - Updating system dependencies (apt packages)
-  - Major structural changes
+  - Major structural changes (monorepo reorganization)
 
 - ❌ **DON'T rebuild** for:
-  - Code changes in `.ts` files (hot reload via nodemon)
+  - Code changes in `.ts` or `.vue` files (hot reload via nodemon/Nuxt)
   - Configuration changes in `.env` files
-  - View/template changes in `public/` directory
-  - **The development container uses nodemon with TypeScript hot reload - changes apply automatically!**
+  - View/template changes in `packages/server/public/` directory
+  - Component changes in `packages/frontend/app/` directory
+  - **Both containers use hot reload - changes apply automatically!**
 
 ```bash
 # For code changes, just restart the container (NO rebuild needed):
-docker compose restart duckdb-server
+docker-compose restart duckdb-server
+docker-compose restart duckdb-frontend
 
-# Or simply let it run - nodemon will detect changes and reload automatically
+# Or simply let it run - hot reload will detect changes automatically
 ```
 
 ## Architecture Overview
@@ -73,21 +117,35 @@ This service uses **Sequential Appender architecture** that provides:
 
 ### Core Components
 
-#### Server Layer (`src/server.ts`)
-- Express.js application with comprehensive API endpoints
-- RESTful API for data access
-- View management capabilities
-- Enhanced metrics and monitoring
+#### Server Package (`packages/server/`)
+- **Server Layer** (`src/server.ts`): Express.js application with RESTful API
+- **Database Connections**:
+  - `src/database/duckdb.ts` - Native DuckDB with columnar storage
+  - `src/database/mysql.ts` - Source database operations
+- **Sync Service** (`src/services/syncService.ts`):
+  - Sequential Appender for ACID transactions
+  - Streaming batch processing
+  - Watermark-based incremental sync
+  - Automatic error recovery
+- **Static Dashboard** (`public/`): HTML/CSS/JS dashboard files
 
-#### Database Connections
-- **DuckDB Connection** (`src/database/duckdb.ts`): Native DuckDB with columnar storage
-- **MySQL Connection** (`src/database/mysql.ts`): Source database operations
+#### Frontend Package (`packages/frontend/`)
+- **Nuxt 4 Application**: Modern Vue-based dashboard
+- **Tailwind CSS**: Utility-first styling framework
+- **shadcn-vue**: Beautiful UI components
+- **Pages** (`app/pages/`): Dashboard, logs, tables, query interface
+- **Components** (`app/components/ui/`): Reusable UI components
 
-#### Sync Service (`src/services/syncService.ts`)
-- Sequential Appender for ACID transactions
-- Streaming batch processing for memory efficiency
-- Watermark-based incremental sync
-- Automatic error recovery with exponential backoff retry
+#### SDK Package (`packages/sdk/`)
+- **WebSocket Client**: Real-time DuckDB query execution
+- **Connection Pool**: Efficient connection management
+- **TypeScript Support**: Full type safety for queries
+- **Examples** (`examples/`): Usage patterns and best practices
+
+#### Shared Package (`packages/shared/`)
+- **TypeScript Types** (`src/types/`): Shared interfaces and types
+- **Constants** (`src/constants/`): API routes, defaults, configs
+- **Dual Build**: ESM and CJS support via tsup
 
 ### Data Flow
 1. **MySQL Source** → **Sequential Appender** → **DuckDB Native Storage** → **API Clients**

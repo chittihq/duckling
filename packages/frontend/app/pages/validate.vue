@@ -1,0 +1,559 @@
+<script setup lang="ts">
+import { ref, computed } from 'vue'
+
+definePageMeta({
+  middleware: 'auth',
+  layout: 'default'
+})
+
+const config = useRuntimeConfig()
+const apiBase = config.public.apiBase
+
+interface TableValidation {
+  name: string
+  loading: boolean
+  syncing: boolean
+  deleting: boolean
+  duckdb: { exists: boolean; columnCount: number; recordCount: number }
+  mysql: { exists: boolean; columnCount: number; recordCount: number }
+  status: 'pending' | 'loading' | 'match' | 'mismatch' | 'missing' | 'error'
+  columnsMatch?: boolean
+  errorType?: string
+  errorMessage?: string
+  missingColumns?: string[]
+  extraColumns?: string[]
+}
+
+const tables = ref<TableValidation[]>([])
+const validating = ref(false)
+const initialLoading = ref(false)
+const bulkDeleting = ref(false)
+const searchQuery = ref('')
+const errorTypeFilter = ref('')
+const showMismatchesOnly = ref(false)
+
+const loadTables = async () => {
+  initialLoading.value = true
+
+  try {
+    const [duckdbTablesRes, mysqlTablesRes] = await Promise.all([
+      $fetch<any[]>(`${apiBase}/tables`, { credentials: 'include' }),
+      $fetch<string[]>(`${apiBase}/api/validation/mysql-tables`, { credentials: 'include' })
+    ])
+
+    const duckdbTables = duckdbTablesRes.map(t => t.name || t).filter((name: string) => !name.startsWith('temp_'))
+    const mysqlTables = mysqlTablesRes.filter(name => !name.startsWith('temp_'))
+
+    const allTableNames = new Set([...duckdbTables, ...mysqlTables])
+
+    tables.value = Array.from(allTableNames)
+      .map(name => ({
+        name,
+        loading: false,
+        syncing: false,
+        deleting: false,
+        duckdb: { exists: false, columnCount: 0, recordCount: 0 },
+        mysql: { exists: false, columnCount: 0, recordCount: 0 },
+        status: 'pending' as const
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  } catch (error: any) {
+    console.error('Failed to load tables:', error)
+    alert('Failed to load tables: ' + error.message)
+  } finally {
+    initialLoading.value = false
+  }
+}
+
+const startValidation = async () => {
+  if (tables.value.length === 0) {
+    await loadTables()
+  }
+
+  validating.value = true
+
+  try {
+    tables.value.forEach(table => {
+      table.loading = true
+      table.status = 'loading'
+    })
+
+    const batchSize = 10
+    for (let i = 0; i < tables.value.length; i += batchSize) {
+      const batch = tables.value.slice(i, i + batchSize)
+      await Promise.all(batch.map(table => loadTableDetails(table)))
+    }
+  } catch (error: any) {
+    console.error('Validation failed:', error)
+    alert('Validation failed: ' + error.message)
+  } finally {
+    validating.value = false
+  }
+}
+
+const loadTableDetails = async (table: TableValidation) => {
+  try {
+    const response = await $fetch<any>(`${apiBase}/api/validation/table-details`, {
+      method: 'POST',
+      body: { tableName: table.name },
+      credentials: 'include'
+    })
+
+    table.duckdb = response.duckdb
+    table.mysql = response.mysql
+    table.columnsMatch = response.columnsMatch
+    table.errorType = response.errorType
+    table.errorMessage = response.errorMessage
+    table.missingColumns = response.missingColumns || []
+    table.extraColumns = response.extraColumns || []
+    table.loading = false
+
+    if (!response.duckdb.exists || !response.mysql.exists) {
+      table.status = 'missing'
+    } else if (
+      response.duckdb.recordCount === response.mysql.recordCount &&
+      response.columnsMatch
+    ) {
+      table.status = 'match'
+    } else {
+      table.status = 'mismatch'
+    }
+  } catch (error: any) {
+    console.error(`Failed to load details for ${table.name}:`, error)
+    table.loading = false
+    table.status = 'error'
+  }
+}
+
+const syncTable = async (table: TableValidation) => {
+  table.syncing = true
+
+  try {
+    const response = await $fetch<any>(`${apiBase}/sync/table/${table.name}`, {
+      method: 'POST',
+      credentials: 'include'
+    })
+
+    table.syncing = false
+    await revalidateTable(table)
+    alert(`Table "${table.name}" synced successfully`)
+  } catch (error: any) {
+    table.syncing = false
+    alert(`Failed to sync table "${table.name}": ${error.data?.error || error.message}`)
+  }
+}
+
+const revalidateTable = async (table: TableValidation) => {
+  table.loading = true
+  table.status = 'loading'
+  await loadTableDetails(table)
+}
+
+const deleteTable = async (table: TableValidation) => {
+  const confirmMessage = `Are you sure you want to delete table "${table.name}" from DuckDB?\n\nThis will:\n• Delete the table and all its data\n• Clear the watermark\n• Force a fresh sync on next sync operation\n\nThis is useful when MySQL schema has changed.`
+
+  if (!confirm(confirmMessage)) {
+    return
+  }
+
+  table.deleting = true
+
+  try {
+    const response = await $fetch<{ success: boolean; message: string }>(
+      `${apiBase}/api/validation/table/${table.name}`,
+      {
+        method: 'DELETE',
+        credentials: 'include'
+      }
+    )
+
+    if (response.success) {
+      table.deleting = false
+      table.duckdb = { exists: false, columnCount: 0, recordCount: 0 }
+      table.status = 'missing'
+      alert(`Table "${table.name}" deleted successfully.\n\n${response.message}`)
+    }
+  } catch (error: any) {
+    table.deleting = false
+    alert(`Failed to delete table "${table.name}": ${error.data?.error || error.message}`)
+  }
+}
+
+const resetValidation = () => {
+  tables.value = []
+  validating.value = false
+  searchQuery.value = ''
+  showMismatchesOnly.value = false
+}
+
+const bulkDeleteFiltered = async () => {
+  const tablesToDelete = filteredTables.value.filter(t => t.duckdb.exists)
+
+  if (tablesToDelete.length === 0) {
+    alert('No tables to delete')
+    return
+  }
+
+  const confirmMessage = `Are you sure you want to delete ${tablesToDelete.length} tables from DuckDB?\n\nThis will:\n• Delete all selected tables and their data\n• Clear their watermarks\n• Force fresh sync on next sync operation\n\nTables to delete:\n${tablesToDelete.map(t => `  • ${t.name}`).slice(0, 10).join('\n')}${tablesToDelete.length > 10 ? `\n  ... and ${tablesToDelete.length - 10} more` : ''}`
+
+  if (!confirm(confirmMessage)) {
+    return
+  }
+
+  bulkDeleting.value = true
+  let deleted = 0
+  let failed = 0
+
+  const batchSize = 10
+  for (let i = 0; i < tablesToDelete.length; i += batchSize) {
+    const batch = tablesToDelete.slice(i, i + batchSize)
+
+    const results = await Promise.allSettled(
+      batch.map(async table => {
+        const response = await $fetch<{ success: boolean }>(
+          `${apiBase}/api/validation/table/${table.name}`,
+          {
+            method: 'DELETE',
+            credentials: 'include'
+          }
+        )
+        return { table, response }
+      })
+    )
+
+    for (const promiseResult of results) {
+      if (promiseResult.status === 'fulfilled') {
+        const { table, response } = promiseResult.value
+        if (response.success) {
+          table.duckdb = { exists: false, columnCount: 0, recordCount: 0 }
+          table.status = 'missing'
+          table.errorType = 'missing_in_duckdb'
+          table.errorMessage = 'Table exists in MySQL but not in DuckDB'
+          deleted++
+        } else {
+          failed++
+        }
+      } else {
+        failed++
+      }
+    }
+  }
+
+  bulkDeleting.value = false
+  alert(
+    `Bulk delete completed!\n\nDeleted: ${deleted}\nFailed: ${failed}\n\nNext sync will recreate these tables with current MySQL schemas.`
+  )
+}
+
+const formatNumber = (num: number) => {
+  if (num === null || num === undefined) return '-'
+  return num.toLocaleString()
+}
+
+const formatErrorType = (errorType: string) => {
+  const errorTypes: Record<string, string> = {
+    schema_mismatch: 'Schema Mismatch',
+    record_count_mismatch: 'Record Count Mismatch',
+    missing_in_duckdb: 'Missing in DuckDB',
+    orphaned_in_duckdb: 'Orphaned in DuckDB'
+  }
+  return errorTypes[errorType] || errorType
+}
+
+const filteredTables = computed(() => {
+  let filtered = tables.value
+
+  if (searchQuery.value) {
+    filtered = filtered.filter(table =>
+      table.name.toLowerCase().includes(searchQuery.value.toLowerCase())
+    )
+  }
+
+  if (errorTypeFilter.value) {
+    filtered = filtered.filter(table => table.errorType === errorTypeFilter.value)
+  }
+
+  if (showMismatchesOnly.value) {
+    filtered = filtered.filter(
+      table => table.status === 'mismatch' || table.status === 'missing'
+    )
+  }
+
+  return filtered
+})
+
+const summary = computed(() => {
+  const total = tables.value.length
+  const loading = tables.value.filter(t => t.loading).length
+  const pending = tables.value.filter(t => t.status === 'pending').length
+  const matching = tables.value.filter(t => t.status === 'match').length
+  const mismatches = tables.value.filter(
+    t => t.status === 'mismatch' || t.status === 'missing'
+  ).length
+
+  return { total, loading: loading + pending, matching, mismatches }
+})
+
+const validationProgress = computed(() => {
+  if (tables.value.length === 0) return 0
+  const completed = tables.value.filter(t => !t.loading).length
+  return Math.round((completed / tables.value.length) * 100)
+})
+
+onMounted(() => {
+  loadTables()
+})
+</script>
+
+<template>
+  <div class="flex flex-col h-full">
+    <!-- Header -->
+    <header class="border-b bg-card px-6 py-4">
+      <div class="flex justify-between items-center">
+        <div>
+          <h1 class="text-2xl font-bold">Database Validation</h1>
+          <p class="text-sm text-muted-foreground">Compare DuckDB and MySQL table consistency</p>
+        </div>
+        <div class="text-sm text-muted-foreground">
+          Progress: <strong>{{ validationProgress }}%</strong>
+        </div>
+      </div>
+    </header>
+
+    <!-- Content -->
+    <div class="flex-1 overflow-auto p-6 space-y-4">
+      <!-- Summary Cards -->
+      <div class="grid grid-cols-4 gap-4">
+        <div class="bg-card border rounded-lg p-4">
+          <div class="text-sm text-muted-foreground">Total Tables</div>
+          <div class="text-3xl font-bold mt-2">{{ summary.total }}</div>
+        </div>
+        <div class="bg-card border rounded-lg p-4">
+          <div class="text-sm text-muted-foreground">Matching</div>
+          <div class="text-3xl font-bold text-green-600 mt-2">{{ summary.matching }}</div>
+        </div>
+        <div class="bg-card border rounded-lg p-4">
+          <div class="text-sm text-muted-foreground">Mismatches</div>
+          <div class="text-3xl font-bold text-red-600 mt-2">{{ summary.mismatches }}</div>
+        </div>
+        <div class="bg-card border rounded-lg p-4">
+          <div class="text-sm text-muted-foreground">Loading</div>
+          <div class="text-3xl font-bold text-muted-foreground mt-2">{{ summary.loading }}</div>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="bg-card border rounded-lg p-4">
+        <div class="flex items-center justify-between">
+          <div class="flex gap-2">
+            <button
+              @click="startValidation()"
+              :disabled="validating"
+              class="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50"
+            >
+              {{ validating ? 'Validating...' : tables.length > 0 ? 'Validate All Tables' : 'Start Validation' }}
+            </button>
+            <button
+              @click="resetValidation()"
+              :disabled="validating"
+              class="px-4 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50"
+            >
+              Reset
+            </button>
+            <button
+              @click="bulkDeleteFiltered()"
+              :disabled="validating || bulkDeleting || filteredTables.filter(t => t.duckdb.exists).length === 0"
+              class="px-4 py-2 bg-destructive text-destructive-foreground rounded-md hover:bg-destructive/90 disabled:opacity-50"
+            >
+              {{ bulkDeleting ? 'Deleting...' : `Delete Filtered (${filteredTables.filter(t => t.duckdb.exists).length})` }}
+            </button>
+            <input
+              v-model="searchQuery"
+              type="text"
+              placeholder="Search tables..."
+              class="px-3 py-2 border border-input rounded-md w-48"
+            />
+            <select v-model="errorTypeFilter" class="px-3 py-2 border border-input rounded-md">
+              <option value="">All Error Types</option>
+              <option value="schema_mismatch">Schema Mismatch</option>
+              <option value="record_count_mismatch">Record Count Mismatch</option>
+              <option value="missing_in_duckdb">Missing in DuckDB</option>
+              <option value="orphaned_in_duckdb">Orphaned in DuckDB</option>
+            </select>
+          </div>
+
+          <label class="flex items-center gap-2">
+            <input v-model="showMismatchesOnly" type="checkbox" class="rounded" />
+            <span class="text-sm">Show Mismatches Only</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Validation Table -->
+      <div class="bg-card border rounded-lg overflow-auto">
+        <table class="w-full text-sm">
+          <thead class="border-b bg-muted/50">
+            <tr>
+              <th class="px-4 py-3 text-left font-medium">Table Name</th>
+              <th class="px-4 py-3 text-center font-medium w-24">DuckDB</th>
+              <th class="px-4 py-3 text-center font-medium w-24">MySQL</th>
+              <th class="px-4 py-3 text-right font-medium w-24">DuckDB Cols</th>
+              <th class="px-4 py-3 text-right font-medium w-24">MySQL Cols</th>
+              <th class="px-4 py-3 text-right font-medium w-32">DuckDB Records</th>
+              <th class="px-4 py-3 text-right font-medium w-32">MySQL Records</th>
+              <th class="px-4 py-3 text-center font-medium w-40">Error Type</th>
+              <th class="px-4 py-3 text-center font-medium w-24">Status</th>
+              <th class="px-4 py-3 text-center font-medium w-40">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="table in filteredTables"
+              :key="table.name"
+              class="border-b hover:bg-accent"
+            >
+              <td class="px-4 py-3">
+                <div class="font-medium">{{ table.name }}</div>
+              </td>
+              <td class="px-4 py-3 text-center">
+                <span v-if="table.loading" class="text-muted-foreground">...</span>
+                <span v-else-if="table.duckdb.exists" class="text-green-600 text-lg">✓</span>
+                <span v-else class="text-red-600 text-lg">✗</span>
+              </td>
+              <td class="px-4 py-3 text-center">
+                <span v-if="table.loading" class="text-muted-foreground">...</span>
+                <span v-else-if="table.mysql.exists" class="text-green-600 text-lg">✓</span>
+                <span v-else class="text-red-600 text-lg">✗</span>
+              </td>
+              <td class="px-4 py-3 text-right">
+                <span
+                  v-if="!table.loading"
+                  :class="!table.columnsMatch && !table.loading ? 'text-red-600 font-semibold' : ''"
+                >
+                  {{ table.duckdb.columnCount || 0 }}
+                </span>
+                <span v-else class="text-muted-foreground">-</span>
+              </td>
+              <td class="px-4 py-3 text-right">
+                <span
+                  v-if="!table.loading"
+                  :class="!table.columnsMatch && !table.loading ? 'text-red-600 font-semibold' : ''"
+                >
+                  {{ table.mysql.columnCount || 0 }}
+                </span>
+                <span v-else class="text-muted-foreground">-</span>
+              </td>
+              <td class="px-4 py-3 text-right">
+                <span
+                  v-if="!table.loading"
+                  :class="table.duckdb.recordCount !== table.mysql.recordCount && !table.loading ? 'text-red-600 font-semibold' : ''"
+                >
+                  {{ formatNumber(table.duckdb.recordCount) }}
+                </span>
+                <span v-else class="text-muted-foreground">-</span>
+              </td>
+              <td class="px-4 py-3 text-right">
+                <span
+                  v-if="!table.loading"
+                  :class="table.duckdb.recordCount !== table.mysql.recordCount && !table.loading ? 'text-red-600 font-semibold' : ''"
+                >
+                  {{ formatNumber(table.mysql.recordCount) }}
+                </span>
+                <span v-else class="text-muted-foreground">-</span>
+              </td>
+              <td class="px-4 py-3 text-center">
+                <div v-if="!table.loading && table.errorType" class="text-xs">
+                  <div
+                    :class="{
+                      'text-red-600 font-semibold': table.errorType === 'schema_mismatch',
+                      'text-orange-600 font-semibold': table.errorType === 'record_count_mismatch',
+                      'text-blue-600': table.errorType === 'missing_in_duckdb',
+                      'text-muted-foreground': table.errorType === 'orphaned_in_duckdb'
+                    }"
+                  >
+                    {{ formatErrorType(table.errorType) }}
+                  </div>
+                  <div v-if="table.errorMessage" class="text-muted-foreground mt-1">
+                    {{ table.errorMessage }}
+                  </div>
+                </div>
+                <span v-else class="text-muted-foreground">-</span>
+              </td>
+              <td class="px-4 py-3 text-center">
+                <span v-if="table.loading" class="inline-block px-2 py-1 bg-muted text-muted-foreground rounded text-xs">
+                  Loading...
+                </span>
+                <span v-else-if="table.status === 'pending'" class="inline-block px-2 py-1 bg-blue-100 text-blue-600 rounded text-xs">
+                  Pending
+                </span>
+                <span v-else-if="table.status === 'match'" class="inline-block px-2 py-1 bg-green-100 text-green-600 rounded text-xs">
+                  Match
+                </span>
+                <span v-else-if="table.status === 'mismatch'" class="inline-block px-2 py-1 bg-red-100 text-red-600 rounded text-xs">
+                  Mismatch
+                </span>
+                <span v-else-if="table.status === 'missing'" class="inline-block px-2 py-1 bg-orange-100 text-orange-600 rounded text-xs">
+                  Missing
+                </span>
+              </td>
+              <td class="px-4 py-3">
+                <div class="flex items-center justify-center gap-1">
+                  <button
+                    @click="syncTable(table)"
+                    :disabled="table.syncing || table.loading || validating"
+                    class="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+                  >
+                    {{ table.syncing ? 'Syncing...' : 'Sync' }}
+                  </button>
+                  <button
+                    @click="revalidateTable(table)"
+                    :disabled="table.loading || table.syncing || validating"
+                    class="px-2 py-1 text-xs border border-border rounded hover:bg-accent disabled:opacity-50"
+                  >
+                    {{ table.loading ? 'Checking...' : 'Revalidate' }}
+                  </button>
+                  <button
+                    @click="deleteTable(table)"
+                    :disabled="table.deleting || table.loading || table.syncing || validating || !table.duckdb.exists"
+                    class="px-2 py-1 text-xs bg-destructive text-destructive-foreground rounded hover:bg-destructive/90 disabled:opacity-50"
+                    title="Delete table from DuckDB (useful for schema changes)"
+                  >
+                    {{ table.deleting ? 'Deleting...' : 'Delete' }}
+                  </button>
+                </div>
+              </td>
+            </tr>
+
+            <tr v-if="filteredTables.length === 0">
+              <td colspan="10" class="px-4 py-12 text-center text-muted-foreground">
+                <svg class="mx-auto mb-4 opacity-50" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+                <span v-if="searchQuery">No tables match your search</span>
+                <span v-else-if="showMismatchesOnly">No mismatches found. Click "Start Validation" to validate all tables.</span>
+                <span v-else-if="tables.length === 0">Loading tables...</span>
+                <span v-else>All tables are hidden by your filters.</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div
+      v-if="initialLoading"
+      class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+    >
+      <div class="bg-card border rounded-lg p-8 max-w-md">
+        <div class="flex items-center gap-4">
+          <div class="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+          <div>
+            <div class="text-lg font-semibold mb-1">Loading Tables</div>
+            <div class="text-sm text-muted-foreground">Please wait...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>

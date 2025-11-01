@@ -39,6 +39,7 @@
   "author": "LMES Team",
   "license": "MIT",
   "dependencies": {
+    "@lmes/duckling-shared": "workspace:*",
     "ws": "^8.18.3"
   },
   "devDependencies": {
