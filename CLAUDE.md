@@ -396,9 +396,9 @@ node dist/cli.js sync
 ## Production Deployment
 
 ### SystemD Service
-- Service file: `deploy/duckdb-server.service`
-- Installation script: `deploy/install.sh`
-- Update script: `deploy/update.sh`
+- Service file: `scripts/deploy/duckdb-server.service`
+- Installation script: `scripts/deploy/install.sh`
+- Update script: `scripts/deploy/update.sh`
 
 ### Docker Production
 - Production Dockerfile with multi-stage builds
