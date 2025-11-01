@@ -1,0 +1,14 @@
+node_modules
+dist
+logs
+*.log
+.env.local
+.env.development
+.env.test
+.env.production
+.git
+.gitignore
+README.md
+Dockerfile
+docker-compose.yml
+.dockerignore

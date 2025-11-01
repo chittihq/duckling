@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - DuckDB Server</title>
+    <link rel="stylesheet" href="/assets/app.css">
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <style>
+        /* Dashboard-specific layout */
+        .dashboard-layout {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            padding: 24px;
+            height: calc(100vh - 88px);
+            overflow: hidden;
+        }
+
+        .query-section {
+            flex: 0 0 auto;
+            max-height: 35%;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .results-section {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .operations-section {
+            flex: 0 0 auto;
+        }
+
+        .query-editor {
+            flex: 1;
+            min-height: 0;
+            padding: 16px;
+        }
+
+        .results-container {
+            flex: 1;
+            min-height: 0;
+            overflow: auto;
+        }
+
+        .custom-textarea:focus {
+            border-color: var(--ring);
+            box-shadow: 0 0 0 3px var(--ring);
+        }
+
+        .custom-textarea:hover {
+            border-color: var(--border);
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container" x-data="dashboard()" x-init="init()">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <a href="/dashboard.html" class="sidebar-logo" title="DuckDB Server">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                    <polyline points="7.5 4.21 12 6.81 16.5 4.21"/>
+                    <polyline points="7.5 19.79 7.5 14.6 3 12"/>
+                    <polyline points="21 12 16.5 14.6 16.5 19.79"/>
+                    <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                    <line x1="12" y1="22.08" x2="12" y2="12"/>
+                </svg>
+            </a>
+
+            <nav class="sidebar-nav">
+                <a href="/dashboard.html" class="sidebar-item active" data-tooltip="Dashboard">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="3" width="7" height="7"/>
+                        <rect x="14" y="3" width="7" height="7"/>
+                        <rect x="14" y="14" width="7" height="7"/>
+                        <rect x="3" y="14" width="7" height="7"/>
+                    </svg>
+                </a>
+                <a href="/tables.html" class="sidebar-item" data-tooltip="Tables">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 3h18v18H3V3z"/>
+                        <path d="M3 9h18M3 15h18M9 3v18"/>
+                    </svg>
+                </a>
+                <a href="/logs.html" class="sidebar-item" data-tooltip="Logs">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                        <polyline points="10 9 9 9 8 9"/>
+                    </svg>
+                </a>
+                <a href="/validate.html" class="sidebar-item" data-tooltip="Validate">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="sidebar-user" x-text="userInitials" @click="logout()" data-tooltip="Logout"></div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="page-header">
+                <div>
+                    <h1 class="page-title">Dashboard</h1>
+                    <p class="page-subtitle">Execute SQL queries and manage operations</p>
+                </div>
+                <div class="header-actions">
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <button @click="runFullSync()" :disabled="operating" class="btn btn-primary" style="padding: 8px 12px; font-size: 13px;">
+                            <span class="spinner" x-show="operating === 'full-sync'"></span>
+                            Full Sync
+                        </button>
+                        <button @click="runIncrementalSync()" :disabled="operating" class="btn btn-success" style="padding: 8px 12px; font-size: 13px;">
+                            <span class="spinner" x-show="operating === 'incremental-sync'"></span>
+                            Incremental Sync
+                        </button>
+                        <button @click="validateSync()" :disabled="operating" class="btn btn-outline" style="padding: 8px 12px; font-size: 13px;">
+                            <span class="spinner" x-show="operating === 'validate'"></span>
+                            Validate
+                        </button>
+                        <button @click="clearAllData()" :disabled="operating" class="btn btn-danger" style="padding: 8px 12px; font-size: 13px;">
+                            <span class="spinner" x-show="operating === 'clear-all'"></span>
+                            Clear All Data
+                        </button>
+                        <span class="text-sm text-gray" style="margin-left: 16px;">Welcome, <strong x-text="username"></strong></span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Dashboard Content -->
+            <div class="dashboard-layout custom-scroll">
+                <!-- Query Section -->
+                <div class="query-section content-section">
+                    <div class="section-header">
+                        <h2 class="section-title">SQL Query Editor</h2>
+                        <div class="flex items-center gap-2">
+                            <select x-model="selectedDatabase"
+                                    class="form-select"
+                                    style="width: auto; padding: 6px 12px;"
+                                    :class="selectedDatabase === 'mysql' ? 'text-orange-600' : 'text-blue'">
+                                <option value="duckdb">DuckDB (Fast)</option>
+                                <option value="mysql">MySQL (Source)</option>
+                            </select>
+                            <select x-model="selectedExample"
+                                    @change="loadExampleQuery()"
+                                    class="form-select"
+                                    style="width: auto; padding: 6px 12px;">
+                                <option value="">Example Queries...</option>
+                                <option value="list_tables">List All Tables</option>
+                                <option value="table_count">Count Records</option>
+                                <option value="recent_data">Recent Records (7 days)</option>
+                                <option value="aggregation">Daily Aggregation (30 days)</option>
+                                <option value="join">Action with User Join</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="query-editor">
+                        <div class="flex gap-2 w-full">
+                            <div style="width: 90%;">
+                                <textarea x-model="sqlQuery"
+                                          class="custom-textarea"
+                                          style="height: 80px; font-size: 13px; width: 100%; resize: none; box-sizing: border-box; border: 1px solid var(--input); border-radius: var(--radius); padding: 10px 14px; background: var(--background); color: var(--foreground); outline: none; transition: all 0.2s;"
+                                          placeholder="Enter your SQL query here...&#10;&#10;Example:&#10;SELECT * FROM sync_log ORDER BY created_at DESC LIMIT 100;"
+                                          @keydown.ctrl.enter="executeQuery()"></textarea>
+                            </div>
+                            <div style="width: 10%;" class="flex flex-col gap-2 justify-center">
+                                <button @click="executeQuery()"
+                                        :disabled="!sqlQuery.trim() || queryExecuting"
+                                        class="btn btn-primary"
+                                        style="width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center;"
+                                        title="Execute Query (Ctrl+Enter)">
+                                    <svg x-show="!queryExecuting" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <polygon points="5 3 19 12 5 21 5 3"/>
+                                    </svg>
+                                    <span class="spinner" x-show="queryExecuting" style="width: 16px; height: 16px;"></span>
+                                </button>
+                                <button @click="clearQuery()"
+                                        :disabled="!sqlQuery.trim()"
+                                        class="btn btn-outline"
+                                        style="width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center;"
+                                        title="Clear Query">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M18 6L6 18M6 6l12 12"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="flex items-center justify-between mt-4">
+                            <div x-show="queryExecutionTime" class="text-sm text-gray">
+                                <strong x-text="queryResults.length"></strong> rows in <strong x-text="queryExecutionTime"></strong>ms
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Results Section -->
+                <div class="results-section content-section">
+                    <div class="section-header">
+                        <h2 class="section-title">Query Results</h2>
+                        <span x-show="queryResults.length > 0" class="text-sm text-gray">
+                            Showing <strong x-text="queryResults.length"></strong> rows
+                        </span>
+                    </div>
+                    <div class="results-container custom-scroll">
+                        <!-- Error Display -->
+                        <div x-show="queryError" class="alert alert-error" style="margin: 16px;">
+                            <span x-text="queryError"></span>
+                        </div>
+
+                        <!-- Results Table -->
+                        <div x-show="queryResults.length > 0" style="padding: 16px;">
+                            <div style="overflow-x: auto;">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <template x-for="column in queryResultColumns" :key="column">
+                                                <th x-text="column"></th>
+                                            </template>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <template x-for="(row, index) in paginatedQueryResults" :key="index">
+                                            <tr>
+                                                <template x-for="column in queryResultColumns" :key="column">
+                                                    <td>
+                                                        <div style="max-width: 300px; overflow: hidden; text-overflow: ellipsis;"
+                                                             x-text="formatCellValue(row[column])"
+                                                             :title="formatCellValue(row[column])"></div>
+                                                    </td>
+                                                </template>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- Pagination -->
+                            <div x-show="queryResults.length > queryItemsPerPage" class="flex items-center justify-between mt-4">
+                                <div class="text-sm text-gray">
+                                    Showing <strong x-text="((queryCurrentPage - 1) * queryItemsPerPage) + 1"></strong> to
+                                    <strong x-text="Math.min(queryCurrentPage * queryItemsPerPage, queryResults.length)"></strong> of
+                                    <strong x-text="queryResults.length"></strong>
+                                </div>
+                                <div class="flex gap-2">
+                                    <button @click="queryCurrentPage > 1 && queryCurrentPage--"
+                                            :disabled="queryCurrentPage === 1"
+                                            class="btn btn-outline">
+                                        Previous
+                                    </button>
+                                    <span class="status-badge status-info">
+                                        Page <span x-text="queryCurrentPage"></span> of <span x-text="queryTotalPages"></span>
+                                    </span>
+                                    <button @click="queryCurrentPage < queryTotalPages && queryCurrentPage++"
+                                            :disabled="queryCurrentPage === queryTotalPages"
+                                            class="btn btn-outline">
+                                        Next
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Empty State -->
+                        <div x-show="!queryResults.length && !queryError && !queryExecuting"
+                             style="text-align: center; padding: 60px 20px; color: var(--muted-foreground);">
+                            <svg style="margin: 0 auto 16px; opacity: 0.5;" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                            </svg>
+                            <h3 style="font-size: 16px; margin-bottom: 8px;">No query results</h3>
+                            <p style="font-size: 14px;">Execute a SQL query to see results here</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Operations Section -->
+                <div class="operations-section">
+                    <div class="cards-grid" style="margin-bottom: 0;">
+                        <!-- System Health Card -->
+                        <div class="stat-card">
+                            <div class="stat-label">System Health</div>
+                            <div class="flex items-center justify-between">
+                                <div class="stat-value" style="font-size: 20px;">
+                                    <span x-text="health.status === 'healthy' ? 'Healthy' : 'Degraded'"></span>
+                                </div>
+                                <div style="width: 12px; height: 12px; border-radius: 50%;"
+                                     :style="`background: ${health.status === 'healthy' ? 'var(--primary)' : 'var(--muted-foreground)'}`"></div>
+                            </div>
+                            <div class="text-xs text-gray mt-2">
+                                MySQL: <span x-text="health.services?.mysql"></span> •
+                                DuckDB: <span x-text="health.services?.duckdb"></span>
+                            </div>
+                        </div>
+
+                        <!-- Sync Status Card -->
+                        <div class="stat-card">
+                            <div class="stat-label">Sync Status</div>
+                            <div class="stat-value" style="font-size: 20px;">
+                                <span x-text="status.tables?.synced || 0"></span> /
+                                <span class="text-gray" x-text="status.tables?.mysql || 0"></span>
+                            </div>
+                            <div class="text-xs text-gray mt-2">Tables Synchronized</div>
+                        </div>
+
+                        <!-- Memory Usage Card -->
+                        <div class="stat-card">
+                            <div class="stat-label">Memory Usage</div>
+                            <div class="stat-value" style="font-size: 20px;" x-text="formatMemory(status.memory?.rss)"></div>
+                            <div class="text-xs text-gray mt-2">
+                                Uptime: <span x-text="formatUptime(status.uptime)"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        function dashboard() {
+            return {
+                username: '',
+                userInitials: '',
+                health: {},
+                status: {},
+                operating: false,
+
+                // Query Editor
+                sqlQuery: '',
+                queryResults: [],
+                queryResultColumns: [],
+                queryError: '',
+                queryExecuting: false,
+                queryExecutionTime: null,
+                selectedDatabase: 'duckdb',
+                selectedExample: '',
+                queryCurrentPage: 1,
+                queryItemsPerPage: 100,
+
+                async init() {
+                    // Check authentication
+                    try {
+                        const authRes = await fetch('/api/check-auth');
+                        const authData = await authRes.json();
+
+                        if (!authData.authenticated) {
+                            window.location.href = '/login.html';
+                            return;
+                        }
+
+                        this.username = authData.username;
+                        this.userInitials = authData.username ? authData.username.substring(0, 2).toUpperCase() : 'U';
+                    } catch (error) {
+                        console.error('Authentication check failed:', error);
+                        window.location.href = '/login.html';
+                        return;
+                    }
+
+                    await this.refreshData();
+
+                    // Auto-refresh every 30 seconds
+                    setInterval(() => {
+                        if (!this.operating) {
+                            this.refreshData();
+                        }
+                    }, 30000);
+                },
+
+                async refreshData() {
+                    try {
+                        const [healthRes, statusRes] = await Promise.all([
+                            fetch('/health'),
+                            fetch('/status')
+                        ]);
+
+                        this.health = await healthRes.json();
+                        this.status = await statusRes.json();
+                    } catch (error) {
+                        console.error('Failed to refresh data:', error);
+                    }
+                },
+
+                async executeQuery() {
+                    if (!this.sqlQuery.trim()) return;
+
+                    this.queryExecuting = true;
+                    this.queryError = '';
+                    this.queryResults = [];
+                    this.queryResultColumns = [];
+                    this.queryExecutionTime = null;
+
+                    const startTime = Date.now();
+
+                    try {
+                        const response = await fetch('/query', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                sql: this.sqlQuery.trim(),
+                                database: this.selectedDatabase
+                            })
+                        });
+
+                        const data = await response.json();
+                        const executionTime = Date.now() - startTime;
+
+                        if (!response.ok) {
+                            throw new Error(data.error || 'Query execution failed');
+                        }
+
+                        this.queryResults = data.result || [];
+                        this.queryExecutionTime = executionTime;
+
+                        if (this.queryResults.length > 0) {
+                            this.queryResultColumns = Object.keys(this.queryResults[0]);
+                        }
+
+                        this.queryCurrentPage = 1;
+                    } catch (error) {
+                        this.queryError = error.message;
+                    } finally {
+                        this.queryExecuting = false;
+                    }
+                },
+
+                clearQuery() {
+                    this.sqlQuery = '';
+                    this.queryResults = [];
+                    this.queryResultColumns = [];
+                    this.queryError = '';
+                    this.queryExecutionTime = null;
+                },
+
+                loadExampleQuery() {
+                    const examples = {
+                        list_tables: "SHOW TABLES;",
+                        table_count: "SELECT COUNT(*) as totalRecords FROM Action;",
+                        recent_data: `SELECT *
+FROM Action
+WHERE createdAt >= CURRENT_DATE - INTERVAL 7 DAY
+ORDER BY createdAt DESC
+LIMIT 100;`,
+                        aggregation: `SELECT
+    DATE_TRUNC('day', createdAt) as day,
+    COUNT(*) as actionCount,
+    COUNT(DISTINCT adminId) as uniqueUsers
+FROM Action
+WHERE createdAt >= CURRENT_DATE - INTERVAL 30 DAY
+GROUP BY day
+ORDER BY day DESC;`,
+                        join: `SELECT
+  o.adminId        AS userId,
+  o.createdAt,
+  u.name           AS userName
+FROM Action AS o
+LEFT JOIN "User" AS u
+  ON o.adminId = u.userId
+LIMIT 100;`
+                    };
+
+                    if (this.selectedExample && examples[this.selectedExample]) {
+                        this.sqlQuery = examples[this.selectedExample];
+                        this.selectedExample = '';
+                    }
+                },
+
+                async runFullSync() {
+                    this.operating = 'full-sync';
+                    try {
+                        const response = await fetch('/sync/full', { method: 'POST' });
+                        const result = await response.json();
+                        alert(response.ok ? `Full sync completed: ${result.totalRecords} records` : `Error: ${result.error}`);
+                    } catch (error) {
+                        alert('Full sync failed: ' + error.message);
+                    } finally {
+                        this.operating = false;
+                        await this.refreshData();
+                    }
+                },
+
+                async runIncrementalSync() {
+                    this.operating = 'incremental-sync';
+                    try {
+                        const response = await fetch('/sync/incremental', { method: 'POST' });
+                        const result = await response.json();
+                        alert(response.ok ? `Incremental sync completed: ${result.totalRecords} records` : `Error: ${result.error}`);
+                    } catch (error) {
+                        alert('Incremental sync failed: ' + error.message);
+                    } finally {
+                        this.operating = false;
+                        await this.refreshData();
+                    }
+                },
+
+                async validateSync() {
+                    this.operating = 'validate';
+                    try {
+                        const response = await fetch('/sync/validate');
+                        const result = await response.json();
+
+                        if (response.ok) {
+                            const mismatches = result.filter(r => !r.match);
+                            alert(mismatches.length === 0 ? 'All tables are in sync!' : `Found ${mismatches.length} mismatches`);
+                        }
+                    } catch (error) {
+                        alert('Validation failed: ' + error.message);
+                    } finally {
+                        this.operating = false;
+                    }
+                },
+
+                async clearAllData() {
+                    if (!confirm('WARNING: This will delete ALL DuckDB data and tables. This action cannot be undone. Continue?')) {
+                        return;
+                    }
+
+                    this.operating = 'clear-all';
+                    try {
+                        const response = await fetch('/storage/clear-all', { method: 'DELETE' });
+                        const result = await response.json();
+                        alert(response.ok ? 'All data cleared successfully' : `Error: ${result.error}`);
+                    } catch (error) {
+                        alert('Clear all data failed: ' + error.message);
+                    } finally {
+                        this.operating = false;
+                        await this.refreshData();
+                    }
+                },
+
+                async logout() {
+                    try {
+                        await fetch('/api/logout', { method: 'POST' });
+                        window.location.href = '/login.html';
+                    } catch (error) {
+                        console.error('Logout failed:', error);
+                    }
+                },
+
+                formatCellValue(value) {
+                    if (value === null || value === undefined) return '';
+                    if (typeof value === 'object') return JSON.stringify(value);
+                    if (typeof value === 'string' && value.length > 100) {
+                        return value.substring(0, 100) + '...';
+                    }
+                    return value;
+                },
+
+                formatMemory(bytes) {
+                    if (!bytes) return '0 MB';
+                    const mb = bytes / (1024 * 1024);
+                    return `${mb.toFixed(1)} MB`;
+                },
+
+                formatUptime(seconds) {
+                    if (!seconds) return '0s';
+                    const hours = Math.floor(seconds / 3600);
+                    const minutes = Math.floor((seconds % 3600) / 60);
+
+                    if (hours > 0) {
+                        return `${hours}h ${minutes}m`;
+                    } else if (minutes > 0) {
+                        return `${minutes}m`;
+                    } else {
+                        return `${Math.floor(seconds)}s`;
+                    }
+                },
+
+                get paginatedQueryResults() {
+                    const start = (this.queryCurrentPage - 1) * this.queryItemsPerPage;
+                    const end = start + this.queryItemsPerPage;
+                    return this.queryResults.slice(start, end);
+                },
+
+                get queryTotalPages() {
+                    return Math.ceil(this.queryResults.length / this.queryItemsPerPage);
+                }
+            }
+        }
+    </script>
+</body>
+</html>

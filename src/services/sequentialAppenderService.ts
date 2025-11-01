@@ -1,0 +1,982 @@
+import DuckDBConnection from '../database/duckdb';
+import MySQLConnection from '../database/mysql';
+import config from '../config';
+import logger from '../logger';
+
+export interface AppenderSyncResult {
+  table: string;
+  recordsProcessed: number;
+  duration: number;
+  status: 'success' | 'error';
+  error?: string;
+  syncType: 'sequential' | 'watermark';
+  watermark?: {
+    lastProcessedId?: string | number;  // Supports both numeric and string IDs
+    lastProcessedTimestamp?: Date;
+    primaryKey?: string;
+  };
+}
+
+export interface AppenderSyncStats {
+  totalTables: number;
+  successfulTables: number;
+  failedTables: number;
+  totalRecords: number;
+  totalDuration: number;
+  errors: string[];
+  syncDetails: {
+    sequential: number;
+    watermark: number;
+  };
+}
+
+export interface TableWatermark {
+  tableName: string;
+  lastProcessedId?: string | number;  // Supports both numeric IDs and string IDs (e.g., Razorpay: 'pay_XXX', Facebook: 'xxx_yyy')
+  lastProcessedTimestamp?: Date;
+  primaryKeyColumn?: string;
+  timestampColumn?: string;
+  updatedAt: Date;
+}
+
+/**
+ * Sequential Appender Service
+ *
+ * Replaces the problematic Parquet micro-batch system with atomic, transactional
+ * sequential processing using DuckDB's transaction guarantees.
+ *
+ * Benefits:
+ * - Atomic operations (all-or-nothing insertion)
+ * - No duplicates (primary key constraints enforced)
+ * - No missing records (sequential processing)
+ * - Perfect ordering (records processed in exact MySQL order)
+ * - Watermark-based incremental sync (efficient updates)
+ */
+class SequentialAppenderService {
+  private mysql: MySQLConnection;
+  private duckdb: DuckDBConnection;
+  private static instance: SequentialAppenderService;
+  private syncInProgress: boolean = false;
+  private syncQueue: Array<{ tableName?: string; resolve: (value: any) => void; reject: (error: any) => void }> = [];
+
+  private constructor() {
+    this.mysql = MySQLConnection.getInstance();
+    this.duckdb = DuckDBConnection.getInstance();
+  }
+
+  static getInstance(): SequentialAppenderService {
+    if (!SequentialAppenderService.instance) {
+      SequentialAppenderService.instance = new SequentialAppenderService();
+    }
+    return SequentialAppenderService.instance;
+  }
+
+  /**
+   * Initialize the appender service by ensuring proper table structure
+   */
+  async initialize(): Promise<void> {
+    try {
+      logger.info('Initializing Sequential Appender Service...');
+
+      // Ensure sync_log and sync_metadata are base tables, not views
+      await this.duckdb.run(`DROP VIEW IF EXISTS sync_log`);
+      await this.duckdb.run(`DROP VIEW IF EXISTS sync_metadata`);
+
+      logger.info('Dropped sync_log and sync_metadata views if they existed');
+
+      // Create watermarks table for tracking sync positions
+      await this.duckdb.run(`
+        CREATE TABLE IF NOT EXISTS appender_watermarks (
+          table_name VARCHAR PRIMARY KEY,
+          last_processed_id BIGINT,
+          last_processed_timestamp TIMESTAMP,
+          primary_key_column VARCHAR,
+          timestamp_column VARCHAR,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      // Note: sync_log and sync_metadata tables are created by duckdb.initializeDatabase()
+      // We dropped their views above, so they will be recreated as base tables
+
+      logger.info('Sequential Appender Service initialized successfully');
+    } catch (error) {
+      logger.error('Failed to initialize Sequential Appender Service:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if a sync operation is currently in progress
+   */
+  isSyncInProgress(): boolean {
+    return this.syncInProgress;
+  }
+
+  /**
+   * Acquire sync lock - throws error if already locked
+   */
+  private acquireSyncLock(): void {
+    if (this.syncInProgress) {
+      throw new Error('Another sync operation is already in progress. Please wait for it to complete.');
+    }
+    this.syncInProgress = true;
+    logger.info('Sync lock acquired');
+  }
+
+  /**
+   * Release sync lock
+   */
+  private releaseSyncLock(): void {
+    this.syncInProgress = false;
+    logger.info('Sync lock released');
+  }
+
+  /**
+   * Full sync using sequential processing for all tables
+   */
+  async fullSync(): Promise<AppenderSyncStats> {
+    // Acquire lock before starting sync
+    this.acquireSyncLock();
+
+    const startTime = Date.now();
+    logger.info('Starting full sequential sync...');
+
+    const stats: AppenderSyncStats = {
+      totalTables: 0,
+      successfulTables: 0,
+      failedTables: 0,
+      totalRecords: 0,
+      totalDuration: 0,
+      errors: [],
+      syncDetails: {
+        sequential: 0,
+        watermark: 0
+      }
+    };
+
+    try {
+      const tables = await this.mysql.getTables();
+      stats.totalTables = tables.length;
+
+      for (const table of tables) {
+        const result = await this.syncTableSequential(table);
+
+        if (result.status === 'success') {
+          stats.successfulTables++;
+          stats.totalRecords += result.recordsProcessed;
+          stats.syncDetails.sequential++;
+        } else {
+          stats.failedTables++;
+          if (result.error) {
+            stats.errors.push(`${table}: ${result.error}`);
+          }
+        }
+      }
+
+      stats.totalDuration = Date.now() - startTime;
+      logger.info('Sequential full sync completed', {
+        ...stats,
+        avgRecordsPerTable: Math.round(stats.totalRecords / stats.successfulTables || 0)
+      });
+
+      return stats;
+    } catch (error) {
+      logger.error('Sequential full sync failed:', error);
+      stats.errors.push(error instanceof Error ? error.message : 'Unknown error');
+      throw error;
+    } finally {
+      // Always release lock, even if sync fails
+      this.releaseSyncLock();
+    }
+  }
+
+  /**
+   * Incremental sync using watermarks for efficient processing
+   */
+  async incrementalSync(): Promise<AppenderSyncStats> {
+    // Acquire lock before starting sync
+    this.acquireSyncLock();
+
+    const startTime = Date.now();
+    logger.info('Starting incremental watermark-based sync...');
+
+    const stats: AppenderSyncStats = {
+      totalTables: 0,
+      successfulTables: 0,
+      failedTables: 0,
+      totalRecords: 0,
+      totalDuration: 0,
+      errors: [],
+      syncDetails: {
+        sequential: 0,
+        watermark: 0
+      }
+    };
+
+    try {
+      const tables = await this.mysql.getTables();
+      stats.totalTables = tables.length;
+
+      for (let i = 0; i < tables.length; i++) {
+        const table = tables[i];
+
+        // Log table-level progress
+        logger.info(`[${i + 1}/${tables.length}] Syncing table: ${table}...`);
+
+        const result = await this.syncTableWatermark(table);
+
+        if (result.status === 'success') {
+          stats.successfulTables++;
+          stats.totalRecords += result.recordsProcessed;
+
+          if (result.syncType === 'sequential') {
+            stats.syncDetails.sequential++;
+          } else {
+            stats.syncDetails.watermark++;
+          }
+        } else {
+          stats.failedTables++;
+          if (result.error) {
+            stats.errors.push(`${table}: ${result.error}`);
+          }
+        }
+      }
+
+      stats.totalDuration = Date.now() - startTime;
+
+      // Log completion with human-readable format
+      const durationSec = Math.round(stats.totalDuration / 1000);
+      const recordsPerSec = durationSec > 0 ? Math.round(stats.totalRecords / durationSec) : 0;
+      logger.info(`✅ Incremental sync completed: ${stats.successfulTables}/${stats.totalTables} tables, ${stats.totalRecords.toLocaleString()} records in ${durationSec}s (${recordsPerSec.toLocaleString()} rec/s)`);
+
+      return stats;
+    } catch (error) {
+      logger.error('Incremental sync failed:', error);
+      stats.errors.push(error instanceof Error ? error.message : 'Unknown error');
+      throw error;
+    } finally {
+      // Always release lock, even if sync fails
+      this.releaseSyncLock();
+    }
+  }
+
+  /**
+   * Sync a single table (uses watermark-based incremental sync if available, otherwise full sync)
+   */
+  async syncSingleTable(tableName: string): Promise<AppenderSyncResult> {
+    // Acquire lock before starting sync
+    this.acquireSyncLock();
+
+    try {
+      // Use watermark-based sync (same as incremental sync) - checks for watermark and does incremental if available
+      logger.info(`Starting sync for table: ${tableName}`);
+      return await this.syncTableWatermark(tableName);
+    } finally {
+      // Always release lock, even if sync fails
+      this.releaseSyncLock();
+    }
+  }
+
+  /**
+   * Sanitize value for DuckDB insertion
+   * Handles invalid MySQL timestamps (0000-00-00 00:00:00) by converting to NULL
+   * Handles JSON columns by stringifying objects
+   */
+  private sanitizeValue(value: any, columnType: string): any {
+    // Handle undefined
+    if (value === undefined) {
+      return null;
+    }
+
+    const lowerType = columnType.toLowerCase();
+
+    // Handle JSON columns - stringify objects/arrays to JSON strings
+    if (lowerType.includes('json')) {
+      if (value === null || value === undefined) {
+        // If column is NOT NULL in MySQL but has NULL value, use empty object
+        return '{}';
+      }
+      // If it's already a string, return as-is, otherwise stringify
+      if (typeof value === 'string') {
+        return value;
+      }
+      return JSON.stringify(value);
+    }
+
+    // Handle invalid timestamps for timestamp/datetime columns
+    if (lowerType.includes('timestamp') || lowerType.includes('datetime')) {
+      // Check if value is the invalid timestamp string
+      if (value === '0000-00-00 00:00:00' || value === '0000-00-00' || value === null) {
+        return null;
+      }
+
+      // Check for invalid timestamp strings like "undefined 00:00:00"
+      if (typeof value === 'string' && (value.includes('undefined') || value.trim() === '')) {
+        return null;
+      }
+
+      // Check if value is a Date object with invalid timestamp
+      if (value instanceof Date && value.getTime() === 0) {
+        return null;
+      }
+    }
+
+    return value;
+  }
+
+  /**
+   * Sequential table sync - process all records in order with atomic transaction
+   *
+   * Uses explicit transactions for atomic all-or-nothing insertion:
+   * - BEGIN TRANSACTION
+   * - INSERT records sequentially (maintaining order)
+   * - COMMIT (atomic) or ROLLBACK (on error)
+   */
+  private async syncTableSequential(tableName: string): Promise<AppenderSyncResult> {
+    const startTime = Date.now();
+
+    try {
+      logger.info(`Starting sequential sync for table: ${tableName}`);
+
+      // Get table schema
+      const schema = await this.mysql.getTableSchema(tableName);
+
+      // Initialize table if needed
+      await this.ensureTableExists(tableName, schema);
+
+      // Clear existing data for full sync
+      await this.duckdb.run(`DELETE FROM ${tableName}`);
+
+      let recordsProcessed = 0;
+      const watermarkBefore = await this.getTableWatermark(tableName);
+
+      // Get total record count for progress tracking
+      const totalRecords = await this.mysql.getTableRowCount(tableName);
+      let lastLoggedAt = 0;
+      const PROGRESS_LOG_INTERVAL = 10000;
+
+      // Start transaction for atomic operation
+      await this.duckdb.run('BEGIN TRANSACTION');
+
+      try {
+        // Get column names for INSERT statement
+        const columns = schema.map(col => col.Field);
+        const placeholders = columns.map(() => '?').join(', ');
+        const insertQuery = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`;
+
+        // Create column type map for sanitization
+        const columnTypes = new Map(schema.map(col => [col.Field, col.Type]));
+
+        // Stream records from MySQL and insert in bulk
+        const fetchBatchSize = 10000; // Fetch 10K records from MySQL at once
+        const insertBatchSize = 500;  // Insert 500 rows per bulk INSERT (prevents stack overflow)
+
+        for await (const fetchedBatch of this.mysql.streamTableData(tableName, fetchBatchSize)) {
+          // Process fetched batch in smaller bulk inserts to avoid stack overflow
+          for (let i = 0; i < fetchedBatch.length; i += insertBatchSize) {
+            const batch = fetchedBatch.slice(i, i + insertBatchSize);
+
+            // Build bulk insert query with multiple rows
+            // Format: INSERT INTO table (col1, col2) VALUES (?, ?), (?, ?), ...
+            const rowPlaceholders = `(${columns.map(() => '?').join(', ')})`;
+            const allPlaceholders = batch.map(() => rowPlaceholders).join(', ');
+            const bulkInsertQuery = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${allPlaceholders}`;
+
+            // Flatten all values into single array for bulk insert
+            const allValues: any[] = [];
+            for (const record of batch) {
+              for (const col of columns) {
+                allValues.push(this.sanitizeValue(record[col], columnTypes.get(col) || ''));
+              }
+            }
+
+            // Execute bulk insert (10-100x faster than individual inserts)
+            await this.duckdb.run(bulkInsertQuery, allValues);
+
+            recordsProcessed += batch.length;
+
+            // Log progress for large tables
+            if (totalRecords >= PROGRESS_LOG_INTERVAL && recordsProcessed - lastLoggedAt >= PROGRESS_LOG_INTERVAL) {
+              const percent = ((recordsProcessed / totalRecords) * 100).toFixed(1);
+              logger.info(`${tableName}: Processing... ${recordsProcessed.toLocaleString()}/${totalRecords.toLocaleString()} records (${percent}%)`);
+              lastLoggedAt = recordsProcessed;
+            }
+          }
+
+          logger.debug(`Bulk inserted ${fetchedBatch.length} records to ${tableName}, total: ${recordsProcessed}`);
+        }
+
+        // Commit transaction - all records inserted atomically
+        await this.duckdb.run('COMMIT');
+
+        // Get max ID for watermark (supports both numeric and string IDs)
+        const primaryKeyColumn = await this.detectPrimaryKeyColumn(tableName, schema);
+        let maxId: string | number | undefined = undefined;
+
+        if (primaryKeyColumn && recordsProcessed > 0) {
+          try {
+            const maxResult = await this.duckdb.execute(`SELECT MAX(${primaryKeyColumn}) as maxId FROM ${tableName}`);
+            if (maxResult.length > 0 && maxResult[0].maxId !== null) {
+              // Convert BigInt to number for numeric IDs, keep strings as-is
+              const value = maxResult[0].maxId;
+              if (typeof value === 'bigint') {
+                maxId = Number(value);
+              } else if (typeof value === 'string' || typeof value === 'number') {
+                maxId = value;
+              } else {
+                maxId = String(value);
+              }
+            }
+          } catch (error) {
+            logger.warn(`Failed to get max ID for ${tableName}:`, error);
+          }
+        }
+
+        // Update watermark
+        await this.updateWatermark(tableName, {
+          lastProcessedId: maxId,
+          lastProcessedTimestamp: new Date(),
+          primaryKeyColumn: primaryKeyColumn,
+          timestampColumn: await this.detectTimestampColumn(tableName, schema)
+        });
+
+        logger.info(`Sequential sync completed for ${tableName}: ${recordsProcessed} records`);
+
+      } catch (error) {
+        // Rollback on any error - no partial data
+        await this.duckdb.run('ROLLBACK');
+        throw error;
+      }
+
+      const duration = Date.now() - startTime;
+
+      // Log success
+      await this.logSyncOperation(tableName, 'sequential', recordsProcessed, duration, 'success', watermarkBefore);
+
+      return {
+        table: tableName,
+        recordsProcessed,
+        duration,
+        status: 'success',
+        syncType: 'sequential'
+      };
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      // Log error
+      await this.logSyncOperation(tableName, 'sequential', 0, duration, 'error', undefined, errorMessage);
+
+      logger.error(`Sequential sync failed for ${tableName}:`, error);
+
+      return {
+        table: tableName,
+        recordsProcessed: 0,
+        duration,
+        status: 'error',
+        error: errorMessage,
+        syncType: 'sequential'
+      };
+    }
+  }
+
+  /**
+   * Watermark-based incremental sync - process only new records
+   *
+   * Uses watermarks to track last processed record and sync only new/updated data
+   */
+  private async syncTableWatermark(tableName: string): Promise<AppenderSyncResult> {
+    const startTime = Date.now();
+
+    try {
+      logger.info(`Starting watermark incremental sync for table: ${tableName}`);
+
+      // Get current watermark
+      const watermark = await this.getTableWatermark(tableName);
+
+      if (!watermark) {
+        // No watermark exists, fall back to sequential sync
+        logger.info(`No watermark found for ${tableName}, performing sequential sync`);
+        return await this.syncTableSequential(tableName);
+      }
+
+      // Get table schema
+      const schema = await this.mysql.getTableSchema(tableName);
+
+      // Ensure table exists
+      await this.ensureTableExists(tableName, schema);
+
+      let recordsProcessed = 0;
+      let incrementalData: any[] = [];
+
+      // Get incremental data based on watermark
+      if (watermark.lastProcessedTimestamp && watermark.timestampColumn) {
+        // Use timestamp-based incremental sync
+        incrementalData = await this.mysql.getIncrementalData(
+          tableName,
+          watermark.lastProcessedTimestamp,
+          50000 // Large batch for efficiency
+        );
+        logger.info(`Found ${incrementalData.length} incremental records for ${tableName} since ${watermark.lastProcessedTimestamp}`);
+      } else if (watermark.lastProcessedId && watermark.primaryKeyColumn) {
+        // Use ID-based incremental sync
+        incrementalData = await this.mysql.execute(
+          `SELECT * FROM ${tableName} WHERE ${watermark.primaryKeyColumn} > ? ORDER BY ${watermark.primaryKeyColumn} ASC LIMIT 50000`,
+          [watermark.lastProcessedId]
+        );
+        logger.info(`Found ${incrementalData.length} incremental records for ${tableName} since ID ${watermark.lastProcessedId}`);
+      } else {
+        // No proper watermark columns, fall back to sequential
+        logger.warn(`Invalid watermark for ${tableName}, falling back to sequential sync`);
+        return await this.syncTableSequential(tableName);
+      }
+
+      if (incrementalData.length === 0) {
+        const duration = Date.now() - startTime;
+        logger.info(`No incremental data found for ${tableName}`);
+
+        return {
+          table: tableName,
+          recordsProcessed: 0,
+          duration,
+          status: 'success',
+          syncType: 'watermark'
+        };
+      }
+
+      // Start transaction for atomic operation
+      await this.duckdb.run('BEGIN TRANSACTION');
+
+      try {
+        // Get column names for INSERT OR REPLACE statement (upsert)
+        const columns = schema.map(col => col.Field);
+
+        // Create column type map for sanitization
+        const columnTypes = new Map(schema.map(col => [col.Field, col.Type]));
+
+        // Process incremental data in batches to avoid stack overflow
+        const insertBatchSize = 500;
+        for (let i = 0; i < incrementalData.length; i += insertBatchSize) {
+          const batch = incrementalData.slice(i, i + insertBatchSize);
+
+          // Build bulk INSERT OR REPLACE query for incremental records
+          const rowPlaceholders = `(${columns.map(() => '?').join(', ')})`;
+          const allPlaceholders = batch.map(() => rowPlaceholders).join(', ');
+          const bulkInsertQuery = `INSERT OR REPLACE INTO ${tableName} (${columns.join(', ')}) VALUES ${allPlaceholders}`;
+
+          // Flatten all values into single array for bulk insert
+          const allValues: any[] = [];
+          for (const record of batch) {
+            for (const col of columns) {
+              allValues.push(this.sanitizeValue(record[col], columnTypes.get(col) || ''));
+            }
+          }
+
+          // Execute bulk upsert (much faster than individual inserts)
+          await this.duckdb.run(bulkInsertQuery, allValues);
+
+          recordsProcessed += batch.length;
+        }
+
+        // Commit transaction
+        await this.duckdb.run('COMMIT');
+
+        // Update watermark
+        const lastRecord = incrementalData[incrementalData.length - 1];
+        const newWatermark: Partial<TableWatermark> = {
+          lastProcessedTimestamp: new Date(),
+          primaryKeyColumn: watermark.primaryKeyColumn,
+          timestampColumn: watermark.timestampColumn
+        };
+
+        if (watermark.primaryKeyColumn && lastRecord[watermark.primaryKeyColumn]) {
+          newWatermark.lastProcessedId = lastRecord[watermark.primaryKeyColumn];
+        }
+
+        if (watermark.timestampColumn && lastRecord[watermark.timestampColumn]) {
+          newWatermark.lastProcessedTimestamp = new Date(lastRecord[watermark.timestampColumn]);
+        }
+
+        await this.updateWatermark(tableName, newWatermark);
+
+        logger.info(`Watermark incremental sync completed for ${tableName}: ${recordsProcessed} records`);
+
+      } catch (error) {
+        // Rollback on any error
+        await this.duckdb.run('ROLLBACK');
+        throw error;
+      }
+
+      const duration = Date.now() - startTime;
+
+      // Log success
+      await this.logSyncOperation(tableName, 'watermark', recordsProcessed, duration, 'success', watermark);
+
+      return {
+        table: tableName,
+        recordsProcessed,
+        duration,
+        status: 'success',
+        syncType: 'watermark',
+        watermark: {
+          lastProcessedId: watermark.lastProcessedId,
+          lastProcessedTimestamp: watermark.lastProcessedTimestamp,
+          primaryKey: watermark.primaryKeyColumn
+        }
+      };
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      // Log error
+      await this.logSyncOperation(tableName, 'watermark', 0, duration, 'error', undefined, errorMessage);
+
+      logger.error(`Watermark incremental sync failed for ${tableName}:`, error);
+
+      return {
+        table: tableName,
+        recordsProcessed: 0,
+        duration,
+        status: 'error',
+        error: errorMessage,
+        syncType: 'watermark'
+      };
+    }
+  }
+
+  /**
+   * Ensure table exists with proper schema
+   */
+  private async ensureTableExists(tableName: string, schema: any[]): Promise<void> {
+    try {
+      // Check if a view exists with this name and drop it
+      const views = await this.duckdb.execute(`
+        SELECT table_name FROM information_schema.tables
+        WHERE table_schema = 'main' AND table_name = ? AND table_type = 'VIEW'
+      `, [tableName]);
+
+      if (views.length > 0) {
+        // Drop the view to allow creating a base table
+        await this.duckdb.run(`DROP VIEW IF EXISTS ${tableName}`);
+        logger.info(`Dropped view ${tableName} to create base table`);
+      }
+
+      // Check if table exists
+      const tables = await this.duckdb.execute(`
+        SELECT table_name FROM information_schema.tables
+        WHERE table_schema = 'main' AND table_name = ? AND table_type = 'BASE TABLE'
+      `, [tableName]);
+
+      if (tables.length === 0) {
+        // Create table with proper schema
+        const primaryKeyColumns = schema.filter(col => col.Key === 'PRI').map(col => col.Field);
+
+        const columns = schema.map(col => {
+          const type = this.mapMySQLTypeToDuckDB(col.Type);
+          // Always make timestamp/datetime columns nullable to handle invalid MySQL timestamps (0000-00-00 00:00:00)
+          const isTimestamp = col.Type.toLowerCase().includes('timestamp') || col.Type.toLowerCase().includes('datetime');
+          const nullable = (col.Null === 'YES' || isTimestamp) ? '' : ' NOT NULL';
+
+          // Don't add PRIMARY KEY constraint here - we'll add it separately
+          return `${col.Field} ${type}${nullable}`;
+        });
+
+        // Add composite primary key constraint if there are primary key columns
+        if (primaryKeyColumns.length > 0) {
+          columns.push(`PRIMARY KEY (${primaryKeyColumns.join(', ')})`);
+        }
+
+        const createQuery = `CREATE TABLE ${tableName} (${columns.join(', ')})`;
+        await this.duckdb.run(createQuery);
+
+        logger.info(`Created table ${tableName} with ${columns.length} columns${primaryKeyColumns.length > 0 ? ` and composite primary key: (${primaryKeyColumns.join(', ')})` : ''}`);
+      }
+    } catch (error) {
+      logger.error(`Failed to ensure table ${tableName} exists:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Map MySQL data types to DuckDB data types
+   */
+  private mapMySQLTypeToDuckDB(mysqlType: string): string {
+    const type = mysqlType.toLowerCase();
+
+    // Check string/text types FIRST (before numeric checks) to avoid false matches
+    // e.g., enum('Internship') contains 'int' but should map to VARCHAR
+    if (type.includes('enum')) return 'VARCHAR';
+    if (type.includes('set')) return 'VARCHAR';
+    if (type.includes('json')) return 'VARCHAR';
+    if (type.includes('text')) return 'TEXT';
+    if (type.includes('varchar') || type.includes('char')) return 'VARCHAR';
+    if (type.includes('blob') || type.includes('binary')) return 'BLOB';
+
+    // Timestamp and date types
+    if (type.includes('timestamp')) return 'TIMESTAMP';
+    if (type.includes('datetime')) return 'TIMESTAMP';
+    if (type.includes('date')) return 'DATE';
+    if (type.includes('time')) return 'TIME';
+
+    // Numeric types (check these AFTER string types)
+    if (type.includes('bigint')) return 'BIGINT';
+    if (type.includes('tinyint')) return 'TINYINT';
+    if (type.includes('smallint')) return 'SMALLINT';
+    if (type.includes('mediumint')) return 'INTEGER';
+    if (type.includes('int(')) {
+      const sizeMatch = type.match(/int\((\d+)\)/);
+      if (sizeMatch) {
+        const size = parseInt(sizeMatch[1]);
+        return size >= 11 ? 'BIGINT' : 'INTEGER';
+      }
+      return 'INTEGER';
+    }
+    if (type.includes('int')) return 'INTEGER';
+    if (type.includes('decimal') || type.includes('numeric')) return 'DECIMAL';
+    if (type.includes('float')) return 'FLOAT';
+    if (type.includes('double')) return 'DOUBLE';
+    if (type.includes('boolean') || type.includes('bool')) return 'BOOLEAN';
+
+    return 'VARCHAR';
+  }
+
+  /**
+   * Detect primary key column from schema
+   */
+  private async detectPrimaryKeyColumn(tableName: string, schema: any[]): Promise<string | undefined> {
+    // Check schema for primary key
+    const pkColumn = schema.find(col => col.Key === 'PRI');
+    if (pkColumn) {
+      return pkColumn.Field;
+    }
+
+    // Check common ID patterns
+    const idPatterns = [
+      'id',
+      `${tableName.toLowerCase()}id`,
+      `${tableName.toLowerCase()}_id`,
+    ];
+
+    for (const pattern of idPatterns) {
+      const column = schema.find(col =>
+        col.Field.toLowerCase() === pattern
+      );
+      if (column) {
+        return column.Field;
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Detect timestamp column for incremental sync
+   */
+  private async detectTimestampColumn(tableName: string, schema: any[]): Promise<string | undefined> {
+    const timestampPatterns = [
+      'updated_at',
+      'modified_at',
+      'updatedAt',
+      'modifiedAt',
+      'timestamp',
+      'created_at',
+      'createdAt'
+    ];
+
+    for (const pattern of timestampPatterns) {
+      const column = schema.find(col =>
+        col.Field.toLowerCase() === pattern.toLowerCase()
+      );
+      if (column) {
+        return column.Field;
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Get table watermark
+   */
+  private async getTableWatermark(tableName: string): Promise<TableWatermark | null> {
+    try {
+      const result = await this.duckdb.execute(`
+        SELECT * FROM appender_watermarks WHERE table_name = ?
+      `, [tableName]);
+
+      if (result.length > 0) {
+        const row = result[0];
+        return {
+          tableName: row.table_name,
+          lastProcessedId: row.last_processed_id,
+          lastProcessedTimestamp: row.last_processed_timestamp ? new Date(row.last_processed_timestamp) : undefined,
+          primaryKeyColumn: row.primary_key_column,
+          timestampColumn: row.timestamp_column,
+          updatedAt: new Date(row.updated_at)
+        };
+      }
+
+      return null;
+    } catch (error) {
+      logger.warn(`Failed to get watermark for ${tableName}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Update table watermark
+   */
+  private async updateWatermark(tableName: string, watermark: Partial<TableWatermark>): Promise<void> {
+    try {
+      await this.duckdb.run(`
+        INSERT OR REPLACE INTO appender_watermarks
+        (table_name, last_processed_id, last_processed_timestamp, primary_key_column, timestamp_column, updated_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `, [
+        tableName,
+        watermark.lastProcessedId || null,
+        watermark.lastProcessedTimestamp || null,
+        watermark.primaryKeyColumn || null,
+        watermark.timestampColumn || null
+      ]);
+    } catch (error) {
+      logger.error(`Failed to update watermark for ${tableName}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Helper to serialize objects with BigInt values for JSON
+   */
+  private serializeWithBigInt(obj: any): string {
+    return JSON.stringify(obj, (key, value) =>
+      typeof value === 'bigint' ? value.toString() : value
+    );
+  }
+
+  /**
+   * Log sync operation
+   */
+  private async logSyncOperation(
+    tableName: string,
+    syncType: string,
+    recordsProcessed: number,
+    durationMs: number,
+    status: string,
+    watermarkBefore?: TableWatermark | null,
+    errorMessage?: string
+  ): Promise<void> {
+    try {
+      const watermarkAfter = await this.getTableWatermark(tableName);
+
+      await this.duckdb.run(`
+        INSERT INTO sync_log
+        (id, table_name, sync_type, records_processed, duration_ms, status, error_message, watermark_before, watermark_after)
+        VALUES (nextval('sync_log_id_seq'), ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        tableName,
+        syncType,
+        recordsProcessed,
+        durationMs,
+        status,
+        errorMessage || null,
+        watermarkBefore ? this.serializeWithBigInt(watermarkBefore) : null,
+        watermarkAfter ? this.serializeWithBigInt(watermarkAfter) : null
+      ]);
+    } catch (error) {
+      logger.error(`Failed to log sync operation for ${tableName}:`, error);
+      // Don't throw - logging failure shouldn't stop the sync
+    }
+  }
+
+  /**
+   * Get sync status
+   */
+  async getSyncStatus(): Promise<any> {
+    try {
+      const watermarks = await this.duckdb.execute('SELECT * FROM appender_watermarks ORDER BY updated_at DESC');
+      const recentLogs = await this.duckdb.execute(`
+        SELECT * FROM sync_log
+        ORDER BY created_at DESC
+        LIMIT 20
+      `);
+
+      const mysqlTables = await this.mysql.getTables();
+      const duckdbTables = await this.duckdb.getTables();
+
+      return {
+        watermarks,
+        recentLogs,
+        tables: {
+          mysql: mysqlTables.length,
+          duckdb: duckdbTables.length,
+          synced: duckdbTables.length,
+          pending: mysqlTables.filter(t => !duckdbTables.includes(t)).length
+        },
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      logger.error('Failed to get sync status:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Validate data consistency between MySQL and DuckDB
+   */
+  async validateSync(): Promise<any> {
+    try {
+      const tables = await this.mysql.getTables();
+      const validationResults = [];
+
+      for (const table of tables) {
+        const mysqlCount = await this.mysql.getTableRowCount(table);
+
+        try {
+          const duckdbCount = await this.duckdb.getTableRowCount(table);
+          const watermark = await this.getTableWatermark(table);
+
+          validationResults.push({
+            table,
+            mysqlCount,
+            duckdbCount,
+            match: mysqlCount === duckdbCount,
+            difference: mysqlCount - duckdbCount,
+            lastSync: watermark?.updatedAt || null,
+            syncType: watermark ? 'watermark' : 'none'
+          });
+        } catch (error) {
+          validationResults.push({
+            table,
+            mysqlCount,
+            duckdbCount: 0,
+            match: false,
+            difference: mysqlCount,
+            error: 'Table not found in DuckDB or query failed'
+          });
+        }
+      }
+
+      return {
+        validationResults,
+        summary: {
+          totalTables: validationResults.length,
+          matchingTables: validationResults.filter(r => r.match).length,
+          mismatchedTables: validationResults.filter(r => !r.match && !r.error).length,
+          errorTables: validationResults.filter(r => r.error).length,
+          totalMysqlRecords: validationResults.reduce((sum, r) => sum + r.mysqlCount, 0),
+          totalDuckdbRecords: validationResults.reduce((sum, r) => sum + r.duckdbCount, 0)
+        }
+      };
+    } catch (error) {
+      logger.error('Validation failed:', error);
+      throw error;
+    }
+  }
+}
+
+export default SequentialAppenderService;

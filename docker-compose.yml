@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  duckdb-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3001:3000"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${PORT:-3000}
+      - DUCKDB_PATH=${DUCKDB_PATH:-data/duckling.db}
+      - MYSQL_CONNECTION_STRING=${MYSQL_CONNECTION_STRING}
+      - MYSQL_MAX_CONNECTIONS=${MYSQL_MAX_CONNECTIONS:-5}
+      - SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES:-15}
+      - BATCH_SIZE=${BATCH_SIZE:-1000}
+      - MAX_RETRIES=${MAX_RETRIES:-3}
+      - ENABLE_INCREMENTAL_SYNC=${ENABLE_INCREMENTAL_SYNC:-true}
+      - ENABLE_HEALTH_CHECKS=${ENABLE_HEALTH_CHECKS:-true}
+      - HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL:-60000}
+      - LOG_LEVEL=${LOG_LEVEL:-debug}
+      - ENABLE_CORS=${ENABLE_CORS:-true}
+    volumes:
+      - ./src:/app/src:ro
+      - ./public:/app/public:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      - ./package.json:/app/package.json:ro
+      - ./pnpm-lock.yaml:/app/pnpm-lock.yaml:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - node_modules:/app/node_modules
+    restart: unless-stopped
+    command: pnpm run dev
+    networks:
+      - duckdb-network
+
+volumes:
+  node_modules:
+
+networks:
+  duckdb-network:
+    driver: bridge
