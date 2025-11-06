@@ -11,7 +11,7 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 
 class AutomationService {
-  private static instance: AutomationService;
+  private static instances: Map<string, AutomationService> = new Map();
   private cleanupInterval?: NodeJS.Timeout;
   private backupInterval?: NodeJS.Timeout;
   private healthCheckInterval?: NodeJS.Timeout;
@@ -23,17 +23,37 @@ class AutomationService {
   private lastSuccessfulSync: Date = new Date();
   private isRunning: boolean = false;
 
-  private constructor() {
-    this.syncService = SequentialAppenderService.getInstance();
-    this.duckdb = DuckDBConnection.getInstance();
-    this.mysql = MySQLConnection.getInstance();
+  private constructor(
+    syncService: SequentialAppenderService,
+    duckdb: DuckDBConnection,
+    mysql: MySQLConnection
+  ) {
+    this.syncService = syncService;
+    this.duckdb = duckdb;
+    this.mysql = mysql;
   }
 
-  public static getInstance(): AutomationService {
-    if (!AutomationService.instance) {
-      AutomationService.instance = new AutomationService();
+  public static getInstance(
+    databaseId: string = 'default',
+    syncService?: SequentialAppenderService,
+    duckdb?: DuckDBConnection,
+    mysql?: MySQLConnection
+  ): AutomationService {
+    if (!AutomationService.instances.has(databaseId)) {
+      const sync = syncService || SequentialAppenderService.getInstance(databaseId);
+      const duck = duckdb || DuckDBConnection.getInstance(databaseId);
+      const sql = mysql || MySQLConnection.getInstance(databaseId);
+      AutomationService.instances.set(databaseId, new AutomationService(sync, duck, sql));
     }
-    return AutomationService.instance;
+    return AutomationService.instances.get(databaseId)!;
+  }
+
+  public static closeInstance(databaseId: string): void {
+    const instance = AutomationService.instances.get(databaseId);
+    if (instance) {
+      instance.stop();
+      AutomationService.instances.delete(databaseId);
+    }
   }
 
   /**

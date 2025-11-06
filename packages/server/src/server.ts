@@ -589,7 +589,10 @@ class DuckDBServer {
   // Automation & Recovery endpoint handlers
   private async getAutomationStatus(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const status = this.automationService.getStatus();
+      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      const status = automationService.getStatus();
       res.json({
         success: true,
         status,
@@ -606,7 +609,10 @@ class DuckDBServer {
 
   private async startAutomation(req: express.Request, res: express.Response): Promise<void> {
     try {
-      await this.automationService.start();
+      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      await automationService.start();
       res.json({
         success: true,
         message: 'Automation service started successfully'
@@ -622,7 +628,10 @@ class DuckDBServer {
 
   private async stopAutomation(req: express.Request, res: express.Response): Promise<void> {
     try {
-      this.automationService.stop();
+      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      automationService.stop();
       res.json({
         success: true,
         message: 'Automation service stopped successfully'
@@ -638,8 +647,11 @@ class DuckDBServer {
 
   private async manualBackup(req: express.Request, res: express.Response): Promise<void> {
     try {
+      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
       // Trigger manual backup via automation service
-      await this.automationService['performBackup']();
+      await automationService['performBackup']();
       res.json({
         success: true,
         message: 'Manual backup completed successfully'
@@ -655,7 +667,10 @@ class DuckDBServer {
 
   private async restoreFromBackup(req: express.Request, res: express.Response): Promise<void> {
     try {
-      await this.automationService.restoreFromLatestBackup();
+      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      await automationService.restoreFromLatestBackup();
       res.json({
         success: true,
         message: 'Restore from backup completed successfully'
@@ -671,8 +686,11 @@ class DuckDBServer {
 
   private async manualCleanup(req: express.Request, res: express.Response): Promise<void> {
     try {
+      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
       // Trigger manual cleanup via automation service
-      await this.automationService['performCleanup']();
+      await automationService['performCleanup']();
       res.json({
         success: true,
         message: 'Manual cleanup completed successfully'
