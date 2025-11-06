@@ -44,60 +44,60 @@ const handleKeyPress = (event: KeyboardEvent) => {
 <template>
   <div class="min-h-screen flex items-center justify-center bg-background">
     <div class="w-full max-w-md">
-      <div class="bg-card border rounded-lg shadow-lg p-8">
-        <div class="text-center mb-8">
-          <h1 class="text-3xl font-bold">Duckling</h1>
-          <p class="text-muted-foreground mt-2">DuckDB Server Dashboard</p>
-        </div>
+      <Card class="shadow-lg">
+        <CardHeader class="text-center">
+          <CardTitle class="text-3xl">Duckling</CardTitle>
+          <CardDescription>DuckDB Server Dashboard</CardDescription>
+        </CardHeader>
 
-        <div v-if="error" class="bg-destructive/10 border border-destructive text-destructive-foreground rounded-md p-3 mb-4">
-          <p class="text-sm">{{ error }}</p>
-        </div>
+        <CardContent class="space-y-4">
+          <div v-if="error" class="bg-destructive/10 border border-destructive text-destructive-foreground rounded-md p-3">
+            <p class="text-sm">{{ error }}</p>
+          </div>
 
-        <div class="space-y-4">
-          <div>
-            <label for="username" class="block text-sm font-medium mb-2">
+          <div class="space-y-2">
+            <label for="username" class="block text-sm font-medium">
               Username
             </label>
-            <input
+            <Input
               id="username"
               v-model="username"
               type="text"
-              class="w-full px-3 py-2 border border-input bg-background rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
               placeholder="Enter username"
               :disabled="isLoading"
               @keypress="handleKeyPress"
             />
           </div>
 
-          <div>
-            <label for="password" class="block text-sm font-medium mb-2">
+          <div class="space-y-2">
+            <label for="password" class="block text-sm font-medium">
               Password
             </label>
-            <input
+            <Input
               id="password"
               v-model="password"
               type="password"
-              class="w-full px-3 py-2 border border-input bg-background rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
               placeholder="Enter password"
               :disabled="isLoading"
               @keypress="handleKeyPress"
             />
           </div>
 
-          <button
+          <Button
             @click="handleLogin"
             :disabled="isLoading"
-            class="w-full bg-primary text-primary-foreground py-2 px-4 rounded-md hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            class="w-full"
           >
             {{ isLoading ? 'Logging in...' : 'Login' }}
-          </button>
-        </div>
+          </Button>
+        </CardContent>
 
-        <div class="mt-6 text-center text-sm text-muted-foreground">
-          <p>Default credentials are configured in your .env file</p>
-        </div>
-      </div>
+        <CardFooter class="justify-center">
+          <p class="text-sm text-muted-foreground text-center">
+            Default credentials are configured in your .env file
+          </p>
+        </CardFooter>
+      </Card>
     </div>
   </div>
 </template>

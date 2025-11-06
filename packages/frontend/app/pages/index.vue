@@ -232,7 +232,6 @@ const queryTotalPages = computed(() => {
 
 onMounted(() => {
   refreshData()
-  // Auto-refresh every 30 seconds
   setInterval(() => {
     if (!operating.value) {
       refreshData()
@@ -251,34 +250,18 @@ onMounted(() => {
           <p class="text-sm text-muted-foreground">Execute SQL queries and manage operations</p>
         </div>
         <div class="flex gap-2">
-          <button
-            @click="runFullSync()"
-            :disabled="!!operating"
-            class="px-3 py-2 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50"
-          >
+          <Button @click="runFullSync()" :disabled="!!operating">
             {{ operating === 'full-sync' ? 'Syncing...' : 'Full Sync' }}
-          </button>
-          <button
-            @click="runIncrementalSync()"
-            :disabled="!!operating"
-            class="px-3 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
-          >
+          </Button>
+          <Button @click="runIncrementalSync()" :disabled="!!operating" class="bg-green-600 hover:bg-green-700">
             {{ operating === 'incremental-sync' ? 'Syncing...' : 'Incremental Sync' }}
-          </button>
-          <button
-            @click="validateSync()"
-            :disabled="!!operating"
-            class="px-3 py-2 text-sm border border-border rounded-md hover:bg-accent disabled:opacity-50"
-          >
+          </Button>
+          <Button @click="validateSync()" :disabled="!!operating" variant="outline">
             {{ operating === 'validate' ? 'Validating...' : 'Validate' }}
-          </button>
-          <button
-            @click="clearAllData()"
-            :disabled="!!operating"
-            class="px-3 py-2 text-sm bg-destructive text-destructive-foreground rounded-md hover:bg-destructive/90 disabled:opacity-50"
-          >
+          </Button>
+          <Button @click="clearAllData()" :disabled="!!operating" variant="destructive">
             {{ operating === 'clear-all' ? 'Clearing...' : 'Clear All Data' }}
-          </button>
+          </Button>
         </div>
       </div>
     </header>
@@ -286,37 +269,39 @@ onMounted(() => {
     <!-- Content -->
     <div class="flex-1 overflow-auto p-6 space-y-4">
       <!-- Query Editor Section -->
-      <div class="bg-card border rounded-lg">
-        <div class="border-b px-4 py-3 flex justify-between items-center">
-          <h2 class="font-semibold">SQL Query Editor</h2>
-          <div class="flex gap-2">
-            <select
-              v-model="selectedDatabase"
-              class="px-3 py-1 border border-input rounded-md text-sm"
-              :class="selectedDatabase === 'mysql' ? 'text-orange-600' : 'text-blue-600'"
-            >
-              <option value="duckdb">DuckDB (Fast)</option>
-              <option value="mysql">MySQL (Source)</option>
-            </select>
-            <select
-              v-model="selectedExample"
-              @change="loadExampleQuery()"
-              class="px-3 py-1 border border-input rounded-md text-sm"
-            >
-              <option value="">Example Queries...</option>
-              <option value="list_tables">List All Tables</option>
-              <option value="table_count">Count Records</option>
-              <option value="recent_data">Recent Records (7 days)</option>
-              <option value="aggregation">Daily Aggregation (30 days)</option>
-              <option value="join">Action with User Join</option>
-            </select>
+      <Card>
+        <CardHeader>
+          <div class="flex justify-between items-center">
+            <CardTitle>SQL Query Editor</CardTitle>
+            <div class="flex gap-2">
+              <select
+                v-model="selectedDatabase"
+                class="px-3 py-1 border border-input rounded-md text-sm bg-background"
+                :class="selectedDatabase === 'mysql' ? 'text-orange-600' : 'text-blue-600'"
+              >
+                <option value="duckdb">DuckDB (Fast)</option>
+                <option value="mysql">MySQL (Source)</option>
+              </select>
+              <select
+                v-model="selectedExample"
+                @change="loadExampleQuery()"
+                class="px-3 py-1 border border-input rounded-md text-sm bg-background"
+              >
+                <option value="">Example Queries...</option>
+                <option value="list_tables">List All Tables</option>
+                <option value="table_count">Count Records</option>
+                <option value="recent_data">Recent Records (7 days)</option>
+                <option value="aggregation">Daily Aggregation (30 days)</option>
+                <option value="join">Action with User Join</option>
+              </select>
+            </div>
           </div>
-        </div>
-        <div class="p-4">
+        </CardHeader>
+        <CardContent>
           <div class="flex gap-2">
             <textarea
               v-model="sqlQuery"
-              class="flex-1 h-20 px-3 py-2 border border-input rounded-md font-mono text-sm resize-none"
+              class="flex-1 h-20 px-3 py-2 border border-input rounded-md font-mono text-sm resize-none bg-background"
               placeholder="Enter your SQL query here...
 
 Example:
@@ -324,10 +309,10 @@ SELECT * FROM sync_log ORDER BY created_at DESC LIMIT 100;"
               @keydown.ctrl.enter="executeQuery()"
             ></textarea>
             <div class="flex flex-col gap-2">
-              <button
+              <Button
                 @click="executeQuery()"
                 :disabled="!sqlQuery.trim() || queryExecuting"
-                class="w-10 h-10 flex items-center justify-center bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50"
+                size="icon"
                 title="Execute Query (Ctrl+Enter)"
               >
                 <svg v-if="!queryExecuting" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -336,34 +321,37 @@ SELECT * FROM sync_log ORDER BY created_at DESC LIMIT 100;"
                 <svg v-else class="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
                 </svg>
-              </button>
-              <button
+              </Button>
+              <Button
                 @click="clearQuery()"
                 :disabled="!sqlQuery.trim()"
-                class="w-10 h-10 flex items-center justify-center border border-border rounded-md hover:bg-accent disabled:opacity-50"
+                variant="outline"
+                size="icon"
                 title="Clear Query"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M18 6L6 18M6 6l12 12"/>
                 </svg>
-              </button>
+              </Button>
             </div>
           </div>
           <div v-if="queryExecutionTime" class="mt-2 text-sm text-muted-foreground">
             <strong>{{ queryResults.length }}</strong> rows in <strong>{{ queryExecutionTime }}</strong>ms
           </div>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
       <!-- Query Results Section -->
-      <div class="bg-card border rounded-lg flex flex-col" style="max-height: 50vh;">
-        <div class="border-b px-4 py-3 flex justify-between items-center">
-          <h2 class="font-semibold">Query Results</h2>
-          <span v-if="queryResults.length > 0" class="text-sm text-muted-foreground">
-            Showing <strong>{{ queryResults.length }}</strong> rows
-          </span>
-        </div>
-        <div class="flex-1 overflow-auto">
+      <Card class="flex flex-col" style="max-height: 50vh;">
+        <CardHeader>
+          <div class="flex justify-between items-center">
+            <CardTitle>Query Results</CardTitle>
+            <span v-if="queryResults.length > 0" class="text-sm text-muted-foreground">
+              Showing <strong>{{ queryResults.length }}</strong> rows
+            </span>
+          </div>
+        </CardHeader>
+        <CardContent class="flex-1 overflow-auto p-0">
           <!-- Error Display -->
           <div v-if="queryError" class="m-4 p-4 bg-destructive/10 border border-destructive text-destructive rounded-md">
             {{ queryError }}
@@ -371,26 +359,24 @@ SELECT * FROM sync_log ORDER BY created_at DESC LIMIT 100;"
 
           <!-- Results Table -->
           <div v-else-if="queryResults.length > 0" class="p-4">
-            <div class="overflow-x-auto">
-              <table class="w-full text-sm">
-                <thead class="border-b">
-                  <tr>
-                    <th v-for="column in queryResultColumns" :key="column" class="px-4 py-2 text-left font-medium">
-                      {{ column }}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(row, index) in paginatedQueryResults" :key="index" class="border-b hover:bg-accent">
-                    <td v-for="column in queryResultColumns" :key="column" class="px-4 py-2">
-                      <div class="max-w-xs overflow-hidden text-ellipsis" :title="formatCellValue(row[column])">
-                        {{ formatCellValue(row[column]) }}
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead v-for="column in queryResultColumns" :key="column">
+                    {{ column }}
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow v-for="(row, index) in paginatedQueryResults" :key="index">
+                  <TableCell v-for="column in queryResultColumns" :key="column">
+                    <div class="max-w-xs overflow-hidden text-ellipsis" :title="formatCellValue(row[column])">
+                      {{ formatCellValue(row[column]) }}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
 
             <!-- Pagination -->
             <div v-if="queryResults.length > queryItemsPerPage" class="flex items-center justify-between mt-4">
@@ -400,23 +386,25 @@ SELECT * FROM sync_log ORDER BY created_at DESC LIMIT 100;"
                 <strong>{{ queryResults.length }}</strong>
               </div>
               <div class="flex gap-2">
-                <button
+                <Button
                   @click="queryCurrentPage > 1 && queryCurrentPage--"
                   :disabled="queryCurrentPage === 1"
-                  class="px-3 py-1 border border-border rounded-md hover:bg-accent disabled:opacity-50"
+                  variant="outline"
+                  size="sm"
                 >
                   Previous
-                </button>
-                <span class="px-3 py-1 bg-accent rounded-md">
+                </Button>
+                <Badge variant="secondary">
                   Page {{ queryCurrentPage }} of {{ queryTotalPages }}
-                </span>
-                <button
+                </Badge>
+                <Button
                   @click="queryCurrentPage < queryTotalPages && queryCurrentPage++"
                   :disabled="queryCurrentPage === queryTotalPages"
-                  class="px-3 py-1 border border-border rounded-md hover:bg-accent disabled:opacity-50"
+                  variant="outline"
+                  size="sm"
                 >
                   Next
-                </button>
+                </Button>
               </div>
             </div>
           </div>
@@ -429,35 +417,47 @@ SELECT * FROM sync_log ORDER BY created_at DESC LIMIT 100;"
             <h3 class="font-medium mb-2">No query results</h3>
             <p class="text-sm">Execute a SQL query to see results here</p>
           </div>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
       <!-- System Stats -->
       <div class="grid grid-cols-3 gap-4">
-        <div class="bg-card border rounded-lg p-4">
-          <div class="text-sm text-muted-foreground">System Health</div>
-          <div class="flex items-center justify-between mt-2">
-            <div class="text-xl font-bold">{{ health.status === 'healthy' ? 'Healthy' : 'Degraded' }}</div>
-            <div class="w-3 h-3 rounded-full" :class="health.status === 'healthy' ? 'bg-green-500' : 'bg-gray-400'"></div>
-          </div>
-          <div class="text-xs text-muted-foreground mt-2">
-            MySQL: {{ health.services?.mysql || 'unknown' }} • DuckDB: {{ health.services?.duckdb || 'unknown' }}
-          </div>
-        </div>
+        <Card>
+          <CardHeader class="pb-2">
+            <CardDescription>System Health</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div class="flex items-center justify-between">
+              <div class="text-2xl font-bold">{{ health.status === 'healthy' ? 'Healthy' : 'Degraded' }}</div>
+              <div class="w-3 h-3 rounded-full" :class="health.status === 'healthy' ? 'bg-green-500' : 'bg-gray-400'"></div>
+            </div>
+            <p class="text-xs text-muted-foreground mt-2">
+              MySQL: {{ health.services?.mysql || 'unknown' }} • DuckDB: {{ health.services?.duckdb || 'unknown' }}
+            </p>
+          </CardContent>
+        </Card>
 
-        <div class="bg-card border rounded-lg p-4">
-          <div class="text-sm text-muted-foreground">Sync Status</div>
-          <div class="text-xl font-bold mt-2">
-            {{ status.tables?.synced || 0 }} / <span class="text-muted-foreground">{{ status.tables?.mysql || 0 }}</span>
-          </div>
-          <div class="text-xs text-muted-foreground mt-2">Tables Synchronized</div>
-        </div>
+        <Card>
+          <CardHeader class="pb-2">
+            <CardDescription>Sync Status</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div class="text-2xl font-bold">
+              {{ status.tables?.synced || 0 }} / <span class="text-muted-foreground">{{ status.tables?.mysql || 0 }}</span>
+            </div>
+            <p class="text-xs text-muted-foreground mt-2">Tables Synchronized</p>
+          </CardContent>
+        </Card>
 
-        <div class="bg-card border rounded-lg p-4">
-          <div class="text-sm text-muted-foreground">Memory Usage</div>
-          <div class="text-xl font-bold mt-2">{{ formatMemory(status.memory?.rss) }}</div>
-          <div class="text-xs text-muted-foreground mt-2">Uptime: {{ formatUptime(status.uptime) }}</div>
-        </div>
+        <Card>
+          <CardHeader class="pb-2">
+            <CardDescription>Memory Usage</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div class="text-2xl font-bold">{{ formatMemory(status.memory?.rss) }}</div>
+            <p class="text-xs text-muted-foreground mt-2">Uptime: {{ formatUptime(status.uptime) }}</p>
+          </CardContent>
+        </Card>
       </div>
     </div>
   </div>
