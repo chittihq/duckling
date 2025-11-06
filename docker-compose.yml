@@ -1,8 +1,10 @@
 services:
+  # DuckDB Server - Backend API with MySQL replication
   duckdb-server:
+    container_name: duckling-server
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: docker/server.Dockerfile
     ports:
       - "3001:3000"
     env_file:
@@ -22,24 +24,35 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-debug}
       - ENABLE_CORS=${ENABLE_CORS:-true}
     volumes:
+      # Data persistence
       - ./data:/app/data
       - ./logs:/app/logs
+      # Hot reload - mount source code
+      - ./packages/server/src:/app/packages/server/src
+      - ./packages/shared/src:/app/packages/shared/src
     restart: unless-stopped
-    command: pnpm dev:server
     networks:
       - duckdb-network
 
+  # DuckDB Frontend - Nuxt 4 Dashboard
   duckdb-frontend:
+    container_name: duckling-frontend
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: docker/frontend.Dockerfile
     ports:
       - "3000:3000"
     environment:
       - NODE_ENV=${NODE_ENV:-development}
       - NUXT_PUBLIC_API_BASE=http://localhost:3001
+    volumes:
+      # Hot reload - mount source code
+      - ./packages/frontend/app:/app/packages/frontend/app
+      - ./packages/frontend/nuxt.config.ts:/app/packages/frontend/nuxt.config.ts
+      - ./packages/frontend/tailwind.config.ts:/app/packages/frontend/tailwind.config.ts
+      - ./packages/shared/src:/app/packages/shared/src
+      - ./packages/sdk/src:/app/packages/sdk/src
     restart: unless-stopped
-    command: pnpm dev:frontend
     depends_on:
       - duckdb-server
     networks:
@@ -47,4 +60,12 @@ services:
 
 networks:
   duckdb-network:
+    name: duckling-network
     driver: bridge
+
+# Volumes for data persistence (optional, using bind mounts above)
+volumes:
+  duckdb-data:
+    name: duckling-data
+  duckdb-logs:
+    name: duckling-logs
