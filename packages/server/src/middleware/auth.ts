@@ -11,7 +11,11 @@ export const requireAuth = (req: Request, res: Response, next: NextFunction): vo
   if (req.session && req.session.isAuthenticated) {
     next();
   } else {
-    res.redirect('/login.html');
+    res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Authentication required',
+      architecture: 'sequential-appender'
+    });
   }
 };
 

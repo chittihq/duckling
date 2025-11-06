@@ -19,7 +19,7 @@ export default defineNuxtConfig({
 
   shadcn: {
     prefix: '',
-    componentDir: './components/ui'
+    componentDir: './app/components/ui'
   },
 
   css: ['~/assets/css/main.css'],

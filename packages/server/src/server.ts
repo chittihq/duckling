@@ -103,15 +103,10 @@ class DuckDBServer {
   }
 
   private setupRoutes(): void {
-    // Authentication routes (public)
+    // Authentication routes (public - no auth required)
     this.app.post('/api/login', this.login.bind(this));
     this.app.post('/api/logout', this.logout.bind(this));
     this.app.get('/api/check-auth', this.checkAuth.bind(this));
-
-    // Serve login page (public)
-    this.app.get('/login.html', (req, res) => {
-      res.sendFile(path.join(__dirname, '..', 'public', 'login.html'));
-    });
 
     // Serve OpenAPI spec (public)
     this.app.get('/openapi.json', (req, res) => {
@@ -122,16 +117,29 @@ class DuckDBServer {
     this.app.get('/api/logs', this.getLogs.bind(this));
     this.app.get('/api/sync-logs', this.getSyncLogs.bind(this));
 
-    // Apply authentication middleware to all routes except public ones
+    // Global authentication middleware - protects all routes except public ones
     this.app.use((req, res, next) => {
-      const publicPaths = ['/api/login', '/api/check-auth', '/login.html', '/openapi.json'];
-      if (publicPaths.includes(req.path)) {
+      // Public API routes (no auth required)
+      const publicApiPaths = ['/api/login', '/api/check-auth', '/openapi.json'];
+
+      // Public static assets for Nuxt SPA (production only)
+      const isStaticAsset = req.path.startsWith('/_nuxt/') ||
+                           req.path.endsWith('.js') ||
+                           req.path.endsWith('.css') ||
+                           req.path.endsWith('.ico') ||
+                           req.path.endsWith('.png') ||
+                           req.path.endsWith('.svg') ||
+                           req.path === '/';
+
+      if (publicApiPaths.includes(req.path) || isStaticAsset) {
         return next();
       }
+
+      // All other routes require authentication
       this.checkApiKeyOrSession(req, res, next);
     });
 
-    // Protected static files (dashboard) - must be after auth middleware
+    // Serve static files from Nuxt build output (production)
     const publicPath = path.join(__dirname, '..', 'public');
     this.app.use(express.static(publicPath));
 
@@ -170,6 +178,23 @@ class DuckDBServer {
     this.app.get('/api/validation/mysql-tables', this.getMySQLTables.bind(this));
     this.app.post('/api/validation/table-details', this.getTableValidationDetails.bind(this));
     this.app.delete('/api/validation/table/:tableName', this.deleteTableFromDuckDB.bind(this));
+
+    // SPA catch-all route - serve index.html for all non-API routes (production)
+    // This enables client-side routing for Nuxt (/login, /tables, etc.)
+    this.app.get('*', (req, res) => {
+      // Only serve index.html if it's not an API route
+      if (!req.path.startsWith('/api/') && !req.path.startsWith('/_nuxt/')) {
+        const indexPath = path.join(__dirname, '..', 'public', 'index.html');
+        if (require('fs').existsSync(indexPath)) {
+          res.sendFile(indexPath);
+        } else {
+          // In development, Nuxt runs separately, so just return 404
+          res.status(404).json({ error: 'Not found' });
+        }
+      } else {
+        res.status(404).json({ error: 'Not found' });
+      }
+    });
 
     this.app.use(this.errorHandler.bind(this));
   }
