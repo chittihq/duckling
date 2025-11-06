@@ -156,12 +156,14 @@ This service uses **Sequential Appender architecture** that provides:
 
 ### Storage Structure
 ```
-data/
-├── databases.json        # Multi-database configuration
-├── {database_id}.db      # DuckDB file per database (persistent, columnar)
-├── lms.db                # Example: LMS database replica
-└── chitti_common.db      # Example: Common database replica
+data/                         # Host path: ./data (maps to /app/data in container)
+├── databases.json            # Multi-database configuration
+├── {database_id}.db          # DuckDB file per database (persistent, columnar)
+├── lms.db                    # Example: LMS database replica
+└── chitti_common.db          # Example: Common database replica
 ```
+
+**Note:** All paths shown are relative to the project root on the host. Inside Docker, these map to `/app/data/` via the volume mount `./data:/app/data` defined in `docker-compose.yml`.
 
 ### Multi-Database Support
 
@@ -171,12 +173,15 @@ The system supports **multiple isolated database replicas** running on a single 
 - **Isolated Replicas**: Each MySQL source database gets its own DuckDB replica
 - **Database Selector**: Frontend UI dropdown to switch between databases
 - **Query Parameter**: All endpoints accept `?db={database_id}` to specify target database
-- **Persistent Configuration**: Database configs stored in `data/databases.json`
+- **Persistent Configuration**: Database configs stored in JSON file (see paths below)
 - **Multi-Instance Architecture**: Separate connection pools per database to prevent cross-contamination
 
 #### Database Configuration
 
-**File Location:** `data/databases.json`
+**File Location:**
+- **Host path** (for editing): `./data/databases.json` (relative to project root)
+- **Container path**: `/app/data/databases.json` (via volume mount `./data:/app/data`)
+- Changes to the host file are automatically reflected in the running container
 
 **Schema:**
 ```json
@@ -332,12 +337,7 @@ Fact tables using append strategy can accumulate duplicates when:
 - ✅ **Backward Compatible**: Existing queries work unchanged
 
 #### Verification
-Check for duplicates:
-```bash
-./check_duplicates.sh
-```
-
-Query specific table:
+Query specific table to check for duplicates:
 ```bash
 curl -X POST http://localhost:3001/query \
   -H "Content-Type: application/json" \
