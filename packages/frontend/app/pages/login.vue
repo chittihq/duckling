@@ -87,6 +87,7 @@ const handleKeyPress = (event: KeyboardEvent) => {
             @click="handleLogin"
             :disabled="isLoading"
             class="w-full"
+            size="sm"
           >
             {{ isLoading ? 'Logging in...' : 'Login' }}
           </Button>

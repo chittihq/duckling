@@ -346,40 +346,47 @@ onMounted(() => {
       <div class="bg-card border rounded-lg p-4">
         <div class="flex items-center justify-between">
           <div class="flex gap-2">
-            <button
+            <Button
               @click="startValidation()"
               :disabled="validating"
-              class="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50"
+              size="sm"
             >
               {{ validating ? 'Validating...' : tables.length > 0 ? 'Validate All Tables' : 'Start Validation' }}
-            </button>
-            <button
+            </Button>
+            <Button
               @click="resetValidation()"
               :disabled="validating"
-              class="px-4 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50"
+              variant="secondary"
+              size="sm"
             >
               Reset
-            </button>
-            <button
+            </Button>
+            <Button
               @click="bulkDeleteFiltered()"
               :disabled="validating || bulkDeleting || filteredTables.filter(t => t.duckdb.exists).length === 0"
-              class="px-4 py-2 bg-destructive text-destructive-foreground rounded-md hover:bg-destructive/90 disabled:opacity-50"
+              variant="destructive"
+              size="sm"
             >
               {{ bulkDeleting ? 'Deleting...' : `Delete Filtered (${filteredTables.filter(t => t.duckdb.exists).length})` }}
-            </button>
+            </Button>
             <input
               v-model="searchQuery"
               type="text"
               placeholder="Search tables..."
               class="px-3 py-2 border border-input rounded-md w-48"
             />
-            <select v-model="errorTypeFilter" class="px-3 py-2 border border-input rounded-md">
-              <option value="">All Error Types</option>
-              <option value="schema_mismatch">Schema Mismatch</option>
-              <option value="record_count_mismatch">Record Count Mismatch</option>
-              <option value="missing_in_duckdb">Missing in DuckDB</option>
-              <option value="orphaned_in_duckdb">Orphaned in DuckDB</option>
-            </select>
+            <Select v-model="errorTypeFilter">
+              <SelectTrigger class="w-48">
+                <SelectValue placeholder="All Error Types" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">All Error Types</SelectItem>
+                <SelectItem value="schema_mismatch">Schema Mismatch</SelectItem>
+                <SelectItem value="record_count_mismatch">Record Count Mismatch</SelectItem>
+                <SelectItem value="missing_in_duckdb">Missing in DuckDB</SelectItem>
+                <SelectItem value="orphaned_in_duckdb">Orphaned in DuckDB</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           <label class="flex items-center gap-2">
@@ -498,28 +505,31 @@ onMounted(() => {
               </td>
               <td class="px-4 py-3">
                 <div class="flex items-center justify-center gap-1">
-                  <button
+                  <Button
                     @click="syncTable(table)"
                     :disabled="table.syncing || table.loading || validating"
-                    class="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+                    size="sm"
+                    variant="outline"
                   >
                     {{ table.syncing ? 'Syncing...' : 'Sync' }}
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     @click="revalidateTable(table)"
                     :disabled="table.loading || table.syncing || validating"
-                    class="px-2 py-1 text-xs border border-border rounded hover:bg-accent disabled:opacity-50"
+                    size="sm"
+                    variant="outline"
                   >
                     {{ table.loading ? 'Checking...' : 'Revalidate' }}
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     @click="deleteTable(table)"
                     :disabled="table.deleting || table.loading || table.syncing || validating || !table.duckdb.exists"
-                    class="px-2 py-1 text-xs bg-destructive text-destructive-foreground rounded hover:bg-destructive/90 disabled:opacity-50"
+                    size="sm"
+                    variant="destructive"
                     title="Delete table from DuckDB (useful for schema changes)"
                   >
                     {{ table.deleting ? 'Deleting...' : 'Delete' }}
-                  </button>
+                  </Button>
                 </div>
               </td>
             </tr>

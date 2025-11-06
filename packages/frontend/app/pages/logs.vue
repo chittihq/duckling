@@ -171,40 +171,43 @@ onBeforeUnmount(() => {
         </div>
         <div class="flex gap-2 items-center">
           <div class="flex gap-1 bg-muted p-1 rounded-md">
-            <button
+            <Button
               @click="toggleStatus('success')"
-              :class="{ 'bg-background shadow-sm': filters.status.includes('success') }"
-              class="px-3 py-1 text-xs rounded hover:bg-background transition-colors"
+              :variant="filters.status.includes('success') ? 'secondary' : 'ghost'"
+              size="sm"
             >
               Success
-            </button>
-            <button
+            </Button>
+            <Button
               @click="toggleStatus('error')"
-              :class="{ 'bg-background shadow-sm': filters.status.includes('error') }"
-              class="px-3 py-1 text-xs rounded hover:bg-background transition-colors"
+              :variant="filters.status.includes('error') ? 'secondary' : 'ghost'"
+              size="sm"
             >
               Error
-            </button>
+            </Button>
           </div>
-          <button
+          <Button
             @click="togglePause()"
             :disabled="!isPolling"
-            class="px-3 py-2 border border-border rounded-md hover:bg-accent disabled:opacity-50"
+            variant="outline"
+            size="sm"
           >
             {{ isPaused ? 'Resume' : 'Pause' }}
-          </button>
-          <button
+          </Button>
+          <Button
             @click="clearLogs()"
-            class="px-3 py-2 border border-border rounded-md hover:bg-accent"
+            variant="outline"
+            size="sm"
           >
             Clear
-          </button>
-          <button
+          </Button>
+          <Button
             @click="scrollToBottom()"
-            class="px-3 py-2 border border-border rounded-md hover:bg-accent"
+            variant="outline"
+            size="sm"
           >
             Scroll Down
-          </button>
+          </Button>
           <label class="flex items-center gap-2 text-sm">
             <input v-model="autoScroll" type="checkbox" class="rounded" />
             Auto-scroll
@@ -316,12 +319,12 @@ onBeforeUnmount(() => {
             </svg>
             <h3 class="font-medium mb-2">Failed to load logs</h3>
             <p class="text-sm mb-4">{{ error }}</p>
-            <button
+            <Button
               @click="fetchLogs()"
-              class="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
+              size="sm"
             >
               Retry
-            </button>
+            </Button>
           </div>
         </div>
       </div>

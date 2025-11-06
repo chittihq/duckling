@@ -183,13 +183,13 @@ onMounted(() => {
           <h1 class="text-2xl font-bold">Tables</h1>
           <p class="text-sm text-muted-foreground">View and manage synchronized database tables</p>
         </div>
-        <button
+        <Button
           @click="loadTables()"
           :disabled="loading"
-          class="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50"
+          size="sm"
         >
           {{ loading ? 'Loading...' : 'Refresh Tables' }}
-        </button>
+        </Button>
       </div>
     </header>
 
@@ -233,20 +233,21 @@ onMounted(() => {
                 <td class="px-4 py-3 text-right">{{ formatFileSize(table.size) }}</td>
                 <td class="px-4 py-3">
                   <div class="flex items-center justify-center gap-2">
-                    <button
+                    <Button
                       @click="selectTable(table.name)"
                       :disabled="loadingData"
-                      class="px-3 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50"
+                      size="sm"
                     >
                       View
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                       @click="syncTable(table.name)"
                       :disabled="syncingTable === table.name"
-                      class="px-3 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+                      variant="outline"
+                      size="sm"
                     >
                       {{ syncingTable === table.name ? 'Syncing...' : 'Sync' }}
-                    </button>
+                    </Button>
                   </div>
                 </td>
               </tr>
@@ -283,19 +284,21 @@ onMounted(() => {
               </p>
             </div>
             <div class="flex gap-2">
-              <button
+              <Button
                 @click="refreshTableData()"
                 :disabled="loadingData"
-                class="px-3 py-2 border border-border rounded-md hover:bg-accent disabled:opacity-50"
+                variant="outline"
+                size="sm"
               >
                 {{ loadingData ? 'Loading...' : 'Refresh' }}
-              </button>
-              <button
+              </Button>
+              <Button
                 @click="closeModal()"
-                class="px-3 py-2 border border-border rounded-md hover:bg-accent"
+                variant="outline"
+                size="sm"
               >
                 Close
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -351,23 +354,25 @@ onMounted(() => {
               <strong>{{ tableData.length }}</strong>
             </div>
             <div class="flex gap-2">
-              <button
+              <Button
                 @click="currentPage > 1 && currentPage--"
                 :disabled="currentPage === 1"
-                class="px-3 py-1 border border-border rounded-md hover:bg-accent disabled:opacity-50"
+                variant="outline"
+                size="sm"
               >
                 Previous
-              </button>
-              <span class="px-3 py-1 bg-accent rounded-md">
+              </Button>
+              <span class="px-3 py-1 bg-accent rounded-md text-sm">
                 Page {{ currentPage }} of {{ totalPages }}
               </span>
-              <button
+              <Button
                 @click="currentPage < totalPages && currentPage++"
                 :disabled="currentPage === totalPages"
-                class="px-3 py-1 border border-border rounded-md hover:bg-accent disabled:opacity-50"
+                variant="outline"
+                size="sm"
               >
                 Next
-              </button>
+              </Button>
             </div>
           </div>
         </div>

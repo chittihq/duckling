@@ -250,16 +250,16 @@ onMounted(() => {
           <p class="text-sm text-muted-foreground">Execute SQL queries and manage operations</p>
         </div>
         <div class="flex gap-2">
-          <Button @click="runFullSync()" :disabled="!!operating">
+          <Button @click="runFullSync()" :disabled="!!operating" size="sm">
             {{ operating === 'full-sync' ? 'Syncing...' : 'Full Sync' }}
           </Button>
-          <Button @click="runIncrementalSync()" :disabled="!!operating" class="bg-green-600 hover:bg-green-700">
+          <Button @click="runIncrementalSync()" :disabled="!!operating" class="bg-green-600 hover:bg-green-700" size="sm">
             {{ operating === 'incremental-sync' ? 'Syncing...' : 'Incremental Sync' }}
           </Button>
-          <Button @click="validateSync()" :disabled="!!operating" variant="outline">
+          <Button @click="validateSync()" :disabled="!!operating" variant="outline" size="sm">
             {{ operating === 'validate' ? 'Validating...' : 'Validate' }}
           </Button>
-          <Button @click="clearAllData()" :disabled="!!operating" variant="destructive">
+          <Button @click="clearAllData()" :disabled="!!operating" variant="destructive" size="sm">
             {{ operating === 'clear-all' ? 'Clearing...' : 'Clear All Data' }}
           </Button>
         </div>
@@ -274,26 +274,27 @@ onMounted(() => {
           <div class="flex justify-between items-center">
             <CardTitle>SQL Query Editor</CardTitle>
             <div class="flex gap-2">
-              <select
-                v-model="selectedDatabase"
-                class="px-3 py-1 border border-input rounded-md text-sm bg-background"
-                :class="selectedDatabase === 'mysql' ? 'text-orange-600' : 'text-blue-600'"
-              >
-                <option value="duckdb">DuckDB (Fast)</option>
-                <option value="mysql">MySQL (Source)</option>
-              </select>
-              <select
-                v-model="selectedExample"
-                @change="loadExampleQuery()"
-                class="px-3 py-1 border border-input rounded-md text-sm bg-background"
-              >
-                <option value="">Example Queries...</option>
-                <option value="list_tables">List All Tables</option>
-                <option value="table_count">Count Records</option>
-                <option value="recent_data">Recent Records (7 days)</option>
-                <option value="aggregation">Daily Aggregation (30 days)</option>
-                <option value="join">Action with User Join</option>
-              </select>
+              <Select v-model="selectedDatabase">
+                <SelectTrigger class="w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="duckdb">DuckDB (Fast)</SelectItem>
+                  <SelectItem value="mysql">MySQL (Source)</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select v-model="selectedExample" @update:modelValue="loadExampleQuery()">
+                <SelectTrigger class="w-56">
+                  <SelectValue placeholder="Example Queries..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="list_tables">List All Tables</SelectItem>
+                  <SelectItem value="table_count">Count Records</SelectItem>
+                  <SelectItem value="recent_data">Recent Records (7 days)</SelectItem>
+                  <SelectItem value="aggregation">Daily Aggregation (30 days)</SelectItem>
+                  <SelectItem value="join">Action with User Join</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
         </CardHeader>
