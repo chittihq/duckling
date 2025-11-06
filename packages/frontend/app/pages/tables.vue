@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 
 definePageMeta({
   middleware: 'auth',
@@ -8,6 +8,7 @@ definePageMeta({
 
 const config = useRuntimeConfig()
 const apiBase = config.public.apiBase
+const { getApiUrlWithDatabase, selectedDatabaseId } = useDatabase()
 
 interface Table {
   name: string
@@ -31,8 +32,8 @@ const loadTables = async () => {
   loading.value = true
   try {
     const [tablesRes, countsRes] = await Promise.all([
-      $fetch<any[]>(`${apiBase}/tables`, { credentials: 'include' }),
-      $fetch<Record<string, number>>(`${apiBase}/tables/counts/all`, { credentials: 'include' })
+      $fetch<any[]>(getApiUrlWithDatabase(`${apiBase}/tables`), { credentials: 'include' }),
+      $fetch<Record<string, number>>(getApiUrlWithDatabase(`${apiBase}/tables/counts/all`), { credentials: 'include' })
     ])
 
     tables.value = tablesRes
@@ -80,7 +81,7 @@ const loadTableData = async (tableName: string) => {
 
   loadingData.value = true
   try {
-    const response = await $fetch<any[]>(`${apiBase}/tables/${tableName}/data?limit=1000`, {
+    const response = await $fetch<any[]>(getApiUrlWithDatabase(`${apiBase}/tables/${tableName}/data?limit=1000`), {
       credentials: 'include'
     })
 
@@ -112,7 +113,7 @@ const refreshTableData = async () => {
 const syncTable = async (tableName: string) => {
   syncingTable.value = tableName
   try {
-    const response = await $fetch<{ recordsProcessed: number }>(`${apiBase}/sync/table/${tableName}`, {
+    const response = await $fetch<{ recordsProcessed: number }>(getApiUrlWithDatabase(`${apiBase}/sync/table/${tableName}`), {
       method: 'POST',
       credentials: 'include'
     })
@@ -171,6 +172,14 @@ const totalPages = computed(() => {
 
 onMounted(() => {
   loadTables()
+})
+
+// Watch for database changes and reload tables
+watch(selectedDatabaseId, () => {
+  loadTables()
+  // Close modal if open
+  showModal.value = false
+  tableData.value = []
 })
 </script>
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 
 definePageMeta({
   middleware: 'auth',
@@ -8,6 +8,7 @@ definePageMeta({
 
 const config = useRuntimeConfig()
 const apiBase = config.public.apiBase
+const { getApiUrlWithDatabase, selectedDatabaseId } = useDatabase()
 
 interface TableValidation {
   name: string
@@ -29,7 +30,7 @@ const validating = ref(false)
 const initialLoading = ref(false)
 const bulkDeleting = ref(false)
 const searchQuery = ref('')
-const errorTypeFilter = ref('')
+const errorTypeFilter = ref('all')
 const showMismatchesOnly = ref(false)
 
 const loadTables = async () => {
@@ -37,8 +38,8 @@ const loadTables = async () => {
 
   try {
     const [duckdbTablesRes, mysqlTablesRes] = await Promise.all([
-      $fetch<any[]>(`${apiBase}/tables`, { credentials: 'include' }),
-      $fetch<string[]>(`${apiBase}/api/validation/mysql-tables`, { credentials: 'include' })
+      $fetch<any[]>(getApiUrlWithDatabase(`${apiBase}/tables`), { credentials: 'include' }),
+      $fetch<string[]>(getApiUrlWithDatabase(`${apiBase}/api/validation/mysql-tables`), { credentials: 'include' })
     ])
 
     const duckdbTables = duckdbTablesRes.map(t => t.name || t).filter((name: string) => !name.startsWith('temp_'))
@@ -93,7 +94,7 @@ const startValidation = async () => {
 
 const loadTableDetails = async (table: TableValidation) => {
   try {
-    const response = await $fetch<any>(`${apiBase}/api/validation/table-details`, {
+    const response = await $fetch<any>(getApiUrlWithDatabase(`${apiBase}/api/validation/table-details`), {
       method: 'POST',
       body: { tableName: table.name },
       credentials: 'include'
@@ -129,7 +130,7 @@ const syncTable = async (table: TableValidation) => {
   table.syncing = true
 
   try {
-    const response = await $fetch<any>(`${apiBase}/sync/table/${table.name}`, {
+    const response = await $fetch<any>(getApiUrlWithDatabase(`${apiBase}/sync/table/${table.name}`), {
       method: 'POST',
       credentials: 'include'
     })
@@ -160,7 +161,7 @@ const deleteTable = async (table: TableValidation) => {
 
   try {
     const response = await $fetch<{ success: boolean; message: string }>(
-      `${apiBase}/api/validation/table/${table.name}`,
+      getApiUrlWithDatabase(`${apiBase}/api/validation/table/${table.name}`),
       {
         method: 'DELETE',
         credentials: 'include'
@@ -211,7 +212,7 @@ const bulkDeleteFiltered = async () => {
     const results = await Promise.allSettled(
       batch.map(async table => {
         const response = await $fetch<{ success: boolean }>(
-          `${apiBase}/api/validation/table/${table.name}`,
+          getApiUrlWithDatabase(`${apiBase}/api/validation/table/${table.name}`),
           {
             method: 'DELETE',
             credentials: 'include'
@@ -269,7 +270,7 @@ const filteredTables = computed(() => {
     )
   }
 
-  if (errorTypeFilter.value) {
+  if (errorTypeFilter.value && errorTypeFilter.value !== 'all') {
     filtered = filtered.filter(table => table.errorType === errorTypeFilter.value)
   }
 
@@ -301,6 +302,12 @@ const validationProgress = computed(() => {
 })
 
 onMounted(() => {
+  loadTables()
+})
+
+// Watch for database changes and reset validation
+watch(selectedDatabaseId, () => {
+  resetValidation()
   loadTables()
 })
 </script>
@@ -380,7 +387,7 @@ onMounted(() => {
                 <SelectValue placeholder="All Error Types" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All Error Types</SelectItem>
+                <SelectItem value="all">All Error Types</SelectItem>
                 <SelectItem value="schema_mismatch">Schema Mismatch</SelectItem>
                 <SelectItem value="record_count_mismatch">Record Count Mismatch</SelectItem>
                 <SelectItem value="missing_in_duckdb">Missing in DuckDB</SelectItem>

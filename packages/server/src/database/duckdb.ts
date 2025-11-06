@@ -6,23 +6,34 @@ import logger from '../logger';
 
 class DuckDBConnection {
   private db: duckdb.Database;
-  private static instance: DuckDBConnection;
+  private static instances: Map<string, DuckDBConnection> = new Map();
+  private dbPath: string;
 
-  private constructor() {
+  private constructor(dbPath: string) {
+    this.dbPath = dbPath;
     this.ensureDirectory();
     // Use file-based database for persistent storage
-    this.db = new duckdb.Database(config.duckdb.path);
+    this.db = new duckdb.Database(dbPath);
   }
 
-  static getInstance(): DuckDBConnection {
-    if (!DuckDBConnection.instance) {
-      DuckDBConnection.instance = new DuckDBConnection();
+  static getInstance(databaseId: string = 'default', dbPath?: string): DuckDBConnection {
+    if (!DuckDBConnection.instances.has(databaseId)) {
+      const path = dbPath || config.duckdb.path;
+      DuckDBConnection.instances.set(databaseId, new DuckDBConnection(path));
     }
-    return DuckDBConnection.instance;
+    return DuckDBConnection.instances.get(databaseId)!;
+  }
+
+  static closeInstance(databaseId: string): void {
+    const instance = DuckDBConnection.instances.get(databaseId);
+    if (instance) {
+      instance.close();
+      DuckDBConnection.instances.delete(databaseId);
+    }
   }
 
   private ensureDirectory(): void {
-    const dir = path.dirname(config.duckdb.path);
+    const dir = path.dirname(this.dbPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }

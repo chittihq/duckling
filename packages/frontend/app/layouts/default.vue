@@ -75,6 +75,20 @@
             Validate
           </span>
         </NuxtLink>
+
+        <NuxtLink
+          to="/settings"
+          class="flex items-center justify-center h-12 hover:bg-accent transition-colors group relative"
+          :class="{ 'bg-accent': $route.path === '/settings' }"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 1v6m0 6v6m5.7-13.7L14.6 8.4m-5.2 7.2-3.1 3.1M23 12h-6m-6 0H1m18.7 5.7-3.1-3.1M8.4 9.6l-3.1-3.1"/>
+          </svg>
+          <span class="absolute left-full ml-2 px-2 py-1 bg-popover text-popover-foreground text-sm rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
+            Settings
+          </span>
+        </NuxtLink>
       </nav>
 
       <!-- User -->
@@ -93,8 +107,26 @@
     </aside>
 
     <!-- Main Content -->
-    <main class="flex-1 overflow-hidden">
-      <slot />
+    <main class="flex-1 overflow-hidden flex flex-col">
+      <!-- Database Selector -->
+      <div class="border-b bg-card px-4 py-2 flex items-center gap-3">
+        <span class="text-sm text-muted-foreground">Database:</span>
+        <Select :model-value="selectedDatabaseId" @update:model-value="setDatabase">
+          <SelectTrigger class="w-64">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem v-for="db in databases" :key="db.id" :value="db.id">
+              {{ db.name }}
+            </SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <!-- Page Content -->
+      <div class="flex-1 overflow-hidden">
+        <slot />
+      </div>
     </main>
   </div>
 </template>
@@ -102,6 +134,7 @@
 <script setup lang="ts">
 const router = useRouter()
 const { username, logout } = useAuth()
+const { selectedDatabaseId, databases, setDatabase, loadDatabases } = useDatabase()
 
 const userInitials = computed(() => {
   if (!username.value) return 'U'
@@ -112,4 +145,9 @@ const handleLogout = async () => {
   await logout()
   router.push('/login')
 }
+
+// Load databases on mount
+onMounted(() => {
+  loadDatabases()
+})
 </script>

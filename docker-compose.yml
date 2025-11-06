@@ -35,7 +35,7 @@ services:
       # Security & Authentication
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
-      - DB_API_KEY=${DB_API_KEY}
+      - DUCKLING_API_KEY=${DUCKLING_API_KEY}
       - SESSION_SECRET=${SESSION_SECRET}
 
       # CORS

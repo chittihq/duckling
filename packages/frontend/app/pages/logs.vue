@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onBeforeUnmount } from 'vue'
+import { ref, computed, onBeforeUnmount, watch } from 'vue'
 
 definePageMeta({
   middleware: 'auth',
@@ -8,6 +8,7 @@ definePageMeta({
 
 const config = useRuntimeConfig()
 const apiBase = config.public.apiBase
+const { getApiUrlWithDatabase, selectedDatabaseId } = useDatabase()
 
 interface SyncLog {
   id: number
@@ -65,7 +66,7 @@ const fetchLogs = async () => {
     }
 
     const response = await $fetch<{ success: boolean; logs: SyncLog[] }>(
-      `${apiBase}/api/sync-logs?${params}`,
+      getApiUrlWithDatabase(`${apiBase}/api/sync-logs?${params}`),
       { credentials: 'include' }
     )
 
@@ -157,6 +158,12 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   stopPolling()
+})
+
+// Watch for database changes and clear logs
+watch(selectedDatabaseId, () => {
+  logs.value = []
+  fetchLogs()
 })
 </script>
 

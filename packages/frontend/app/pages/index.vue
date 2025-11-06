@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 
 definePageMeta({
   middleware: 'auth',
@@ -8,6 +8,7 @@ definePageMeta({
 
 const config = useRuntimeConfig()
 const apiBase = config.public.apiBase
+const { getApiUrlWithDatabase, selectedDatabaseId } = useDatabase()
 
 interface HealthData {
   status: string
@@ -46,8 +47,8 @@ const queryItemsPerPage = ref(100)
 const refreshData = async () => {
   try {
     const [healthRes, statusRes] = await Promise.all([
-      $fetch<HealthData>(`${apiBase}/health`, { credentials: 'include' }),
-      $fetch<StatusData>(`${apiBase}/status`, { credentials: 'include' })
+      $fetch<HealthData>(getApiUrlWithDatabase(`${apiBase}/health`), { credentials: 'include' }),
+      $fetch<StatusData>(getApiUrlWithDatabase(`${apiBase}/status`), { credentials: 'include' })
     ])
     health.value = healthRes
     status.value = statusRes
@@ -68,7 +69,7 @@ const executeQuery = async () => {
   const startTime = Date.now()
 
   try {
-    const response = await $fetch<{ result: any[] }>(`${apiBase}/query`, {
+    const response = await $fetch<{ result: any[] }>(getApiUrlWithDatabase(`${apiBase}/query`), {
       method: 'POST',
       body: { sql: sqlQuery.value.trim(), database: selectedDatabase.value },
       credentials: 'include'
@@ -133,7 +134,7 @@ LIMIT 100;`
 const runFullSync = async () => {
   operating.value = 'full-sync'
   try {
-    const response = await $fetch<{ totalRecords: number }>(`${apiBase}/sync/full`, {
+    const response = await $fetch<{ totalRecords: number }>(getApiUrlWithDatabase(`${apiBase}/sync/full`), {
       method: 'POST',
       credentials: 'include'
     })
@@ -149,7 +150,7 @@ const runFullSync = async () => {
 const runIncrementalSync = async () => {
   operating.value = 'incremental-sync'
   try {
-    const response = await $fetch<{ totalRecords: number }>(`${apiBase}/sync/incremental`, {
+    const response = await $fetch<{ totalRecords: number }>(getApiUrlWithDatabase(`${apiBase}/sync/incremental`), {
       method: 'POST',
       credentials: 'include'
     })
@@ -165,7 +166,7 @@ const runIncrementalSync = async () => {
 const validateSync = async () => {
   operating.value = 'validate'
   try {
-    const response = await $fetch<any[]>(`${apiBase}/sync/validate`, { credentials: 'include' })
+    const response = await $fetch<any[]>(getApiUrlWithDatabase(`${apiBase}/sync/validate`), { credentials: 'include' })
     const mismatches = response.filter(r => !r.match)
     alert(mismatches.length === 0 ? 'All tables are in sync!' : `Found ${mismatches.length} mismatches`)
   } catch (err: any) {
@@ -182,7 +183,7 @@ const clearAllData = async () => {
 
   operating.value = 'clear-all'
   try {
-    await $fetch(`${apiBase}/storage/clear-all`, { method: 'DELETE', credentials: 'include' })
+    await $fetch(getApiUrlWithDatabase(`${apiBase}/storage/clear-all`), { method: 'DELETE', credentials: 'include' })
     alert('All data cleared successfully')
   } catch (err: any) {
     alert('Clear all data failed: ' + (err.data?.error || err.message))
@@ -237,6 +238,15 @@ onMounted(() => {
       refreshData()
     }
   }, 30000)
+})
+
+// Watch for database changes and reload data
+watch(selectedDatabaseId, () => {
+  refreshData()
+  // Clear query results when switching databases
+  queryResults.value = []
+  queryResultColumns.value = []
+  queryError.value = ''
 })
 </script>
 

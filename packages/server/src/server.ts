@@ -10,6 +10,8 @@ import AutomationService from './services/automationService';
 import WebSocketService from './services/websocketService';
 import LogBufferService from './services/logBufferService';
 import { requireAuth } from './middleware/auth';
+import { DatabaseConfigManager } from './database/databaseConfig';
+import { attachDatabaseContext, RequestWithDatabase } from './middleware/database';
 import config from './config';
 import logger from './logger';
 
@@ -117,6 +119,13 @@ class DuckDBServer {
     this.app.get('/api/logs', this.getLogs.bind(this));
     this.app.get('/api/sync-logs', this.getSyncLogs.bind(this));
 
+    // Database management endpoints (require authentication)
+    this.app.get('/api/databases', this.getDatabases.bind(this));
+    this.app.post('/api/databases', this.addDatabase.bind(this));
+    this.app.put('/api/databases/:id', this.updateDatabase.bind(this));
+    this.app.delete('/api/databases/:id', this.deleteDatabase.bind(this));
+    this.app.post('/api/databases/:id/test', this.testDatabaseConnection.bind(this));
+
     // Global authentication middleware - protects all routes except public ones
     this.app.use((req, res, next) => {
       // Public API routes (no auth required)
@@ -143,41 +152,41 @@ class DuckDBServer {
     const publicPath = path.join(__dirname, '..', 'public');
     this.app.use(express.static(publicPath));
 
-    // Health and status endpoints (protected)
-    this.app.get('/health', this.healthCheck.bind(this));
-    this.app.get('/status', this.getStatus.bind(this));
-    
-    // Synchronization endpoints
-    this.app.post('/sync/full', this.fullSync.bind(this));
-    this.app.post('/sync/incremental', this.incrementalSync.bind(this));
-    this.app.post('/sync/table/:tableName', this.syncSingleTable.bind(this));
-    this.app.get('/sync/status', this.getSyncStatus.bind(this));
-    this.app.get('/sync/validate', this.validateSync.bind(this));
-    this.app.delete('/sync/clear-all', this.clearAllData.bind(this));
+    // Health and status endpoints (protected, with database context)
+    this.app.get('/health', attachDatabaseContext, this.healthCheck.bind(this));
+    this.app.get('/status', attachDatabaseContext, this.getStatus.bind(this));
 
-    // Automation & Recovery endpoints
-    this.app.get('/automation/status', this.getAutomationStatus.bind(this));
-    this.app.post('/automation/start', this.startAutomation.bind(this));
-    this.app.post('/automation/stop', this.stopAutomation.bind(this));
-    this.app.post('/automation/backup', this.manualBackup.bind(this));
-    this.app.post('/automation/restore', this.restoreFromBackup.bind(this));
-    this.app.post('/automation/cleanup', this.manualCleanup.bind(this));
+    // Synchronization endpoints (with database context)
+    this.app.post('/sync/full', attachDatabaseContext, this.fullSync.bind(this));
+    this.app.post('/sync/incremental', attachDatabaseContext, this.incrementalSync.bind(this));
+    this.app.post('/sync/table/:tableName', attachDatabaseContext, this.syncSingleTable.bind(this));
+    this.app.get('/sync/status', attachDatabaseContext, this.getSyncStatus.bind(this));
+    this.app.get('/sync/validate', attachDatabaseContext, this.validateSync.bind(this));
+    this.app.delete('/sync/clear-all', attachDatabaseContext, this.clearAllData.bind(this));
 
-    // Data access endpoints
-    this.app.post('/query', this.executeQuery.bind(this));
-    this.app.get('/tables', this.getTables.bind(this));
-    this.app.get('/tables/counts/all', this.getAllTableCounts.bind(this));
-    this.app.get('/tables/:name/schema', this.getTableSchema.bind(this));
-    this.app.get('/tables/:name/data', this.getTableData.bind(this));
+    // Automation & Recovery endpoints (with database context)
+    this.app.get('/automation/status', attachDatabaseContext, this.getAutomationStatus.bind(this));
+    this.app.post('/automation/start', attachDatabaseContext, this.startAutomation.bind(this));
+    this.app.post('/automation/stop', attachDatabaseContext, this.stopAutomation.bind(this));
+    this.app.post('/automation/backup', attachDatabaseContext, this.manualBackup.bind(this));
+    this.app.post('/automation/restore', attachDatabaseContext, this.restoreFromBackup.bind(this));
+    this.app.post('/automation/cleanup', attachDatabaseContext, this.manualCleanup.bind(this));
+
+    // Data access endpoints (with database context)
+    this.app.post('/query', attachDatabaseContext, this.executeQuery.bind(this));
+    this.app.get('/tables', attachDatabaseContext, this.getTables.bind(this));
+    this.app.get('/tables/counts/all', attachDatabaseContext, this.getAllTableCounts.bind(this));
+    this.app.get('/tables/:name/schema', attachDatabaseContext, this.getTableSchema.bind(this));
+    this.app.get('/tables/:name/data', attachDatabaseContext, this.getTableData.bind(this));
     this.app.get('/tables/:name/count', this.getTableRowCount.bind(this));
 
     // Enhanced metrics endpoint
     this.app.get('/metrics', this.getMetrics.bind(this));
 
     // Validation endpoints
-    this.app.get('/api/validation/mysql-tables', this.getMySQLTables.bind(this));
-    this.app.post('/api/validation/table-details', this.getTableValidationDetails.bind(this));
-    this.app.delete('/api/validation/table/:tableName', this.deleteTableFromDuckDB.bind(this));
+    this.app.get('/api/validation/mysql-tables', attachDatabaseContext, this.getMySQLTables.bind(this));
+    this.app.post('/api/validation/table-details', attachDatabaseContext, this.getTableValidationDetails.bind(this));
+    this.app.delete('/api/validation/table/:tableName', attachDatabaseContext, this.deleteTableFromDuckDB.bind(this));
 
     // SPA catch-all route - serve index.html for all non-API routes (production)
     // This enables client-side routing for Nuxt (/login, /tables, etc.)
@@ -363,6 +372,7 @@ class DuckDBServer {
   // Data access endpoints
   private async executeQuery(req: express.Request, res: express.Response): Promise<void> {
     try {
+      const { mysql, duckdb, databaseId } = req as RequestWithDatabase;
       const { sql, params, database = 'duckdb' } = req.body;
 
       if (!sql) {
@@ -380,9 +390,9 @@ class DuckDBServer {
 
       // Execute query on selected database
       if (database === 'mysql') {
-        result = await this.mysql.execute(sql, params);
+        result = await mysql.execute(sql, params);
       } else {
-        result = await this.duckdb.query(sql, params);
+        result = await duckdb.query(sql, params);
       }
 
       // Convert BigInt values to strings for JSON serialization
@@ -413,7 +423,8 @@ class DuckDBServer {
 
   private async getTables(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const tables = await this.duckdb.getTables();
+      const { duckdb } = req as RequestWithDatabase;
+      const tables = await duckdb.getTables();
       res.json(tables);
     } catch (error) {
       logger.error('Get tables failed:', error);
@@ -746,10 +757,143 @@ class DuckDBServer {
     }
   }
 
+  // Database management handlers
+  private async getDatabases(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const dbManager = DatabaseConfigManager.getInstance();
+      const databases = dbManager.getAllDatabases();
+      res.json({ success: true, databases });
+    } catch (error) {
+      logger.error('Get databases failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  private async addDatabase(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { name, mysqlConnectionString } = req.body;
+      if (!name || !mysqlConnectionString) {
+        res.status(400).json({
+          success: false,
+          error: 'Name and MySQL connection string are required'
+        });
+        return;
+      }
+
+      const dbManager = DatabaseConfigManager.getInstance();
+      const newDb = dbManager.addDatabase({ name, mysqlConnectionString });
+
+      res.json({ success: true, database: newDb });
+    } catch (error) {
+      logger.error('Add database failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  private async updateDatabase(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const updates = req.body;
+
+      const dbManager = DatabaseConfigManager.getInstance();
+      const updated = dbManager.updateDatabase(id, updates);
+
+      if (!updated) {
+        res.status(404).json({
+          success: false,
+          error: 'Database not found'
+        });
+        return;
+      }
+
+      res.json({ success: true, database: updated });
+    } catch (error) {
+      logger.error('Update database failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  private async deleteDatabase(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+
+      const dbManager = DatabaseConfigManager.getInstance();
+      const deleted = dbManager.deleteDatabase(id);
+
+      if (!deleted) {
+        res.status(404).json({
+          success: false,
+          error: 'Database not found'
+        });
+        return;
+      }
+
+      // Close the DuckDB connection for this database
+      DuckDBConnection.closeInstance(id);
+
+      res.json({ success: true, message: 'Database deleted successfully' });
+    } catch (error) {
+      logger.error('Delete database failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  private async testDatabaseConnection(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const dbManager = DatabaseConfigManager.getInstance();
+      const dbConfig = dbManager.getDatabase(id);
+
+      if (!dbConfig) {
+        res.status(404).json({
+          success: false,
+          error: 'Database not found'
+        });
+        return;
+      }
+
+      // Test MySQL connection
+      const mysqlConn = new MySQLConnection(dbConfig.mysqlConnectionString);
+      const mysqlHealthy = await mysqlConn.testConnection();
+      await mysqlConn.close();
+
+      // Test DuckDB connection
+      const duckdbConn = DuckDBConnection.getInstance(id, dbConfig.duckdbPath);
+      const duckdbHealthy = await duckdbConn.testConnection();
+
+      res.json({
+        success: true,
+        connections: {
+          mysql: mysqlHealthy ? 'healthy' : 'unhealthy',
+          duckdb: duckdbHealthy ? 'healthy' : 'unhealthy'
+        }
+      });
+    } catch (error) {
+      logger.error('Test database connection failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
   // Validation endpoint handlers
   private async getMySQLTables(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const tables = await this.mysql.getAllTables();
+      const { mysql } = req as RequestWithDatabase;
+      const tables = await mysql.getAllTables();
       res.json(tables);
     } catch (error) {
       logger.error('Get MySQL tables failed:', error);
@@ -761,6 +905,7 @@ class DuckDBServer {
 
   private async getTableValidationDetails(req: express.Request, res: express.Response): Promise<void> {
     try {
+      const { mysql, duckdb } = req as RequestWithDatabase;
       const { tableName } = req.body;
 
       if (!tableName) {
@@ -775,17 +920,17 @@ class DuckDBServer {
       let duckdbColumns: string[] = [];
 
       try {
-        const duckdbTables = await this.duckdb.getTables();
+        const duckdbTables = await duckdb.getTables();
         duckdbExists = duckdbTables.includes(tableName);
 
         if (duckdbExists) {
           // Get column count and names
-          const schema = await this.duckdb.execute(`DESCRIBE ${tableName}`);
+          const schema = await duckdb.execute(`DESCRIBE ${tableName}`);
           duckdbColumnCount = schema.length;
           duckdbColumns = schema.map((col: any) => col.column_name);
 
           // Get record count
-          const countResult = await this.duckdb.getTableRowCount(tableName);
+          const countResult = await duckdb.getTableRowCount(tableName);
           duckdbRecordCount = typeof countResult === 'bigint' ? Number(countResult) : countResult;
         }
       } catch (error) {
@@ -799,17 +944,17 @@ class DuckDBServer {
       let mysqlColumns: string[] = [];
 
       try {
-        const mysqlTables = await this.mysql.getAllTables();
+        const mysqlTables = await mysql.getAllTables();
         mysqlExists = mysqlTables.includes(tableName);
 
         if (mysqlExists) {
           // Get column count and names
-          const schema = await this.mysql.getTableSchema(tableName);
+          const schema = await mysql.getTableSchema(tableName);
           mysqlColumnCount = schema.length;
           mysqlColumns = schema.map((col: any) => col.Field);
 
           // Get record count
-          const countResult = await this.mysql.getTableRowCount(tableName);
+          const countResult = await mysql.getTableRowCount(tableName);
           mysqlRecordCount = typeof countResult === 'bigint' ? Number(countResult) : countResult;
         }
       } catch (error) {
@@ -881,6 +1026,7 @@ class DuckDBServer {
    */
   private async deleteTableFromDuckDB(req: express.Request, res: express.Response): Promise<void> {
     try {
+      const { duckdb } = req as RequestWithDatabase;
       const { tableName } = req.params;
 
       if (!tableName) {
@@ -889,7 +1035,7 @@ class DuckDBServer {
       }
 
       // Check if table exists in DuckDB
-      const duckdbTables = await this.duckdb.getTables();
+      const duckdbTables = await duckdb.getTables();
       if (!duckdbTables.includes(tableName)) {
         res.status(404).json({
           success: false,
@@ -899,12 +1045,12 @@ class DuckDBServer {
       }
 
       // Drop the table
-      await this.duckdb.run(`DROP TABLE IF EXISTS ${tableName}`);
+      await duckdb.run(`DROP TABLE IF EXISTS ${tableName}`);
       logger.info(`Table "${tableName}" deleted from DuckDB`);
 
       // Also delete the watermark to ensure fresh sync
       try {
-        await this.duckdb.run(`DELETE FROM appender_watermarks WHERE table_name = ?`, [tableName]);
+        await duckdb.run(`DELETE FROM appender_watermarks WHERE table_name = ?`, [tableName]);
         logger.info(`Watermark for "${tableName}" cleared`);
       } catch (error) {
         logger.warn(`Failed to clear watermark for ${tableName}:`, error);

@@ -4,11 +4,11 @@ import logger from '../logger';
 
 class MySQLConnection {
   private pool: mysql.Pool;
-  private static instance: MySQLConnection;
+  private static instances: Map<string, MySQLConnection> = new Map();
 
-  private constructor() {
+  constructor(connectionString?: string) {
     this.pool = mysql.createPool({
-      uri: config.mysql.connectionString,
+      uri: connectionString || config.mysql.connectionString,
       connectionLimit: config.mysql.maxConnections,
       timezone: 'Z',
       multipleStatements: true,
@@ -16,11 +16,19 @@ class MySQLConnection {
     });
   }
 
-  static getInstance(): MySQLConnection {
-    if (!MySQLConnection.instance) {
-      MySQLConnection.instance = new MySQLConnection();
+  static getInstance(databaseId: string = 'default', connectionString?: string): MySQLConnection {
+    if (!MySQLConnection.instances.has(databaseId)) {
+      MySQLConnection.instances.set(databaseId, new MySQLConnection(connectionString));
     }
-    return MySQLConnection.instance;
+    return MySQLConnection.instances.get(databaseId)!;
+  }
+
+  static closeInstance(databaseId: string): void {
+    const instance = MySQLConnection.instances.get(databaseId);
+    if (instance) {
+      instance.close();
+      MySQLConnection.instances.delete(databaseId);
+    }
   }
 
   async execute(query: string, params?: any[]): Promise<any> {
