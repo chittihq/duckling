@@ -55,20 +55,29 @@ export interface TableWatermark {
 class SequentialAppenderService {
   private mysql: MySQLConnection;
   private duckdb: DuckDBConnection;
-  private static instance: SequentialAppenderService;
+  private static instances: Map<string, SequentialAppenderService> = new Map();
   private syncInProgress: boolean = false;
   private syncQueue: Array<{ tableName?: string; resolve: (value: any) => void; reject: (error: any) => void }> = [];
 
-  private constructor() {
-    this.mysql = MySQLConnection.getInstance();
-    this.duckdb = DuckDBConnection.getInstance();
+  private constructor(mysql: MySQLConnection, duckdb: DuckDBConnection) {
+    this.mysql = mysql;
+    this.duckdb = duckdb;
   }
 
-  static getInstance(): SequentialAppenderService {
-    if (!SequentialAppenderService.instance) {
-      SequentialAppenderService.instance = new SequentialAppenderService();
+  static getInstance(databaseId: string = 'default', mysql?: MySQLConnection, duckdb?: DuckDBConnection): SequentialAppenderService {
+    if (!SequentialAppenderService.instances.has(databaseId)) {
+      const mysqlConn = mysql || MySQLConnection.getInstance(databaseId);
+      const duckdbConn = duckdb || DuckDBConnection.getInstance(databaseId);
+      SequentialAppenderService.instances.set(databaseId, new SequentialAppenderService(mysqlConn, duckdbConn));
     }
-    return SequentialAppenderService.instance;
+    return SequentialAppenderService.instances.get(databaseId)!;
+  }
+
+  static closeInstance(databaseId: string): void {
+    const instance = SequentialAppenderService.instances.get(databaseId);
+    if (instance) {
+      SequentialAppenderService.instances.delete(databaseId);
+    }
   }
 
   /**

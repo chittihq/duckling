@@ -7,7 +7,10 @@ import logger from '../logger';
 class DuckDBConnection {
   private db: duckdb.Database;
   private static instances: Map<string, DuckDBConnection> = new Map();
+  private static initializedInstances: Set<string> = new Set();
   private dbPath: string;
+  private initializationPromise: Promise<void> | null = null;
+  private isInitializing: boolean = false;
 
   private constructor(dbPath: string) {
     this.dbPath = dbPath;
@@ -19,7 +22,20 @@ class DuckDBConnection {
   static getInstance(databaseId: string = 'default', dbPath?: string): DuckDBConnection {
     if (!DuckDBConnection.instances.has(databaseId)) {
       const path = dbPath || config.duckdb.path;
-      DuckDBConnection.instances.set(databaseId, new DuckDBConnection(path));
+      const instance = new DuckDBConnection(path);
+      DuckDBConnection.instances.set(databaseId, instance);
+
+      // Initialize database asynchronously (don't await here to keep method synchronous)
+      if (!DuckDBConnection.initializedInstances.has(databaseId)) {
+        instance.initializationPromise = instance.initializeDatabase()
+          .then(() => {
+            DuckDBConnection.initializedInstances.add(databaseId);
+            logger.info(`Database instance '${databaseId}' initialized at ${path}`);
+          })
+          .catch((error) => {
+            logger.error(`Failed to initialize database instance '${databaseId}':`, error);
+          });
+      }
     }
     return DuckDBConnection.instances.get(databaseId)!;
   }
@@ -39,7 +55,18 @@ class DuckDBConnection {
     }
   }
 
+  private async ensureInitialized(): Promise<void> {
+    // Skip waiting if we're currently in the initialization process
+    if (this.isInitializing) {
+      return;
+    }
+    if (this.initializationPromise) {
+      await this.initializationPromise;
+    }
+  }
+
   async initializeDatabase(): Promise<void> {
+    this.isInitializing = true;
     try {
       // Check if sync_log exists and what type it is (VIEW or TABLE)
       const syncLogCheck = await this.execute(`
@@ -116,10 +143,13 @@ class DuckDBConnection {
     } catch (error) {
       logger.error('Failed to initialize DuckDB database:', error);
       throw error;
+    } finally {
+      this.isInitializing = false;
     }
   }
 
   async execute(query: string, params?: any[]): Promise<any[]> {
+    await this.ensureInitialized();
     return new Promise((resolve, reject) => {
       if (params && params.length > 0) {
         this.db.all(query, ...params, (err: any, rows: any) => {
@@ -144,6 +174,7 @@ class DuckDBConnection {
   }
 
   async run(query: string, params?: any[]): Promise<void> {
+    await this.ensureInitialized();
     return new Promise((resolve, reject) => {
       if (params && params.length > 0) {
         this.db.run(query, ...params, (err: any) => {

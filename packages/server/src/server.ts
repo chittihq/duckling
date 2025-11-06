@@ -178,7 +178,7 @@ class DuckDBServer {
     this.app.get('/tables/counts/all', attachDatabaseContext, this.getAllTableCounts.bind(this));
     this.app.get('/tables/:name/schema', attachDatabaseContext, this.getTableSchema.bind(this));
     this.app.get('/tables/:name/data', attachDatabaseContext, this.getTableData.bind(this));
-    this.app.get('/tables/:name/count', this.getTableRowCount.bind(this));
+    this.app.get('/tables/:name/count', attachDatabaseContext, this.getTableRowCount.bind(this));
 
     // Enhanced metrics endpoint
     this.app.get('/metrics', this.getMetrics.bind(this));
@@ -267,7 +267,9 @@ class DuckDBServer {
   // Synchronization endpoints
   private async fullSync(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const result = await this.syncService.fullSync();
+      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const result = await syncService.fullSync();
       res.json(result);
     } catch (error) {
       logger.error('Full sync failed:', error);
@@ -279,7 +281,9 @@ class DuckDBServer {
 
   private async incrementalSync(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const result = await this.syncService.incrementalSync();
+      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const result = await syncService.incrementalSync();
       res.json(result);
     } catch (error) {
       logger.error('Incremental sync failed:', error);
@@ -292,7 +296,9 @@ class DuckDBServer {
   private async syncSingleTable(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { tableName } = req.params;
-      const result = await this.syncService.syncSingleTable(tableName);
+      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const result = await syncService.syncSingleTable(tableName);
       res.json(result);
     } catch (error) {
       logger.error(`Single table sync failed for ${req.params.tableName}:`, error);
@@ -304,7 +310,9 @@ class DuckDBServer {
 
   private async getSyncStatus(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const status = await this.syncService.getSyncStatus();
+      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const status = await syncService.getSyncStatus();
       res.json(this.serializeBigInt(status));
     } catch (error) {
       logger.error('Get sync status failed:', error);
@@ -316,7 +324,9 @@ class DuckDBServer {
 
   private async validateSync(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const validation = await this.syncService.validateSync();
+      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const validation = await syncService.validateSync();
       res.json(validation);
     } catch (error) {
       logger.error('Sync validation failed:', error);
@@ -507,7 +517,8 @@ class DuckDBServer {
   private async getTableRowCount(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { name } = req.params;
-      const count = await this.duckdb.getTableRowCount(name);
+      const { duckdb } = req as RequestWithDatabase;
+      const count = await duckdb.getTableRowCount(name);
       // Convert BigInt to number for JSON serialization
       const serializedCount = typeof count === 'bigint' ? Number(count) : count;
       res.json({ count: serializedCount });

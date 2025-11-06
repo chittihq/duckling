@@ -157,8 +157,149 @@ This service uses **Sequential Appender architecture** that provides:
 ### Storage Structure
 ```
 data/
-└── duckling.db  # Single DuckDB file (persistent, columnar)
+├── databases.json        # Multi-database configuration
+├── {database_id}.db      # DuckDB file per database (persistent, columnar)
+├── lms.db                # Example: LMS database replica
+└── chitti_common.db      # Example: Common database replica
 ```
+
+### Multi-Database Support
+
+The system supports **multiple isolated database replicas** running on a single server instance. Each database gets its own DuckDB file, connection pool, and sync service.
+
+#### Key Features
+- **Isolated Replicas**: Each MySQL source database gets its own DuckDB replica
+- **Database Selector**: Frontend UI dropdown to switch between databases
+- **Query Parameter**: All endpoints accept `?db={database_id}` to specify target database
+- **Persistent Configuration**: Database configs stored in `data/databases.json`
+- **Multi-Instance Architecture**: Separate connection pools per database to prevent cross-contamination
+
+#### Database Configuration
+
+**File Location:** `data/databases.json`
+
+**Schema:**
+```json
+[
+  {
+    "id": "lms",
+    "name": "LMS",
+    "mysqlConnectionString": "mysql://user:pass@host:port/chitti_lms?...",
+    "duckdbPath": "data/lms.db",
+    "createdAt": "2025-11-06T18:58:36.480Z",
+    "updatedAt": "2025-11-06T18:58:36.480Z"
+  }
+]
+```
+
+#### Database Management APIs
+
+**Create Database:**
+```bash
+curl -X POST http://localhost:3001/api/databases \
+  -H "Authorization: Bearer ${DUCKLING_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "My Database",
+    "mysqlConnectionString": "mysql://...",
+    "duckdbPath": "data/mydb.db"
+  }'
+```
+
+**List Databases:**
+```bash
+curl http://localhost:3001/api/databases \
+  -H "Authorization: Bearer ${DUCKLING_API_KEY}"
+```
+
+**Update Database:**
+```bash
+curl -X PUT http://localhost:3001/api/databases/{id} \
+  -H "Authorization: Bearer ${DUCKLING_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Updated Name"}'
+```
+
+**Delete Database:**
+```bash
+curl -X DELETE http://localhost:3001/api/databases/{id} \
+  -H "Authorization: Bearer ${DUCKLING_API_KEY}"
+```
+
+**Test Connection:**
+```bash
+curl -X POST http://localhost:3001/api/databases/{id}/test \
+  -H "Authorization: Bearer ${DUCKLING_API_KEY}"
+```
+
+#### Using Multi-Database in API Calls
+
+All data endpoints support the `?db={database_id}` query parameter:
+
+```bash
+# Sync specific database
+curl -X POST 'http://localhost:3001/sync/full?db=lms' \
+  -H 'Authorization: Bearer ${DUCKLING_API_KEY}'
+
+# Query specific database
+curl -X POST 'http://localhost:3001/query?db=lms' \
+  -H 'Authorization: Bearer ${DUCKLING_API_KEY}' \
+  -H 'Content-Type: application/json' \
+  -d '{"sql": "SELECT COUNT(*) FROM User"}'
+
+# Get tables from specific database
+curl 'http://localhost:3001/tables?db=lms' \
+  -H 'Authorization: Bearer ${DUCKLING_API_KEY}'
+```
+
+#### Frontend Integration
+
+**Database Selector:**
+- Located in header of all pages
+- Persisted in localStorage for session continuity
+- Automatically reloads page data when database changes
+
+**Composable:** `packages/frontend/app/composables/useDatabase.ts`
+```typescript
+const { selectedDatabaseId, databases, setDatabase, getApiUrlWithDatabase } = useDatabase()
+
+// Get API URL with database context
+const url = getApiUrlWithDatabase('/tables') // Returns: /tables?db=lms
+
+// Watch for database changes
+watch(selectedDatabaseId, () => {
+  loadData() // Reload page data when database changes
+})
+```
+
+#### Architecture Implementation
+
+**Multi-Instance Pattern:**
+- **DuckDBConnection**: `Map<string, DuckDBConnection>` - One instance per database
+- **MySQLConnection**: `Map<string, MySQLConnection>` - One connection pool per database
+- **SequentialAppenderService**: `Map<string, SequentialAppenderService>` - One sync service per database
+
+**Middleware:** `src/middleware/database.ts`
+```typescript
+export const attachDatabaseContext = (req, res, next) => {
+  const databaseId = req.query.db || 'default';
+  const dbConfig = DatabaseConfigManager.getInstance().getDatabase(databaseId);
+
+  // Attach database-specific connections to request
+  req.databaseId = databaseId;
+  req.duckdb = DuckDBConnection.getInstance(databaseId, dbConfig.duckdbPath);
+  req.mysql = MySQLConnection.getInstance(databaseId, dbConfig.mysqlConnectionString);
+
+  next();
+}
+```
+
+**Benefits:**
+- ✅ **Zero Cross-Contamination**: Complete isolation between databases
+- ✅ **Efficient Resource Usage**: Connection pooling per database
+- ✅ **Single Server**: No need to deploy multiple instances
+- ✅ **Unified Monitoring**: All databases visible in one dashboard
+- ✅ **Easy Management**: CRUD operations via REST API
 
 ### Query Performance Benefits
 - **Columnar Storage**: DuckDB's native columnar format for fast analytical queries
@@ -381,6 +522,16 @@ All endpoints require authentication via:
 - **API Key**: `Authorization: Bearer <DUCKLING_API_KEY>` header (for programmatic access)
 - **Session**: Cookie-based auth via `/api/login` (for web dashboard)
 
+**Multi-Database Support:**
+All data endpoints (health, sync, tables, query) accept the `?db={database_id}` query parameter to specify which database to operate on. If omitted, defaults to `default` database.
+
+### Database Management
+- `GET /api/databases` - List all configured databases
+- `POST /api/databases` - Add new database configuration
+- `PUT /api/databases/:id` - Update database configuration
+- `DELETE /api/databases/:id` - Remove database configuration
+- `POST /api/databases/:id/test` - Test database connection
+
 ### Health & Monitoring
 - `GET /health` - Database connectivity and system health
 - `GET /status` - Detailed system status with table counts and metrics
@@ -456,8 +607,8 @@ node dist/cli.js sync
 
 - TypeScript with strict mode disabled for flexibility
 - Async/await for all database operations
-- Singleton pattern for database connections
-- Express middleware pattern for request handling
+- Multi-instance pattern for database connections (Map-based caching per database ID)
+- Express middleware pattern for request handling and database context injection
 - Error-first callback conversion to Promises
 - Environment-based configuration with sensible defaults
 
