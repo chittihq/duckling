@@ -201,82 +201,21 @@ class AutomationService {
   }
 
   /**
-   * Perform partition cleanup
+   * Perform cleanup (Sequential Appender architecture)
+   * DuckDB handles storage management automatically
    */
   private async performCleanup(): Promise<void> {
     try {
-      logger.info(`🧹 Running automatic cleanup (retention: ${config.automation.retentionDays} days)...`);
+      logger.info(`🧹 Running automatic cleanup...`);
 
-      const dataPath = path.join(__dirname, '..', '..', 'data');
-      const retentionDate = new Date();
-      retentionDate.setDate(retentionDate.getDate() - config.automation.retentionDays);
+      // Sequential Appender architecture uses native DuckDB files, not partitions
+      // DuckDB handles storage management, VACUUM, and WAL cleanup automatically
+      // Future: Could add old backup cleanup, temp file cleanup, etc.
 
-      let totalFilesDeleted = 0;
-      let totalSizeFreed = 0;
-
-      // Cleanup facts partitions
-      const factsPath = path.join(dataPath, 'facts');
-      if (fs.existsSync(factsPath)) {
-        const result = await this.cleanupDirectory(factsPath, retentionDate, 'ingest_date');
-        totalFilesDeleted += result.filesDeleted;
-        totalSizeFreed += result.sizeFreed;
-      }
-
-      // Cleanup dimension snapshots
-      const dimensionsPath = path.join(dataPath, 'dimensions');
-      if (fs.existsSync(dimensionsPath)) {
-        const result = await this.cleanupDirectory(dimensionsPath, retentionDate, 'snapshot_date');
-        totalFilesDeleted += result.filesDeleted;
-        totalSizeFreed += result.sizeFreed;
-      }
-
-      logger.info(`✅ Cleanup completed: Deleted ${totalFilesDeleted} files, freed ${(totalSizeFreed / 1024 / 1024).toFixed(2)} MB`);
+      logger.info('✅ Cleanup completed (Sequential Appender uses native DuckDB storage)');
     } catch (error) {
       logger.error('Automatic cleanup failed:', error);
     }
-  }
-
-  /**
-   * Clean up directory partitions older than retention date
-   */
-  private async cleanupDirectory(dirPath: string, retentionDate: Date, partitionKey: string): Promise<{ filesDeleted: number; sizeFreed: number }> {
-    let filesDeleted = 0;
-    let sizeFreed = 0;
-
-    const tables = fs.readdirSync(dirPath);
-
-    for (const table of tables) {
-      const tablePath = path.join(dirPath, table);
-      if (!fs.statSync(tablePath).isDirectory()) continue;
-
-      const partitions = fs.readdirSync(tablePath);
-
-      for (const partition of partitions) {
-        // Extract date from partition name (e.g., "ingest_date=2024-01-15")
-        const match = partition.match(new RegExp(`${partitionKey}=(\\d{4}-\\d{2}-\\d{2})`));
-        if (!match) continue;
-
-        const partitionDate = new Date(match[1]);
-        if (partitionDate < retentionDate) {
-          const partitionPath = path.join(tablePath, partition);
-
-          // Calculate size before deletion
-          const files = fs.readdirSync(partitionPath);
-          for (const file of files) {
-            const filePath = path.join(partitionPath, file);
-            const stats = fs.statSync(filePath);
-            sizeFreed += stats.size;
-            filesDeleted++;
-          }
-
-          // Delete partition directory
-          fs.rmSync(partitionPath, { recursive: true, force: true });
-          logger.debug(`Deleted partition: ${table}/${partition}`);
-        }
-      }
-    }
-
-    return { filesDeleted, sizeFreed };
   }
 
   /**
@@ -302,7 +241,7 @@ class AutomationService {
     try {
       logger.info('💾 Running automatic backup...');
 
-      const backupDir = path.join(__dirname, '..', '..', 'backups');
+      const backupDir = config.paths.backups;
       if (!fs.existsSync(backupDir)) {
         fs.mkdirSync(backupDir, { recursive: true });
       }
@@ -323,10 +262,9 @@ class AutomationService {
       }
 
       // Backup metadata directory
-      const metadataPath = path.join(__dirname, '..', '..', 'data', 'metadata');
-      if (fs.existsSync(metadataPath)) {
+      if (fs.existsSync(config.paths.metadata)) {
         const metadataBackup = path.join(backupPath, 'metadata');
-        await execAsync(`cp -r "${metadataPath}" "${metadataBackup}"`);
+        await execAsync(`cp -r "${config.paths.metadata}" "${metadataBackup}"`);
         logger.info(`Backed up metadata to ${metadataBackup}`);
       }
 
@@ -503,7 +441,7 @@ class AutomationService {
     try {
       logger.info('🔄 Attempting restore from latest backup...');
 
-      const backupDir = path.join(__dirname, '..', '..', 'backups');
+      const backupDir = config.paths.backups;
       if (!fs.existsSync(backupDir)) {
         throw new Error('No backups found');
       }
@@ -531,8 +469,7 @@ class AutomationService {
       // Restore metadata
       const metadataBackup = path.join(latestBackup, 'metadata');
       if (fs.existsSync(metadataBackup)) {
-        const metadataPath = path.join(__dirname, '..', '..', 'data', 'metadata');
-        await execAsync(`rm -rf "${metadataPath}" && cp -r "${metadataBackup}" "${metadataPath}"`);
+        await execAsync(`rm -rf "${config.paths.metadata}" && cp -r "${metadataBackup}" "${config.paths.metadata}"`);
         logger.info('Restored metadata');
       }
 

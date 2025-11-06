@@ -3,12 +3,36 @@ import path from 'path';
 
 dotenv.config();
 
+// Determine base data directory
+// In Docker: /app/data (volume mounted from ./data)
+// In development: ./data (relative to project root)
+const getDataPath = (): string => {
+  if (process.env.DATA_PATH) {
+    return process.env.DATA_PATH;
+  }
+  // If running in Docker (__dirname is /app/packages/server/dist), use /app/data
+  // If running in development (__dirname is /packages/server/src or dist), use ./data from project root
+  if (__dirname.includes('/app/packages/')) {
+    return '/app/data';
+  }
+  // Development: resolve to project root ./data
+  return path.resolve(__dirname, '../../../data');
+};
+
+const DATA_PATH = getDataPath();
+
 export const config = {
   env: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3000'),
-  
+
+  paths: {
+    data: DATA_PATH,
+    backups: process.env.BACKUP_PATH || path.join(DATA_PATH, 'backups'),
+    metadata: path.join(DATA_PATH, 'metadata'),
+  },
+
   duckdb: {
-    path: process.env.DUCKDB_PATH || path.join(__dirname, '..', 'data', 'duckling.db'),
+    path: process.env.DUCKDB_PATH || path.join(DATA_PATH, 'duckling.db'),
     maxConnections: parseInt(process.env.DUCKDB_MAX_CONNECTIONS || '10'),
   },
   

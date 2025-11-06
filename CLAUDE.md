@@ -498,9 +498,9 @@ Configure via `.env` file (copy from `.env.example`):
   - `EXCLUDED_TABLES`: Comma-separated list of tables to exclude (default: none)
 
 - **Automation Configuration** (Zero Manual Intervention - All Enabled by Default):
-  - `AUTO_CLEANUP`: Enable automatic partition cleanup (default: **true** - set to `false` to disable)
+  - `AUTO_CLEANUP`: Enable automatic cleanup tasks (default: **true** - set to `false` to disable)
   - `CLEANUP_INTERVAL_HOURS`: Hours between cleanup runs (default: 24)
-  - `RETENTION_DAYS`: Days to retain partitions (default: 90)
+  - `RETENTION_DAYS`: Retention period for cleanup tasks (default: 90)
   - `AUTO_BACKUP`: Enable automatic backups (default: **true** - set to `false` to disable)
   - `BACKUP_INTERVAL_HOURS`: Hours between backups (default: 24)
   - `BACKUP_RETENTION_DAYS`: Days to retain backups (default: 7)
@@ -623,11 +623,11 @@ This DuckDB server includes comprehensive automation for zero manual interventio
 - Syncs all tables automatically
 - **To disable:** Set `AUTO_START_SYNC=false` in `.env`
 
-### 2. Automatic Partition Cleanup (Daily) - Enabled by Default
+### 2. Automatic Storage Cleanup (Daily) - Enabled by Default
 - Runs every 24 hours (default: `AUTO_CLEANUP=true`, `CLEANUP_INTERVAL_HOURS=24`)
-- Keeps 90 days of data (`RETENTION_DAYS=90`)
-- Auto-deletes old fact partitions and dimension snapshots
-- Frees disk space without intervention
+- DuckDB handles storage management automatically (VACUUM, WAL cleanup)
+- Sequential Appender architecture uses native DuckDB files (no partition cleanup needed)
+- Reserved for future cleanup tasks (old logs, temp files, etc.)
 - **To disable:** Set `AUTO_CLEANUP=false` in `.env`
 
 ### 3. Automatic Backup & Recovery (Daily) - Enabled by Default
@@ -660,7 +660,7 @@ This DuckDB server includes comprehensive automation for zero manual interventio
 
 **Everything is automatic:**
 - ✅ Sync starts on boot and runs every 15 minutes
-- ✅ Partitions cleaned up daily (90 day retention)
+- ✅ Storage managed by DuckDB automatically (VACUUM, WAL)
 - ✅ Backups created daily (7 day retention)
 - ✅ Health monitoring every 60 seconds
 - ✅ Auto-reconnects on database failures
@@ -675,3 +675,4 @@ The automation is powered by `AutomationService` (`src/services/automationServic
 - Integrates with `SequentialAppenderService` for health tracking
 - Provides manual override endpoints for emergency operations
 - Respects `?db={database_id}` parameter for multi-database support
+- always run pnpm run build:server inside the running docker container
