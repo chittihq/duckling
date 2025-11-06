@@ -492,19 +492,19 @@ Configure via `.env` file (copy from `.env.example`):
 - **Sync Configuration**:
   - `SYNC_INTERVAL_MINUTES`: Automatic sync frequency (default: 15)
   - `BATCH_SIZE`: Records per batch during sync (default: 1000)
-  - `ENABLE_INCREMENTAL_SYNC`: Enable incremental sync mode (default: true)
+  - `ENABLE_INCREMENTAL_SYNC`: Enable incremental sync mode (default: **true** - set to `false` to disable)
   - `MAX_RETRIES`: Retry attempts for failed operations (default: 3)
-  - `AUTO_START_SYNC`: Auto-start sync on container boot (default: false)
+  - `AUTO_START_SYNC`: Auto-start sync on container boot (default: **true** - set to `false` to disable)
   - `EXCLUDED_TABLES`: Comma-separated list of tables to exclude (default: none)
 
-- **Automation Configuration** (Zero Manual Intervention):
-  - `AUTO_CLEANUP`: Enable automatic partition cleanup (default: false)
+- **Automation Configuration** (Zero Manual Intervention - All Enabled by Default):
+  - `AUTO_CLEANUP`: Enable automatic partition cleanup (default: **true** - set to `false` to disable)
   - `CLEANUP_INTERVAL_HOURS`: Hours between cleanup runs (default: 24)
   - `RETENTION_DAYS`: Days to retain partitions (default: 90)
-  - `AUTO_BACKUP`: Enable automatic backups (default: false)
+  - `AUTO_BACKUP`: Enable automatic backups (default: **true** - set to `false` to disable)
   - `BACKUP_INTERVAL_HOURS`: Hours between backups (default: 24)
   - `BACKUP_RETENTION_DAYS`: Days to retain backups (default: 7)
-  - `AUTO_RESTART`: Enable auto-restart on failures (default: false)
+  - `AUTO_RESTART`: Enable auto-restart on failures (default: **true** - set to `false` to disable)
   - `MAX_RESTART_ATTEMPTS`: Max recovery attempts (default: 3)
 
 - **Server Configuration**:
@@ -614,33 +614,37 @@ node dist/cli.js sync
 
 ## Automation & Failsafe Features
 
-This DuckDB server includes comprehensive automation for zero manual intervention:
+This DuckDB server includes comprehensive automation for zero manual intervention. **All automation features are ENABLED by default** - set environment variables to `false` to disable specific features if needed.
 
-### 1. Automatic Sync (Every 15 Minutes)
-- Auto-starts on container boot (`AUTO_START_SYNC=true`)
+### 1. Automatic Sync (Every 15 Minutes) - Enabled by Default
+- Auto-starts on container boot (default: `AUTO_START_SYNC=true`)
 - Incremental sync every 15 minutes (`SYNC_INTERVAL_MINUTES=15`)
-- No duplicates (`ENABLE_INCREMENTAL_SYNC=true`)
-- Syncs all 181 tables automatically
+- No duplicates (default: `ENABLE_INCREMENTAL_SYNC=true`)
+- Syncs all tables automatically
+- **To disable:** Set `AUTO_START_SYNC=false` in `.env`
 
-### 2. Automatic Partition Cleanup (Daily)
-- Runs every 24 hours (`AUTO_CLEANUP=true`, `CLEANUP_INTERVAL_HOURS=24`)
+### 2. Automatic Partition Cleanup (Daily) - Enabled by Default
+- Runs every 24 hours (default: `AUTO_CLEANUP=true`, `CLEANUP_INTERVAL_HOURS=24`)
 - Keeps 90 days of data (`RETENTION_DAYS=90`)
 - Auto-deletes old fact partitions and dimension snapshots
 - Frees disk space without intervention
+- **To disable:** Set `AUTO_CLEANUP=false` in `.env`
 
-### 3. Automatic Backup & Recovery (Daily)
-- Backs up every 24 hours (`AUTO_BACKUP=true`, `BACKUP_INTERVAL_HOURS=24`)
+### 3. Automatic Backup & Recovery (Daily) - Enabled by Default
+- Backs up every 24 hours (default: `AUTO_BACKUP=true`, `BACKUP_INTERVAL_HOURS=24`)
 - Keeps 7 days of backups (`BACKUP_RETENTION_DAYS=7`)
 - Backs up DuckDB database + metadata
 - Auto-cleanup of old backups
 - One-command restore: `POST /automation/restore`
+- **To disable:** Set `AUTO_BACKUP=false` in `.env`
 
-### 4. Health Monitoring & Auto-Restart
-- Monitors connections every 60 seconds (`AUTO_RESTART=true`)
+### 4. Health Monitoring & Auto-Restart - Enabled by Default
+- Monitors connections every 60 seconds (default: `AUTO_RESTART=true`)
 - Auto-recovers from failures (up to 3 attempts: `MAX_RESTART_ATTEMPTS=3`)
 - Auto-reconnects DuckDB and MySQL on failures
 - Exponential backoff retry strategy
 - Auto-triggers sync to verify recovery
+- **To disable:** Set `AUTO_RESTART=false` in `.env`
 
 ### 5. Zero Manual Intervention Required
 
@@ -666,7 +670,8 @@ This DuckDB server includes comprehensive automation for zero manual interventio
 ### Implementation Details
 
 The automation is powered by `AutomationService` (`src/services/automationService.ts`):
-- Singleton service started with server
+- Multi-instance service (one per database) started with server
 - Manages cleanup, backup, and health check intervals
-- Integrates with `SyncService` for health tracking
+- Integrates with `SequentialAppenderService` for health tracking
 - Provides manual override endpoints for emergency operations
+- Respects `?db={database_id}` parameter for multi-database support

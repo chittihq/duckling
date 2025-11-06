@@ -23,26 +23,26 @@ export const config = {
     maxRetries: parseInt(process.env.MAX_RETRIES || '3'),
     retryBaseDelayMs: parseInt(process.env.RETRY_BASE_DELAY_MS || '1000'),
     retryMaxDelayMs: parseInt(process.env.RETRY_MAX_DELAY_MS || '60000'),
-    enableIncremental: process.env.ENABLE_INCREMENTAL_SYNC === 'true',
+    enableIncremental: process.env.ENABLE_INCREMENTAL_SYNC !== 'false',
     excludedTables: process.env.EXCLUDED_TABLES !== undefined ?
       (process.env.EXCLUDED_TABLES === '' ? [] : process.env.EXCLUDED_TABLES.split(',').map(t => t.trim())) :
       [], // No tables excluded by default
   },
 
   automation: {
-    autoStartSync: process.env.AUTO_START_SYNC === 'true',
-    autoCleanup: process.env.AUTO_CLEANUP === 'true',
+    autoStartSync: process.env.AUTO_START_SYNC !== 'false',
+    autoCleanup: process.env.AUTO_CLEANUP !== 'false',
     cleanupIntervalHours: parseInt(process.env.CLEANUP_INTERVAL_HOURS || '24'),
     retentionDays: parseInt(process.env.RETENTION_DAYS || '90'),
-    autoBackup: process.env.AUTO_BACKUP === 'true',
+    autoBackup: process.env.AUTO_BACKUP !== 'false',
     backupIntervalHours: parseInt(process.env.BACKUP_INTERVAL_HOURS || '24'),
     backupRetentionDays: parseInt(process.env.BACKUP_RETENTION_DAYS || '7'),
-    autoRestart: process.env.AUTO_RESTART === 'true',
+    autoRestart: process.env.AUTO_RESTART !== 'false',
     maxRestartAttempts: parseInt(process.env.MAX_RESTART_ATTEMPTS || '3'),
   },
   
   monitoring: {
-    enableHealthChecks: process.env.ENABLE_HEALTH_CHECKS === 'true',
+    enableHealthChecks: process.env.ENABLE_HEALTH_CHECKS !== 'false',
     healthCheckInterval: parseInt(process.env.HEALTH_CHECK_INTERVAL || '60000'),
     logLevel: process.env.LOG_LEVEL || 'info',
   },
