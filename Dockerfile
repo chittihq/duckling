@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y \
 RUN npm install -g pnpm@10.0.0
 
 # Copy workspace configuration files
-COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml .npmrc ./
 
 # Copy all package.json files for dependency resolution
 COPY packages/shared/package.json ./packages/shared/
@@ -28,8 +28,8 @@ COPY packages/server/package.json ./packages/server/
 COPY packages/sdk/package.json ./packages/sdk/
 COPY packages/frontend/package.json ./packages/frontend/
 
-# Install all dependencies with frozen lockfile
-RUN pnpm install --frozen-lockfile && pnpm rebuild
+# Install all dependencies with frozen lockfile (with hoisting for TypeScript resolution)
+RUN pnpm install --frozen-lockfile --shamefully-hoist && pnpm rebuild
 
 # Copy all source code
 COPY packages/shared ./packages/shared
@@ -57,15 +57,15 @@ RUN apt-get update && apt-get install -y \
 RUN npm install -g pnpm@10.0.0
 
 # Copy workspace configuration
-COPY pnpm-workspace.yaml package.json ./
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml .npmrc ./
 
 # Copy package.json files for all packages
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/server/package.json ./packages/server/
 COPY packages/sdk/package.json ./packages/sdk/
 
-# Install production dependencies only (no devDependencies)
-RUN pnpm install --prod --frozen-lockfile
+# Install production dependencies only (no devDependencies, with hoisting)
+RUN pnpm install --prod --frozen-lockfile --shamefully-hoist
 
 # Copy built artifacts from builder stage
 # Shared package
