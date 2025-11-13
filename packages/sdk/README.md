@@ -31,7 +31,8 @@ import { DucklingClient } from '@lmes/duckling';
 // Initialize client - auto-connect and auto-ping enabled by default
 const client = new DucklingClient({
   url: 'ws://localhost:3001/ws',
-  apiKey: process.env.DUCKLING_API_KEY
+  apiKey: process.env.DUCKLING_API_KEY,
+  databaseName: 'default'  // Optional - defaults to 'default'
 });
 
 // Just query - client auto-connects on first query!
@@ -40,6 +41,33 @@ const users = await client.query('SELECT * FROM User LIMIT 10');
 // Auto-ping keeps connection alive
 // Close when done
 client.close();
+```
+
+## Multi-Database Support
+
+Each WebSocket connection is bound to **one database**. To query multiple databases, create multiple client instances:
+
+```typescript
+// Connect to different databases
+const lmsClient = new DucklingClient({
+  url: 'ws://localhost:3001/ws',
+  apiKey: process.env.DUCKLING_API_KEY,
+  databaseName: 'lms'
+});
+
+const chittiClient = new DucklingClient({
+  url: 'ws://localhost:3001/ws',
+  apiKey: process.env.DUCKLING_API_KEY,
+  databaseName: 'chitti_common'
+});
+
+// Each client queries its own database
+const lmsUsers = await lmsClient.query('SELECT * FROM User');
+const chittiActions = await chittiClient.query('SELECT * FROM Action');
+
+// Clean up
+lmsClient.close();
+chittiClient.close();
 ```
 
 ## TypeScript Support
@@ -107,6 +135,7 @@ For complete type documentation, see [TYPES.md](./TYPES.md).
 interface DuckDBSDKConfig {
   url: string;                    // WebSocket server URL
   apiKey: string;                 // API key for authentication
+  databaseName?: string;          // Database to connect to (default: 'default')
   autoConnect?: boolean;          // Auto-connect on first query (default: true)
   autoPing?: boolean;             // Auto-ping to keep alive (default: true)
   pingInterval?: number;          // Ping interval in ms (default: 30000)

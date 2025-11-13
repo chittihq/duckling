@@ -76,6 +76,7 @@ export class DucklingClient extends EventEmitter {
       connectionTimeout: 5000,
       autoPing: true,
       pingInterval: 30000,
+      databaseName: 'default',
       ...config
     };
 
@@ -121,7 +122,11 @@ export class DucklingClient extends EventEmitter {
         reject(new Error(`Connection timeout after ${this.config.connectionTimeout}ms`));
       }, this.config.connectionTimeout);
 
-      this.ws = new WebSocket(this.config.url);
+      // Build WebSocket URL with database parameter
+      const url = new URL(this.config.url);
+      url.searchParams.set('db', this.config.databaseName);
+
+      this.ws = new WebSocket(url.toString());
 
       this.ws.on('open', async () => {
         try {

@@ -57,6 +57,8 @@ export interface DuckDBSDKConfig {
   url: string;
   /** API key for authentication */
   apiKey: string;
+  /** Database name to connect to (default: 'default') */
+  databaseName?: string;
   /** Auto-connect on first query (default: true) */
   autoConnect?: boolean;
   /** Auto-reconnect on connection failure (default: true) */
