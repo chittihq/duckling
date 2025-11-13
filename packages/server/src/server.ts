@@ -121,26 +121,20 @@ class DuckDBServer {
       res.sendFile(path.join(__dirname, '..', 'public', 'openapi.json'));
     });
 
-    // Global authentication middleware - protects all routes except public ones
+    // Global authentication middleware - protects API routes only
     this.app.use((req, res, next) => {
       // Public API routes (no auth required)
       const publicApiPaths = ['/api/login', '/api/check-auth', '/openapi.json'];
 
-      // Public static assets for Nuxt SPA (production only)
-      const isStaticAsset = req.path.startsWith('/_nuxt/') ||
-                           req.path.endsWith('.js') ||
-                           req.path.endsWith('.css') ||
-                           req.path.endsWith('.ico') ||
-                           req.path.endsWith('.png') ||
-                           req.path.endsWith('.svg') ||
-                           req.path === '/';
-
-      if (publicApiPaths.includes(req.path) || isStaticAsset) {
-        return next();
+      // Only protect API routes (except public ones)
+      // All frontend SPA routes are public and served by index.html
+      if (req.path.startsWith('/api/') && !publicApiPaths.includes(req.path)) {
+        // API routes (except public ones) require authentication
+        return this.checkApiKeyOrSession(req, res, next);
       }
 
-      // All other routes require authentication (JWT, API key, or session)
-      this.checkApiKeyOrSession(req, res, next);
+      // Allow all non-API routes (frontend SPA, static assets, etc.)
+      next();
     });
 
     // Protected API endpoints (require authentication via JWT, API key, or session)

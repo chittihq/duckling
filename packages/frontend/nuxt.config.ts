@@ -3,6 +3,14 @@ export default defineNuxtConfig({
   compatibilityDate: '2024-11-01',
   devtools: { enabled: true },
 
+  // Disable SSR - build as SPA for static hosting from Express server
+  ssr: false,
+
+  // Configure Nitro to generate static files
+  nitro: {
+    preset: 'static'
+  },
+
   // Use app directory as source
   srcDir: 'app/',
 
