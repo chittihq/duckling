@@ -377,7 +377,7 @@ class SequentialAppenderService {
         const columnTypes = new Map(schema.map(col => [col.Field, col.Type]));
 
         // Stream records from MySQL and insert in bulk
-        const fetchBatchSize = 10000; // Fetch 10K records from MySQL at once
+        const fetchBatchSize = config.sync.batchSize; // Configurable via BATCH_SIZE env var
         const insertBatchSize = 500;  // Insert 500 rows per bulk INSERT (prevents stack overflow)
 
         for await (const fetchedBatch of this.mysql.streamTableData(tableName, fetchBatchSize)) {
