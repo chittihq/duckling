@@ -353,9 +353,6 @@ class SequentialAppenderService {
       // Initialize table if needed
       await this.ensureTableExists(tableName, schema);
 
-      // Clear existing data for full sync
-      await this.duckdb.run(`DELETE FROM ${tableName}`);
-
       let recordsProcessed = 0;
       const watermarkBefore = await this.getTableWatermark(tableName);
 
@@ -364,10 +361,12 @@ class SequentialAppenderService {
       let lastLoggedAt = 0;
       const PROGRESS_LOG_INTERVAL = 10000;
 
-      // Start transaction for atomic operation
+      // Start transaction for atomic operation (includes DELETE and INSERTs)
       await this.duckdb.run('BEGIN TRANSACTION');
 
       try {
+        // Clear existing data for full sync (inside transaction for atomicity)
+        await this.duckdb.run(`DELETE FROM ${tableName}`);
         // Get column names for INSERT statement
         const columns = schema.map(col => col.Field);
         const placeholders = columns.map(() => '?').join(', ');
