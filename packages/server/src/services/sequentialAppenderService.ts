@@ -380,6 +380,8 @@ class SequentialAppenderService {
         const fetchBatchSize = config.sync.batchSize; // Configurable via BATCH_SIZE env var
         const insertBatchSize = 500;  // Insert 500 rows per bulk INSERT (prevents stack overflow)
 
+        logger.info(`${tableName}: Using fetchBatchSize=${fetchBatchSize}, insertBatchSize=${insertBatchSize}`);
+
         for await (const fetchedBatch of this.mysql.streamTableData(tableName, fetchBatchSize)) {
           // Process fetched batch in smaller bulk inserts to avoid stack overflow
           for (let i = 0; i < fetchedBatch.length; i += insertBatchSize) {

@@ -115,17 +115,21 @@ class MySQLConnection {
 
   async getTableData(tableName: string, limit?: number, offset?: number): Promise<any[]> {
     let query = `SELECT * FROM ${tableName}`;
-    
+
     if (limit) {
       // Use non-parameterized LIMIT to avoid MySQL parameter issues
       query += ` LIMIT ${parseInt(limit.toString())}`;
-      
+
       if (offset) {
         query += ` OFFSET ${parseInt(offset.toString())}`;
       }
     }
-    
-    return await this.execute(query);
+
+    logger.info(`MySQL getTableData query: ${query}`);
+    const results = await this.execute(query);
+    logger.info(`MySQL getTableData returned ${results.length} rows (requested limit: ${limit})`);
+
+    return results;
   }
 
   async getIncrementalData(tableName: string, lastSync: Date, limit?: number): Promise<any[]> {
@@ -163,6 +167,8 @@ class MySQLConnection {
   async *streamTableData(tableName: string, batchSize: number = 10000): AsyncGenerator<any[], void, unknown> {
     let offset = 0;
     let batch: any[];
+
+    logger.info(`MySQL streamTableData for ${tableName}: batchSize=${batchSize}`);
 
     do {
       batch = await this.getTableData(tableName, batchSize, offset);

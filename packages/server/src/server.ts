@@ -1244,6 +1244,14 @@ class DuckDBServer {
     try {
       console.log('Starting DuckDB Server...');
 
+      // Debug: Log configuration values
+      console.log('=== Configuration Debug ===');
+      console.log(`BATCH_SIZE env var: ${process.env.BATCH_SIZE}`);
+      console.log(`config.sync.batchSize: ${config.sync.batchSize}`);
+      console.log(`config.sync.enableIncremental: ${config.sync.enableIncremental}`);
+      console.log(`config.sync.intervalMinutes: ${config.sync.intervalMinutes}`);
+      console.log('========================');
+
       // Initialize all databases in parallel for faster startup
       console.log('Initializing all databases in parallel...');
       const dbManager = DatabaseConfigManager.getInstance();
