@@ -786,12 +786,22 @@ class DuckDBServer {
     }
   }
 
+  /**
+   * Helper function to sanitize database config by removing sensitive fields
+   */
+  private sanitizeDatabaseConfig(config: any): any {
+    const { mysqlConnectionString, ...sanitized } = config;
+    return sanitized;
+  }
+
   // Database management handlers
   private async getDatabases(req: express.Request, res: express.Response): Promise<void> {
     try {
       const dbManager = DatabaseConfigManager.getInstance();
       const databases = dbManager.getAllDatabases();
-      res.json({ success: true, databases });
+      // Remove MySQL connection strings from response (security)
+      const sanitizedDatabases = databases.map(db => this.sanitizeDatabaseConfig(db));
+      res.json({ success: true, databases: sanitizedDatabases });
     } catch (error) {
       logger.error('Get databases failed:', error);
       res.status(500).json({
@@ -815,7 +825,8 @@ class DuckDBServer {
       const dbManager = DatabaseConfigManager.getInstance();
       const newDb = dbManager.addDatabase({ name, mysqlConnectionString });
 
-      res.json({ success: true, database: newDb });
+      // Remove MySQL connection string from response (security)
+      res.json({ success: true, database: this.sanitizeDatabaseConfig(newDb) });
     } catch (error) {
       logger.error('Add database failed:', error);
       res.status(500).json({
@@ -841,7 +852,8 @@ class DuckDBServer {
         return;
       }
 
-      res.json({ success: true, database: updated });
+      // Remove MySQL connection string from response (security)
+      res.json({ success: true, database: this.sanitizeDatabaseConfig(updated) });
     } catch (error) {
       logger.error('Update database failed:', error);
       res.status(500).json({
