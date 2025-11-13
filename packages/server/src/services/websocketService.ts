@@ -1,6 +1,8 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { Server } from 'http';
+import { IncomingMessage } from 'http';
 import DuckDBConnection from '../database/duckdb';
+import { DatabaseConfigManager } from '../database/databaseConfig';
 import config from '../config';
 import logger from '../logger';
 
@@ -20,15 +22,20 @@ interface QueryResponse {
   duration?: number;
 }
 
+// Extend WebSocket to include database context
+interface ExtendedWebSocket extends WebSocket {
+  databaseName?: string;
+  duckdb?: DuckDBConnection;
+}
+
 export class WebSocketService {
   private wss: WebSocketServer;
-  private duckdb: DuckDBConnection;
-  private clients: Set<WebSocket> = new Set();
-  private authenticatedClients: Set<WebSocket> = new Set();
+  private clients: Set<ExtendedWebSocket> = new Set();
+  private authenticatedClients: Set<ExtendedWebSocket> = new Set();
   private static instance: WebSocketService;
 
   private constructor() {
-    this.duckdb = DuckDBConnection.getInstance();
+    // No longer need a single duckdb instance - we'll get it per-connection
   }
 
   static getInstance(): WebSocketService {
@@ -62,10 +69,41 @@ export class WebSocketService {
   /**
    * Handle new WebSocket connection
    */
-  private handleConnection(ws: WebSocket): void {
+  private handleConnection(ws: ExtendedWebSocket, req: IncomingMessage): void {
+    // Extract database name from query parameter
+    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    const databaseName = url.searchParams.get('db') || 'default';
+
+    // Store database context in WebSocket
+    ws.databaseName = databaseName;
+
+    // Get database-specific DuckDB connection
+    try {
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(databaseName);
+
+      if (!dbConfig) {
+        logger.error('Database not found for WebSocket connection', {
+          databaseName,
+          availableDatabases: DatabaseConfigManager.getInstance().getAllDatabases().map(db => db.id)
+        });
+        ws.close(1011, `Database '${databaseName}' not found. Available databases: ${DatabaseConfigManager.getInstance().getAllDatabases().map(db => db.id).join(', ')}`);
+        return;
+      }
+
+      ws.duckdb = DuckDBConnection.getInstance(databaseName, dbConfig.duckdbPath);
+    } catch (error) {
+      logger.error('Failed to get database connection for WebSocket', {
+        databaseName,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+      ws.close(1011, `Failed to connect to database '${databaseName}'`);
+      return;
+    }
+
     this.clients.add(ws);
 
     logger.info('WebSocket client connected', {
+      databaseName,
       totalClients: this.clients.size
     });
 
@@ -111,7 +149,7 @@ export class WebSocketService {
   /**
    * Handle incoming message
    */
-  private async handleMessage(ws: WebSocket, data: Buffer): Promise<void> {
+  private async handleMessage(ws: ExtendedWebSocket, data: Buffer): Promise<void> {
     const startTime = Date.now();
     let message: QueryMessage | undefined;
 
@@ -121,6 +159,7 @@ export class WebSocketService {
       // Handle authentication
       if (message.type === 'auth') {
         if (!message.apiKey) {
+          logger.warn('WebSocket auth failed: No API key provided');
           this.sendMessage(ws, {
             id: message.id,
             success: false,
@@ -128,6 +167,14 @@ export class WebSocketService {
           });
           return;
         }
+
+        // Log server-side API key status for debugging
+        const serverHasApiKey = !!config.auth.apiKey;
+        logger.debug('WebSocket auth attempt', {
+          serverHasApiKey,
+          clientProvidedKey: !!message.apiKey,
+          clientKeyLength: message.apiKey?.length
+        });
 
         // Validate API key
         if (config.auth.apiKey && message.apiKey === config.auth.apiKey) {
@@ -139,12 +186,18 @@ export class WebSocketService {
           });
           logger.info('WebSocket client authenticated', { totalAuthenticated: this.authenticatedClients.size });
         } else {
+          const reason = !config.auth.apiKey ? 'Server API key not configured' : 'API key mismatch';
+          logger.warn('WebSocket auth failed', {
+            reason,
+            serverHasApiKey,
+            clientKeyLength: message.apiKey?.length
+          });
           this.sendMessage(ws, {
             id: message.id,
             success: false,
-            error: 'Invalid API key'
+            error: `Invalid API key (${reason})`
           });
-          ws.close(1008, 'Invalid API key');
+          ws.close(1008, `Invalid API key (${reason})`);
         }
         return;
       }
@@ -178,8 +231,18 @@ export class WebSocketService {
           return;
         }
 
-        // Execute query
-        const result = await this.duckdb.query(message.sql, message.params);
+        // Check if database connection is available
+        if (!ws.duckdb) {
+          this.sendMessage(ws, {
+            id: message.id,
+            success: false,
+            error: 'Database connection not available'
+          });
+          return;
+        }
+
+        // Execute query on database-specific connection
+        const result = await ws.duckdb.query(message.sql, message.params);
 
         // Serialize BigInt values
         const serializedResult = this.serializeBigInt(result);
@@ -195,6 +258,7 @@ export class WebSocketService {
 
         logger.debug('WebSocket query executed', {
           queryId: message.id,
+          databaseName: ws.databaseName,
           duration,
           rows: result.length
         });
@@ -216,7 +280,7 @@ export class WebSocketService {
   /**
    * Send message to client
    */
-  private sendMessage(ws: WebSocket, response: QueryResponse): void {
+  private sendMessage(ws: ExtendedWebSocket, response: QueryResponse): void {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(response));
     }
@@ -225,7 +289,7 @@ export class WebSocketService {
   /**
    * Setup heartbeat to keep connection alive
    */
-  private setupHeartbeat(ws: WebSocket): void {
+  private setupHeartbeat(ws: ExtendedWebSocket): void {
     let isAlive = true;
 
     ws.on('pong', () => {
