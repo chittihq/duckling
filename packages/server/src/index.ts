@@ -1,5 +1,6 @@
 import DuckDBServer from './server';
 import logger from './logger';
+import config from './config';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -47,7 +48,31 @@ async function main() {
     console.log('Starting DuckDB Parquet Server...');
     console.log('Architecture: Micro-batch Parquet with partitioned storage');
     console.log('Features: Columnar storage, partition pruning, schema evolution, view management');
-    
+
+    // Check data directory for persistence debugging
+    const dataDir = config.paths.data;
+    console.log('\n📁 Data Directory Check:');
+    console.log(`   Path: ${dataDir}`);
+
+    if (!fs.existsSync(dataDir)) {
+      console.log('   ❌ Data directory does not exist - will be created');
+      fs.mkdirSync(dataDir, { recursive: true });
+    } else {
+      const files = fs.readdirSync(dataDir);
+      if (files.length === 0) {
+        console.log('   ⚠️  Data directory is EMPTY - fresh start (full sync expected)');
+      } else {
+        console.log(`   ✅ Data directory contains ${files.length} file(s) - persistence working!`);
+        files.forEach(file => {
+          const filePath = path.join(dataDir, file);
+          const stats = fs.statSync(filePath);
+          const sizeMB = (stats.size / 1024 / 1024).toFixed(2);
+          console.log(`      - ${file} (${sizeMB} MB)`);
+        });
+      }
+    }
+    console.log('');
+
     const logsDir = path.join(__dirname, '..', 'logs');
     if (!fs.existsSync(logsDir)) {
       fs.mkdirSync(logsDir, { recursive: true });
