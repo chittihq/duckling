@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import config from '../config';
 
 export interface DatabaseConfig {
   id: string;
@@ -10,8 +11,8 @@ export interface DatabaseConfig {
   updatedAt: string;
 }
 
-// Use absolute path to ensure it's in the mounted volume
-const CONFIG_FILE = path.resolve('/app/data/databases.json');
+// Use config to ensure correct path in both dev and production
+const CONFIG_FILE = path.join(config.paths.data, 'databases.json');
 
 export class DatabaseConfigManager {
   private static instance: DatabaseConfigManager;
@@ -51,7 +52,7 @@ export class DatabaseConfigManager {
       id: 'default',
       name: 'Default Database',
       mysqlConnectionString: process.env.MYSQL_CONNECTION_STRING || '',
-      duckdbPath: process.env.DUCKDB_PATH || 'data/duckling.db',
+      duckdbPath: config.duckdb.path, // Use config for correct path in dev and production
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

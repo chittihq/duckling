@@ -60,26 +60,8 @@ async function main() {
     await server.start();
     console.log('Server started successfully');
 
-    // Auto-start sync if enabled
-    if (process.env.AUTO_START_SYNC === 'true') {
-      console.log('🔄 Auto-start sync enabled - Starting initial incremental sync...');
-      setTimeout(async () => {
-        try {
-          // Call sync service directly instead of HTTP request
-          const syncService = server.getSyncService();
-          const result = await syncService.incrementalSync();
-          console.log('✅ Initial incremental sync completed:', {
-            totalTables: result.totalTables,
-            successfulTables: result.successfulTables,
-            failedTables: result.failedTables,
-            totalRecords: result.totalRecords,
-            duration: `${Math.round(result.totalDuration / 1000)}s`
-          });
-        } catch (error) {
-          console.error('❌ Initial sync failed:', error);
-        }
-      }, 5000); // Wait 5 seconds for server to be fully ready
-    }
+    // Note: Initial sync is handled by the automation service
+    // See automationService.ts startPeriodicSync() for automatic sync configuration
 
     process.on('SIGINT', () => {
       console.log('Received SIGINT, shutting down gracefully');
