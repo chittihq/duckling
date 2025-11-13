@@ -111,9 +111,6 @@ export class DatabaseConfigManager {
   }
 
   deleteDatabase(id: string): boolean {
-    if (id === 'default') {
-      throw new Error('Cannot delete default database');
-    }
     const deleted = this.databases.delete(id);
     if (deleted) {
       this.saveConfig();
