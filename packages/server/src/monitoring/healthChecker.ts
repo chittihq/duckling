@@ -1,6 +1,7 @@
 import MySQLConnection from '../database/mysql';
 import DuckDBConnection from '../database/duckdb';
 import SequentialAppenderService from '../services/sequentialAppenderService';
+import { DatabaseConfigManager } from '../database/databaseConfig';
 import logger from '../logger';
 import config from '../config';
 
@@ -34,9 +35,23 @@ class HealthChecker {
   private static instance: HealthChecker;
 
   private constructor() {
-    this.mysql = MySQLConnection.getInstance();
-    this.duckdb = DuckDBConnection.getInstance();
-    this.syncService = SequentialAppenderService.getInstance();
+    // Legacy service - uses first database in config
+    const dbManager = DatabaseConfigManager.getInstance();
+    const databases = dbManager.getAllDatabases();
+
+    if (databases.length === 0) {
+      throw new Error('No databases configured');
+    }
+
+    const firstDb = databases[0];
+    let resolvedDuckdbPath = firstDb.duckdbPath;
+    if (resolvedDuckdbPath.startsWith('data/')) {
+      resolvedDuckdbPath = `/app/${resolvedDuckdbPath}`;
+    }
+
+    this.mysql = MySQLConnection.getInstance(firstDb.id, firstDb.mysqlConnectionString);
+    this.duckdb = DuckDBConnection.getInstance(firstDb.id, resolvedDuckdbPath);
+    this.syncService = SequentialAppenderService.getInstance(firstDb.id, this.mysql, this.duckdb);
   }
 
   static getInstance(): HealthChecker {

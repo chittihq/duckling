@@ -28,19 +28,11 @@ declare global {
 class DuckDBServer {
   private app: express.Application;
   private server: http.Server;
-  private duckdb: DuckDBConnection;
-  private mysql: MySQLConnection;
-  private syncService: SequentialAppenderService;
-  private automationService: AutomationService;
   private websocketService: WebSocketService;
   private logBufferService: LogBufferService;
 
   constructor() {
     this.app = express();
-    this.duckdb = DuckDBConnection.getInstance();
-    this.mysql = MySQLConnection.getInstance();
-    this.syncService = SequentialAppenderService.getInstance();
-    this.automationService = AutomationService.getInstance();
     this.websocketService = WebSocketService.getInstance();
     this.logBufferService = LogBufferService.getInstance();
 
@@ -141,7 +133,7 @@ class DuckDBServer {
 
     // Logs API endpoints
     this.app.get('/api/logs', this.getLogs.bind(this));
-    this.app.get('/api/sync-logs', this.getSyncLogs.bind(this));
+    this.app.get('/api/sync-logs', attachDatabaseContext, this.getSyncLogs.bind(this));
 
     // Database management endpoints
     this.app.get('/api/databases', this.getDatabases.bind(this));
@@ -212,18 +204,54 @@ class DuckDBServer {
 
   private async healthCheck(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const mysqlHealthy = await this.mysql.testConnection();
-      const duckdbHealthy = await this.duckdb.testConnection();
-      
+      const dbManager = DatabaseConfigManager.getInstance();
+      const allDatabases = dbManager.getAllDatabases();
+
+      // Check health of all databases
+      const databaseHealthChecks = await Promise.all(
+        allDatabases.map(async (dbConfig) => {
+          try {
+            // Resolve duckdbPath
+            let resolvedDuckdbPath = dbConfig.duckdbPath;
+            if (resolvedDuckdbPath.startsWith('data/')) {
+              resolvedDuckdbPath = `/app/${resolvedDuckdbPath}`;
+            }
+
+            const mysql = MySQLConnection.getInstance(dbConfig.id, dbConfig.mysqlConnectionString);
+            const duckdb = DuckDBConnection.getInstance(dbConfig.id, resolvedDuckdbPath);
+
+            const mysqlHealthy = await mysql.testConnection();
+            const duckdbHealthy = await duckdb.testConnection();
+
+            return {
+              databaseId: dbConfig.id,
+              name: dbConfig.name,
+              status: mysqlHealthy && duckdbHealthy ? 'healthy' : 'unhealthy',
+              services: {
+                mysql: mysqlHealthy ? 'healthy' : 'unhealthy',
+                duckdb: duckdbHealthy ? 'healthy' : 'unhealthy'
+              }
+            };
+          } catch (error) {
+            return {
+              databaseId: dbConfig.id,
+              name: dbConfig.name,
+              status: 'unhealthy',
+              error: error instanceof Error ? error.message : 'Unknown error'
+            };
+          }
+        })
+      );
+
+      // Overall status is healthy only if ALL databases are healthy
+      const overallStatus = databaseHealthChecks.every((db) => db.status === 'healthy') ? 'healthy' : 'unhealthy';
+
       const health = {
-        status: mysqlHealthy && duckdbHealthy ? 'healthy' : 'unhealthy',
+        status: overallStatus,
         timestamp: new Date().toISOString(),
-        services: {
-          mysql: mysqlHealthy ? 'healthy' : 'unhealthy',
-          duckdb: duckdbHealthy ? 'healthy' : 'unhealthy'
-        },
+        databases: databaseHealthChecks,
         architecture: 'sequential-appender',
-        features: ['atomic-transactions', 'watermark-sync', 'streaming-batches', 'acid-compliance']
+        features: ['atomic-transactions', 'watermark-sync', 'streaming-batches', 'acid-compliance', 'multi-database']
       };
 
       res.status(health.status === 'healthy' ? 200 : 503).json(health);
@@ -239,8 +267,42 @@ class DuckDBServer {
 
   private async getStatus(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const mysqlTables = await this.mysql.getTables();
-      const duckdbTables = await this.duckdb.getTables();
+      const dbManager = DatabaseConfigManager.getInstance();
+      const allDatabases = dbManager.getAllDatabases();
+
+      // Get status for all databases
+      const databaseStatuses = await Promise.all(
+        allDatabases.map(async (dbConfig) => {
+          try {
+            // Resolve duckdbPath
+            let resolvedDuckdbPath = dbConfig.duckdbPath;
+            if (resolvedDuckdbPath.startsWith('data/')) {
+              resolvedDuckdbPath = `/app/${resolvedDuckdbPath}`;
+            }
+
+            const mysql = MySQLConnection.getInstance(dbConfig.id, dbConfig.mysqlConnectionString);
+            const duckdb = DuckDBConnection.getInstance(dbConfig.id, resolvedDuckdbPath);
+
+            const mysqlTables = await mysql.getTables();
+            const duckdbTables = await duckdb.getTables();
+
+            return {
+              databaseId: dbConfig.id,
+              name: dbConfig.name,
+              tables: {
+                mysql: mysqlTables.length,
+                duckdb: duckdbTables.length
+              }
+            };
+          } catch (error) {
+            return {
+              databaseId: dbConfig.id,
+              name: dbConfig.name,
+              error: error instanceof Error ? error.message : 'Unknown error'
+            };
+          }
+        })
+      );
 
       const status = {
         uptime: process.uptime(),
@@ -251,10 +313,7 @@ class DuckDBServer {
           batchSize: config.sync.batchSize,
           incrementalSync: config.sync.enableIncremental
         },
-        tables: {
-          mysql: mysqlTables.length,
-          duckdb: duckdbTables.length
-        }
+        databases: databaseStatuses
       };
 
       res.json(status);
@@ -341,15 +400,16 @@ class DuckDBServer {
   // Data management endpoint
   private async clearAllData(req: express.Request, res: express.Response): Promise<void> {
     try {
-      logger.info('Starting clear all data operation');
+      const { duckdb, databaseId } = req as RequestWithDatabase;
+      logger.info(`Starting clear all data operation for database: ${databaseId}`);
 
       // Get tables to drop
-      const tables = await this.duckdb.getTables();
+      const tables = await duckdb.getTables();
 
       // Drop all tables
       for (const table of tables) {
         try {
-          await this.duckdb.run(`DROP TABLE IF EXISTS ${table}`);
+          await duckdb.run(`DROP TABLE IF EXISTS ${table}`);
         } catch (error) {
           logger.warn(`Failed to drop table ${table}:`, error);
         }
@@ -358,7 +418,7 @@ class DuckDBServer {
       // Reinitialize database (watermark table, etc.)
       logger.info('Reinitializing database after clear');
       try {
-        await this.duckdb.initializeDatabase();
+        await duckdb.initializeDatabase();
         logger.info('Database reinitialized successfully');
       } catch (error) {
         logger.error('Failed to reinitialize database:', error);
@@ -449,7 +509,8 @@ class DuckDBServer {
   private async getTableSchema(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { name } = req.params;
-      const result = await this.duckdb.execute(`DESCRIBE ${name}`);
+      const { duckdb } = req as RequestWithDatabase;
+      const result = await duckdb.execute(`DESCRIBE ${name}`);
       res.json({ columns: result });
     } catch (error) {
       logger.error('Get table schema failed:', error);
@@ -462,11 +523,12 @@ class DuckDBServer {
   private async getTableData(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { name } = req.params;
+      const { duckdb } = req as RequestWithDatabase;
 
-      const data = await this.duckdb.execute(
+      const data = await duckdb.execute(
         `SELECT * FROM ${name}`
       );
-      
+
       // Convert BigInt values to strings for JSON serialization
       const serializedData = data.map((row: any) => {
         const serializedRow: any = {};
@@ -479,7 +541,7 @@ class DuckDBServer {
         }
         return serializedRow;
       });
-      
+
       res.json(serializedData);
     } catch (error) {
       logger.error('Get table data failed:', error);
@@ -491,14 +553,15 @@ class DuckDBServer {
 
   private async getAllTableCounts(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const tables = await this.duckdb.getTables();
+      const { duckdb } = req as RequestWithDatabase;
+      const tables = await duckdb.getTables();
       const counts: Record<string, number> = {};
 
       // Get all counts in parallel
       await Promise.all(
         tables.map(async (tableName) => {
           try {
-            const count = await this.duckdb.getTableRowCount(tableName);
+            const count = await duckdb.getTableRowCount(tableName);
             counts[tableName] = typeof count === 'bigint' ? Number(count) : count;
           } catch (error) {
             logger.warn(`Failed to get count for ${tableName}:`, error);
@@ -532,12 +595,45 @@ class DuckDBServer {
     }
   }
 
-  // Enhanced metrics
+  // Enhanced metrics - returns metrics for all databases
   private async getMetrics(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const status = await this.syncService.getSyncStatus();
+      const dbManager = DatabaseConfigManager.getInstance();
+      const allDatabases = dbManager.getAllDatabases();
+
+      // Get metrics for all databases
+      const databaseMetrics = await Promise.all(
+        allDatabases.map(async (dbConfig) => {
+          try {
+            // Resolve duckdbPath
+            let resolvedDuckdbPath = dbConfig.duckdbPath;
+            if (resolvedDuckdbPath.startsWith('data/')) {
+              resolvedDuckdbPath = `/app/${resolvedDuckdbPath}`;
+            }
+
+            const mysql = MySQLConnection.getInstance(dbConfig.id, dbConfig.mysqlConnectionString);
+            const duckdb = DuckDBConnection.getInstance(dbConfig.id, resolvedDuckdbPath);
+            const syncService = SequentialAppenderService.getInstance(dbConfig.id, mysql, duckdb);
+
+            const status = await syncService.getSyncStatus();
+
+            return {
+              databaseId: dbConfig.id,
+              name: dbConfig.name,
+              ...status
+            };
+          } catch (error) {
+            return {
+              databaseId: dbConfig.id,
+              name: dbConfig.name,
+              error: error instanceof Error ? error.message : 'Unknown error'
+            };
+          }
+        })
+      );
+
       res.json(this.serializeBigInt({
-        ...status,
+        databases: databaseMetrics,
         architecture: 'sequential-appender',
         timestamp: new Date().toISOString()
       }));
@@ -1148,9 +1244,38 @@ class DuckDBServer {
     try {
       console.log('Starting DuckDB Server...');
 
-      // Initialize DuckDB database
-      console.log('Initializing DuckDB database...');
-      await this.duckdb.initializeDatabase();
+      // Initialize all databases
+      console.log('Initializing all databases...');
+      const dbManager = DatabaseConfigManager.getInstance();
+      const allDatabases = dbManager.getAllDatabases();
+
+      for (const dbConfig of allDatabases) {
+        try {
+          console.log(`Initializing database: ${dbConfig.name} (${dbConfig.id})`);
+
+          // Resolve duckdbPath
+          let resolvedDuckdbPath = dbConfig.duckdbPath;
+          if (resolvedDuckdbPath.startsWith('data/')) {
+            resolvedDuckdbPath = `/app/${resolvedDuckdbPath}`;
+          }
+
+          const mysql = MySQLConnection.getInstance(dbConfig.id, dbConfig.mysqlConnectionString);
+          const duckdb = DuckDBConnection.getInstance(dbConfig.id, resolvedDuckdbPath);
+          await duckdb.initializeDatabase();
+
+          // Initialize sync and automation services for this database
+          const syncService = SequentialAppenderService.getInstance(dbConfig.id, mysql, duckdb);
+          const automationService = AutomationService.getInstance(dbConfig.id, syncService, duckdb, mysql);
+
+          // Start automation service (cleanup, backup, health monitoring)
+          await automationService.start();
+
+          console.log(`✓ Database ${dbConfig.name} initialized successfully`);
+        } catch (error) {
+          console.error(`✗ Failed to initialize database ${dbConfig.name}:`, error);
+          // Continue with other databases even if one fails
+        }
+      }
 
       // Create HTTP server and attach WebSocket
       console.log('Starting HTTP server...');
@@ -1160,7 +1285,8 @@ class DuckDBServer {
         console.log(`DuckDB Server running on port ${config.port}`);
         console.log(`WebSocket available at ws://localhost:${config.port}/ws`);
         console.log('Architecture: Sequential Appender with ACID transactions');
-        console.log('Features: Atomic sync, watermark-based incremental, streaming batches, WebSocket');
+        console.log('Features: Atomic sync, watermark-based incremental, streaming batches, WebSocket, multi-database');
+        console.log(`Databases initialized: ${allDatabases.length}`);
         console.log('Ready for manual operations via UI/API');
       });
 
@@ -1171,10 +1297,6 @@ class DuckDBServer {
       // Initialize log buffer service
       console.log('Initializing log buffer service...');
       this.logBufferService.initialize();
-
-      // Start automation service (cleanup, backup, health monitoring)
-      console.log('Starting automation service...');
-      await this.automationService.start();
 
       console.log('Server startup completed successfully');
     } catch (error) {
@@ -1213,6 +1335,7 @@ class DuckDBServer {
    */
   private async getSyncLogs(req: express.Request, res: express.Response): Promise<void> {
     try {
+      const { duckdb } = req as RequestWithDatabase;
       const limit = parseInt(req.query.limit as string) || 100;
       const offset = parseInt(req.query.offset as string) || 0;
       const status = req.query.status as string; // 'success', 'error', or undefined for all
@@ -1251,11 +1374,11 @@ class DuckDBServer {
         OFFSET ${offset}
       `;
 
-      const logs = await this.duckdb.query(query);
+      const logs = await duckdb.query(query);
 
       // Get total count
       const countQuery = `SELECT COUNT(*) as total FROM sync_log ${whereClause}`;
-      const countResult = await this.duckdb.query(countQuery);
+      const countResult = await duckdb.query(countQuery);
       const total = countResult?.[0]?.total || 0;
 
       // Convert BigInt values to numbers for JSON serialization
@@ -1283,12 +1406,6 @@ class DuckDBServer {
     }
   }
 
-  /**
-   * Get sync service for direct access (used by auto-sync)
-   */
-  getSyncService(): SequentialAppenderService {
-    return this.syncService;
-  }
 }
 
 export default DuckDBServer;

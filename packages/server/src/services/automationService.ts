@@ -34,16 +34,13 @@ class AutomationService {
   }
 
   public static getInstance(
-    databaseId: string = 'default',
-    syncService?: SequentialAppenderService,
-    duckdb?: DuckDBConnection,
-    mysql?: MySQLConnection
+    databaseId: string,
+    syncService: SequentialAppenderService,
+    duckdb: DuckDBConnection,
+    mysql: MySQLConnection
   ): AutomationService {
     if (!AutomationService.instances.has(databaseId)) {
-      const sync = syncService || SequentialAppenderService.getInstance(databaseId);
-      const duck = duckdb || DuckDBConnection.getInstance(databaseId);
-      const sql = mysql || MySQLConnection.getInstance(databaseId);
-      AutomationService.instances.set(databaseId, new AutomationService(sync, duck, sql));
+      AutomationService.instances.set(databaseId, new AutomationService(syncService, duckdb, mysql));
     }
     return AutomationService.instances.get(databaseId)!;
   }

@@ -1,5 +1,6 @@
 import MySQLConnection from '../database/mysql';
 import DuckDBConnection from '../database/duckdb';
+import { DatabaseConfigManager } from '../database/databaseConfig';
 import config from '../config';
 import logger from '../logger';
 import * as fs from 'fs';
@@ -29,8 +30,22 @@ class DumpService {
   private static instance: DumpService;
 
   private constructor() {
-    this.mysql = MySQLConnection.getInstance();
-    this.duckdb = DuckDBConnection.getInstance();
+    // Legacy service - uses first database in config
+    const dbManager = DatabaseConfigManager.getInstance();
+    const databases = dbManager.getAllDatabases();
+
+    if (databases.length === 0) {
+      throw new Error('No databases configured');
+    }
+
+    const firstDb = databases[0];
+    let resolvedDuckdbPath = firstDb.duckdbPath;
+    if (resolvedDuckdbPath.startsWith('data/')) {
+      resolvedDuckdbPath = `/app/${resolvedDuckdbPath}`;
+    }
+
+    this.mysql = MySQLConnection.getInstance(firstDb.id, firstDb.mysqlConnectionString);
+    this.duckdb = DuckDBConnection.getInstance(firstDb.id, resolvedDuckdbPath);
   }
 
   static getInstance(): DumpService {

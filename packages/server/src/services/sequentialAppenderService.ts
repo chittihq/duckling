@@ -64,11 +64,9 @@ class SequentialAppenderService {
     this.duckdb = duckdb;
   }
 
-  static getInstance(databaseId: string = 'default', mysql?: MySQLConnection, duckdb?: DuckDBConnection): SequentialAppenderService {
+  static getInstance(databaseId: string, mysql: MySQLConnection, duckdb: DuckDBConnection): SequentialAppenderService {
     if (!SequentialAppenderService.instances.has(databaseId)) {
-      const mysqlConn = mysql || MySQLConnection.getInstance(databaseId);
-      const duckdbConn = duckdb || DuckDBConnection.getInstance(databaseId);
-      SequentialAppenderService.instances.set(databaseId, new SequentialAppenderService(mysqlConn, duckdbConn));
+      SequentialAppenderService.instances.set(databaseId, new SequentialAppenderService(mysql, duckdb));
     }
     return SequentialAppenderService.instances.get(databaseId)!;
   }

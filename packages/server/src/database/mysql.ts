@@ -6,9 +6,13 @@ class MySQLConnection {
   private pool: mysql.Pool;
   private static instances: Map<string, MySQLConnection> = new Map();
 
-  constructor(connectionString?: string) {
+  constructor(connectionString: string) {
+    if (!connectionString) {
+      throw new Error('MySQL connection string is required');
+    }
+
     this.pool = mysql.createPool({
-      uri: connectionString || config.mysql.connectionString,
+      uri: connectionString,
       connectionLimit: config.mysql.maxConnections,
       timezone: 'Z',
       multipleStatements: true,
@@ -16,7 +20,7 @@ class MySQLConnection {
     });
   }
 
-  static getInstance(databaseId: string = 'default', connectionString?: string): MySQLConnection {
+  static getInstance(databaseId: string, connectionString: string): MySQLConnection {
     if (!MySQLConnection.instances.has(databaseId)) {
       MySQLConnection.instances.set(databaseId, new MySQLConnection(connectionString));
     }
