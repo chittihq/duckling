@@ -1249,7 +1249,8 @@ class DuckDBServer {
       const dbManager = DatabaseConfigManager.getInstance();
       const allDatabases = dbManager.getAllDatabases();
 
-      for (const dbConfig of allDatabases) {
+      for (let i = 0; i < allDatabases.length; i++) {
+        const dbConfig = allDatabases[i];
         try {
           console.log(`Initializing database: ${dbConfig.name} (${dbConfig.id})`);
 
@@ -1267,10 +1268,14 @@ class DuckDBServer {
           const syncService = SequentialAppenderService.getInstance(dbConfig.id, mysql, duckdb);
           const automationService = AutomationService.getInstance(dbConfig.id, syncService, duckdb, mysql);
 
-          // Start automation service (cleanup, backup, health monitoring)
-          await automationService.start();
+          // Calculate staggered offset: each database gets 5 minutes offset from previous
+          // This prevents multiple databases from syncing simultaneously
+          const syncOffsetMs = i * 5 * 60 * 1000; // 5 minutes per database
 
-          console.log(`✓ Database ${dbConfig.name} initialized successfully`);
+          // Start automation service with staggered sync offset
+          await automationService.start(syncOffsetMs);
+
+          console.log(`✓ Database ${dbConfig.name} initialized successfully${syncOffsetMs > 0 ? ` (sync offset: ${syncOffsetMs / 1000 / 60}min)` : ''}`);
         } catch (error) {
           console.error(`✗ Failed to initialize database ${dbConfig.name}:`, error);
           // Continue with other databases even if one fails

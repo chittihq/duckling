@@ -16,7 +16,32 @@ class DuckDBConnection {
     this.dbPath = dbPath;
     this.ensureDirectory();
     // Use file-based database for persistent storage
+    // Note: Constructor is synchronous but connection may not be ready immediately for large files
     this.db = new duckdb.Database(dbPath);
+  }
+
+  /**
+   * Wait for database connection to be ready
+   * For large database files (>1GB), the connection may not be immediately available
+   * Production timeout: 30 retries * 5000ms = 150 seconds (2.5 minutes) max wait
+   */
+  private async waitForConnection(maxRetries: number = 30, delayMs: number = 5000): Promise<void> {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        await this.executeRaw('SELECT 1');
+        logger.info(`DuckDB connection established successfully (attempt ${i + 1}/${maxRetries})`);
+        return; // Connection is ready
+      } catch (error: any) {
+        if (error.errorType === 'Connection' && i < maxRetries - 1) {
+          logger.warn(`DuckDB connection not ready yet (attempt ${i + 1}/${maxRetries}), waiting ${delayMs}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        } else {
+          logger.error(`DuckDB connection failed after ${maxRetries} retries:`, error);
+          throw error; // Re-throw if not a connection error or max retries reached
+        }
+      }
+    }
+    throw new Error('DuckDB connection failed to establish after maximum retries');
   }
 
   static getInstance(databaseId: string = 'default', dbPath?: string): DuckDBConnection {
@@ -31,9 +56,13 @@ class DuckDBConnection {
           .then(() => {
             DuckDBConnection.initializedInstances.add(databaseId);
             logger.info(`Database instance '${databaseId}' initialized at ${path}`);
+            // Clear the promise after successful initialization
+            instance.initializationPromise = null;
           })
           .catch((error) => {
             logger.error(`Failed to initialize database instance '${databaseId}':`, error);
+            // Clear the promise even on error to allow retry
+            instance.initializationPromise = null;
           });
       }
     }
@@ -56,10 +85,8 @@ class DuckDBConnection {
   }
 
   private async ensureInitialized(): Promise<void> {
-    // Skip waiting if we're currently in the initialization process
-    if (this.isInitializing) {
-      return;
-    }
+    // Wait for initialization to complete before allowing queries
+    // initializeDatabase() uses Raw methods, so this won't cause deadlock
     if (this.initializationPromise) {
       await this.initializationPromise;
     }
@@ -68,37 +95,40 @@ class DuckDBConnection {
   async initializeDatabase(): Promise<void> {
     this.isInitializing = true;
     try {
+      // Wait for connection to be ready (especially important for large database files)
+      await this.waitForConnection();
+
       // Check if sync_log exists and what type it is (VIEW or TABLE)
-      const syncLogCheck = await this.execute(`
+      const syncLogCheck = await this.executeRaw(`
         SELECT table_type FROM information_schema.tables
         WHERE table_schema = 'main' AND table_name = 'sync_log'
       `);
 
       // Only drop and recreate if it's a VIEW (not a TABLE)
       if (syncLogCheck.length > 0 && syncLogCheck[0].table_type === 'VIEW') {
-        await this.run(`DROP VIEW IF EXISTS sync_log`);
+        await this.runRaw(`DROP VIEW IF EXISTS sync_log`);
         logger.info('Dropped sync_log VIEW (will recreate as TABLE)');
       }
 
       // Same for sync_metadata
-      const syncMetadataCheck = await this.execute(`
+      const syncMetadataCheck = await this.executeRaw(`
         SELECT table_type FROM information_schema.tables
         WHERE table_schema = 'main' AND table_name = 'sync_metadata'
       `);
 
       if (syncMetadataCheck.length > 0 && syncMetadataCheck[0].table_type === 'VIEW') {
-        await this.run(`DROP VIEW IF EXISTS sync_metadata`);
+        await this.runRaw(`DROP VIEW IF EXISTS sync_metadata`);
         logger.info('Dropped sync_metadata VIEW (will recreate as TABLE)');
       }
 
       // Check if appender_watermarks needs schema migration (BIGINT -> VARCHAR for string IDs)
       try {
-        const watermarkSchema = await this.execute(`DESCRIBE appender_watermarks`);
+        const watermarkSchema = await this.executeRaw(`DESCRIBE appender_watermarks`);
         const idColumn = watermarkSchema.find((col: any) => col.column_name === 'last_processed_id');
 
         if (idColumn && idColumn.column_type.includes('BIGINT')) {
           logger.info('Migrating appender_watermarks table: BIGINT -> VARCHAR for last_processed_id');
-          await this.run(`DROP TABLE IF EXISTS appender_watermarks`);
+          await this.runRaw(`DROP TABLE IF EXISTS appender_watermarks`);
         }
       } catch (error) {
         // Table doesn't exist yet, that's fine
@@ -106,7 +136,7 @@ class DuckDBConnection {
 
       // Create appender watermarks table (used by SequentialAppenderService)
       // Note: last_processed_id is VARCHAR to support string IDs (e.g., Razorpay: 'pay_XXX', Facebook: 'xxx_yyy')
-      await this.run(`
+      await this.runRaw(`
         CREATE TABLE IF NOT EXISTS appender_watermarks (
           table_name VARCHAR PRIMARY KEY,
           last_processed_id VARCHAR,
@@ -118,7 +148,7 @@ class DuckDBConnection {
       `);
 
       // Create sync_log table if it does not exist
-      await this.run(`
+      await this.runRaw(`
         CREATE TABLE IF NOT EXISTS sync_log (
           id INTEGER PRIMARY KEY,
           table_name VARCHAR,
@@ -135,7 +165,7 @@ class DuckDBConnection {
 
       logger.info('sync_log table ready (preserved existing data if any)');
 
-      await this.run(`
+      await this.runRaw(`
         CREATE SEQUENCE IF NOT EXISTS sync_log_id_seq START 1
       `);
 
@@ -148,8 +178,10 @@ class DuckDBConnection {
     }
   }
 
-  async execute(query: string, params?: any[]): Promise<any[]> {
-    await this.ensureInitialized();
+  /**
+   * Execute query without waiting for initialization (internal use only during initialization)
+   */
+  private executeRaw(query: string, params?: any[]): Promise<any[]> {
     return new Promise((resolve, reject) => {
       if (params && params.length > 0) {
         this.db.all(query, ...params, (err: any, rows: any) => {
@@ -173,8 +205,15 @@ class DuckDBConnection {
     });
   }
 
-  async run(query: string, params?: any[]): Promise<void> {
+  async execute(query: string, params?: any[]): Promise<any[]> {
     await this.ensureInitialized();
+    return this.executeRaw(query, params);
+  }
+
+  /**
+   * Run query without waiting for initialization (internal use only during initialization)
+   */
+  private runRaw(query: string, params?: any[]): Promise<void> {
     return new Promise((resolve, reject) => {
       if (params && params.length > 0) {
         this.db.run(query, ...params, (err: any) => {
@@ -196,6 +235,11 @@ class DuckDBConnection {
         });
       }
     });
+  }
+
+  async run(query: string, params?: any[]): Promise<void> {
+    await this.ensureInitialized();
+    return this.runRaw(query, params);
   }
 
   async testConnection(): Promise<boolean> {

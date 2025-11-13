@@ -55,8 +55,9 @@ class AutomationService {
 
   /**
    * Start all automation tasks
+   * @param syncOffsetMs Optional offset in milliseconds to stagger sync intervals across multiple databases
    */
-  public async start(): Promise<void> {
+  public async start(syncOffsetMs: number = 0): Promise<void> {
     if (this.isRunning) {
       logger.warn('Automation service already running');
       return;
@@ -65,9 +66,9 @@ class AutomationService {
     this.isRunning = true;
     logger.info('🤖 Starting automation service...');
 
-    // Start periodic sync
+    // Start periodic sync with offset to prevent multiple databases syncing simultaneously
     if (config.automation.autoStartSync) {
-      await this.startPeriodicSync();
+      await this.startPeriodicSync(syncOffsetMs);
     }
 
     // Start automatic cleanup
@@ -122,21 +123,22 @@ class AutomationService {
    * Start periodic incremental sync
    * Respects ENABLE_INCREMENTAL_SYNC configuration flag
    */
-  private async startPeriodicSync(): Promise<void> {
+  private async startPeriodicSync(offsetMs: number = 0): Promise<void> {
     const intervalMinutes = config.sync.intervalMinutes;
     const syncMode = config.sync.enableIncremental ? 'incremental' : 'full';
-    logger.info(`🔄 Periodic sync enabled: Every ${intervalMinutes} minutes (${syncMode} sync)`);
+    logger.info(`🔄 Periodic sync enabled: Every ${intervalMinutes} minutes (${syncMode} sync)${offsetMs > 0 ? ` with ${offsetMs / 1000}s offset` : ''}`);
 
-    // Run initial sync after 5 seconds
+    // Run initial sync after delay (5 seconds + offset to stagger databases)
+    const initialDelay = 5000 + offsetMs;
     setTimeout(async () => {
       if (config.sync.enableIncremental) {
         await this.performIncrementalSync();
       } else {
         await this.performFullSync();
       }
-    }, 5000);
+    }, initialDelay);
 
-    // Schedule periodic sync
+    // Schedule periodic sync with the same offset
     const intervalMs = intervalMinutes * 60 * 1000;
     this.syncInterval = setInterval(async () => {
       if (config.sync.enableIncremental) {
