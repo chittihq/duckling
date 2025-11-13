@@ -1,24 +1,114 @@
 import { Request, Response, NextFunction } from 'express';
+import { verifyToken, extractTokenFromHeader } from '../utils/jwtUtils';
+import config from '../config';
 
-declare module 'express-session' {
-  interface SessionData {
-    isAuthenticated?: boolean;
-    username?: string;
+// Extend Express Request to include JWT user info
+declare global {
+  namespace Express {
+    interface Request {
+      user?: {
+        username: string;
+      };
+    }
   }
 }
 
-export const requireAuth = (req: Request, res: Response, next: NextFunction): void => {
-  if (req.session && req.session.isAuthenticated) {
-    next();
-  } else {
+/**
+ * Middleware to verify JWT token
+ * Sets req.user if token is valid
+ */
+export const verifyJWT = (req: Request, res: Response, next: NextFunction): void => {
+  const authHeader = req.headers.authorization;
+  const token = extractTokenFromHeader(authHeader);
+
+  if (!token) {
     res.status(401).json({
       error: 'Unauthorized',
-      message: 'Authentication required',
+      message: 'Authentication token required',
       architecture: 'sequential-appender'
     });
+    return;
   }
+
+  const decoded = verifyToken(token);
+  if (!decoded) {
+    res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Invalid or expired token',
+      architecture: 'sequential-appender'
+    });
+    return;
+  }
+
+  // Attach user info to request
+  req.user = { username: decoded.username };
+  next();
 };
 
+/**
+ * Middleware to check for JWT or API key authentication (stateless)
+ * Supports two authentication methods: JWT and API key
+ */
+export const requireAuth = (req: Request, res: Response, next: NextFunction): void => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader) {
+    res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Authentication required. Provide JWT token or API key.',
+      architecture: 'sequential-appender'
+    });
+    return;
+  }
+
+  const token = extractTokenFromHeader(authHeader);
+
+  // Check if it's an API key
+  if (config.auth.apiKey && token === config.auth.apiKey) {
+    req.user = { username: 'api-key-user' };
+    next();
+    return;
+  }
+
+  // Try JWT verification
+  const decoded = verifyToken(token);
+  if (decoded) {
+    req.user = { username: decoded.username };
+    next();
+    return;
+  }
+
+  // No valid authentication found
+  res.status(401).json({
+    error: 'Unauthorized',
+    message: 'Invalid or expired token',
+    architecture: 'sequential-appender'
+  });
+};
+
+/**
+ * Check if request is authenticated via JWT or API key
+ */
 export const isAuthenticated = (req: Request): boolean => {
-  return !!(req.session && req.session.isAuthenticated);
+  // Check if user is already attached (JWT or API key verified)
+  if (req.user) {
+    return true;
+  }
+
+  // Check Authorization header
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return false;
+  }
+
+  const token = extractTokenFromHeader(authHeader);
+
+  // Check API key
+  if (config.auth.apiKey && token === config.auth.apiKey) {
+    return true;
+  }
+
+  // Check JWT
+  const decoded = verifyToken(token);
+  return !!decoded;
 };

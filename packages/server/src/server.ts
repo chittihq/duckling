@@ -1,6 +1,5 @@
 import express from 'express';
 import cors from 'cors';
-import session from 'express-session';
 import * as path from 'path';
 import * as http from 'http';
 import DuckDBConnection from './database/duckdb';
@@ -9,11 +8,22 @@ import SequentialAppenderService from './services/sequentialAppenderService';
 import AutomationService from './services/automationService';
 import WebSocketService from './services/websocketService';
 import LogBufferService from './services/logBufferService';
-import { requireAuth } from './middleware/auth';
 import { DatabaseConfigManager } from './database/databaseConfig';
 import { attachDatabaseContext, RequestWithDatabase } from './middleware/database';
+import { generateToken, verifyToken, extractTokenFromHeader } from './utils/jwtUtils';
 import config from './config';
 import logger from './logger';
+
+// Extend Express Request to include JWT user info
+declare global {
+  namespace Express {
+    interface Request {
+      user?: {
+        username: string;
+      };
+    }
+  }
+}
 
 class DuckDBServer {
   private app: express.Application;
@@ -42,26 +52,14 @@ class DuckDBServer {
     if (config.server.enableCors) {
       this.app.use(cors({
         origin: true, // Allow requests from any origin in development
-        credentials: true // Allow credentials (cookies, authorization headers)
+        credentials: true // Allow credentials (authorization headers)
       }));
     }
 
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-    // Session middleware for authentication
-    this.app.use(session({
-      secret: config.auth.sessionSecret,
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        secure: config.env === 'production',
-        httpOnly: true,
-        maxAge: 24 * 60 * 60 * 1000, // 24 hours
-        sameSite: config.env === 'production' ? 'strict' : 'lax' // Allow cross-origin in development
-      }
-    }));
-
+    // Request logging
     this.app.use((req, res, next) => {
       logger.info(`${req.method} ${req.path}`, {
         ip: req.ip,
@@ -72,36 +70,44 @@ class DuckDBServer {
   }
 
   /**
-   * Middleware to check for API key authorization
-   * Supports both Authorization header and session-based auth
+   * Middleware to check for JWT or API key authentication (stateless)
+   * Supports two authentication methods in priority order:
+   * 1. API key (exact match)
+   * 2. JWT token (verified and not expired)
    */
   private checkApiKeyOrSession(req: express.Request, res: express.Response, next: express.NextFunction): void {
-    // Check for API key in Authorization header
     const authHeader = req.headers.authorization;
 
-    if (authHeader) {
-      // Extract API key from "Bearer <key>" format
-      const apiKey = authHeader.startsWith('Bearer ')
-        ? authHeader.substring(7)
-        : authHeader;
-
-      // Validate API key
-      if (config.auth.apiKey && apiKey === config.auth.apiKey) {
-        // API key is valid, allow access
-        next();
-        return;
-      } else {
-        // Invalid API key
-        res.status(401).json({
-          success: false,
-          message: 'Invalid API key'
-        });
-        return;
-      }
+    if (!authHeader) {
+      res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Authentication required. Provide JWT token or API key in Authorization header.'
+      });
+      return;
     }
 
-    // No API key provided, fall back to session-based auth
-    requireAuth(req, res, next);
+    const token = extractTokenFromHeader(authHeader);
+
+    // Try API key first (exact match)
+    if (config.auth.apiKey && token === config.auth.apiKey) {
+      req.user = { username: 'api-key-user' };
+      next();
+      return;
+    }
+
+    // Try JWT verification
+    const decoded = verifyToken(token);
+    if (decoded) {
+      req.user = { username: decoded.username };
+      next();
+      return;
+    }
+
+    // Token provided but invalid
+    res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Invalid or expired token'
+    });
   }
 
   private setupRoutes(): void {
@@ -114,17 +120,6 @@ class DuckDBServer {
     this.app.get('/openapi.json', (req, res) => {
       res.sendFile(path.join(__dirname, '..', 'public', 'openapi.json'));
     });
-
-    // Logs API endpoints (require authentication)
-    this.app.get('/api/logs', this.getLogs.bind(this));
-    this.app.get('/api/sync-logs', this.getSyncLogs.bind(this));
-
-    // Database management endpoints (require authentication)
-    this.app.get('/api/databases', this.getDatabases.bind(this));
-    this.app.post('/api/databases', this.addDatabase.bind(this));
-    this.app.put('/api/databases/:id', this.updateDatabase.bind(this));
-    this.app.delete('/api/databases/:id', this.deleteDatabase.bind(this));
-    this.app.post('/api/databases/:id/test', this.testDatabaseConnection.bind(this));
 
     // Global authentication middleware - protects all routes except public ones
     this.app.use((req, res, next) => {
@@ -144,9 +139,22 @@ class DuckDBServer {
         return next();
       }
 
-      // All other routes require authentication
+      // All other routes require authentication (JWT, API key, or session)
       this.checkApiKeyOrSession(req, res, next);
     });
+
+    // Protected API endpoints (require authentication via JWT, API key, or session)
+
+    // Logs API endpoints
+    this.app.get('/api/logs', this.getLogs.bind(this));
+    this.app.get('/api/sync-logs', this.getSyncLogs.bind(this));
+
+    // Database management endpoints
+    this.app.get('/api/databases', this.getDatabases.bind(this));
+    this.app.post('/api/databases', this.addDatabase.bind(this));
+    this.app.put('/api/databases/:id', this.updateDatabase.bind(this));
+    this.app.delete('/api/databases/:id', this.deleteDatabase.bind(this));
+    this.app.post('/api/databases/:id/test', this.testDatabaseConnection.bind(this));
 
     // Serve static files from Nuxt build output (production)
     const publicPath = path.join(__dirname, '..', 'public');
@@ -718,13 +726,15 @@ class DuckDBServer {
       }
 
       if (username === config.auth.adminUsername && password === config.auth.adminPassword) {
-        req.session.isAuthenticated = true;
-        req.session.username = username;
+        // Generate JWT token (stateless authentication)
+        const token = generateToken(username);
 
         res.json({
           success: true,
           message: 'Login successful',
-          username
+          username,
+          token,
+          expiresIn: config.auth.jwtExpiresIn
         });
       } else {
         res.status(401).json({
@@ -743,19 +753,11 @@ class DuckDBServer {
 
   private async logout(req: express.Request, res: express.Response): Promise<void> {
     try {
-      req.session.destroy((err) => {
-        if (err) {
-          logger.error('Logout failed:', err);
-          res.status(500).json({
-            success: false,
-            message: 'Logout failed'
-          });
-        } else {
-          res.json({
-            success: true,
-            message: 'Logout successful'
-          });
-        }
+      // JWT is stateless - logout is handled client-side by discarding the token
+      // This endpoint exists for API compatibility
+      res.json({
+        success: true,
+        message: 'Logout successful. Please discard your JWT token on the client side.'
       });
     } catch (error) {
       logger.error('Logout failed:', error);
@@ -768,20 +770,49 @@ class DuckDBServer {
 
   private async checkAuth(req: express.Request, res: express.Response): Promise<void> {
     try {
-      if (req.session && req.session.isAuthenticated) {
+      const authHeader = req.headers.authorization;
+
+      if (!authHeader) {
+        res.json({
+          authenticated: false,
+          message: 'No authorization header provided'
+        });
+        return;
+      }
+
+      const token = extractTokenFromHeader(authHeader);
+
+      // Check if it's an API key
+      if (config.auth.apiKey && token === config.auth.apiKey) {
         res.json({
           authenticated: true,
-          username: req.session.username
+          username: 'api-key-user',
+          authMethod: 'api-key'
         });
-      } else {
-        res.json({
-          authenticated: false
-        });
+        return;
       }
+
+      // Check JWT token
+      const decoded = verifyToken(token);
+      if (decoded) {
+        res.json({
+          authenticated: true,
+          username: decoded.username,
+          authMethod: 'jwt'
+        });
+        return;
+      }
+
+      // Invalid token
+      res.json({
+        authenticated: false,
+        message: 'Invalid or expired token'
+      });
     } catch (error) {
       logger.error('Check auth failed:', error);
       res.status(500).json({
-        authenticated: false
+        authenticated: false,
+        message: 'Internal server error'
       });
     }
   }

@@ -81,6 +81,8 @@ export const config = {
     adminPassword: process.env.ADMIN_PASSWORD || '',
     sessionSecret: process.env.SESSION_SECRET || '',
     apiKey: process.env.DUCKLING_API_KEY || '',
+    jwtSecret: process.env.JWT_SECRET || process.env.SESSION_SECRET || 'default-jwt-secret-change-in-production',
+    jwtExpiresIn: process.env.JWT_EXPIRES_IN || '1h', // 1 hour by default
   }
 };
 
