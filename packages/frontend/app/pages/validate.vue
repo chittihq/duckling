@@ -37,7 +37,7 @@ const loadTables = async () => {
 
   try {
     const [duckdbTablesRes, mysqlTablesRes] = await Promise.all([
-      get<any[]>(getApiUrlWithDatabase('/tables')),
+      get<any[]>(getApiUrlWithDatabase('/api/tables')),
       get<string[]>(getApiUrlWithDatabase('/api/validation/mysql-tables'))
     ])
 

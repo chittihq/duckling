@@ -175,12 +175,12 @@ class DuckDBServer {
     this.app.post('/automation/cleanup', attachDatabaseContext, this.manualCleanup.bind(this));
 
     // Data access endpoints (with database context)
-    this.app.post('/query', attachDatabaseContext, this.executeQuery.bind(this));
-    this.app.get('/tables', attachDatabaseContext, this.getTables.bind(this));
-    this.app.get('/tables/counts/all', attachDatabaseContext, this.getAllTableCounts.bind(this));
-    this.app.get('/tables/:name/schema', attachDatabaseContext, this.getTableSchema.bind(this));
-    this.app.get('/tables/:name/data', attachDatabaseContext, this.getTableData.bind(this));
-    this.app.get('/tables/:name/count', attachDatabaseContext, this.getTableRowCount.bind(this));
+    this.app.post('/api/query', attachDatabaseContext, this.executeQuery.bind(this));
+    this.app.get('/api/tables', attachDatabaseContext, this.getTables.bind(this));
+    this.app.get('/api/tables/counts/all', attachDatabaseContext, this.getAllTableCounts.bind(this));
+    this.app.get('/api/tables/:name/schema', attachDatabaseContext, this.getTableSchema.bind(this));
+    this.app.get('/api/tables/:name/data', attachDatabaseContext, this.getTableData.bind(this));
+    this.app.get('/api/tables/:name/count', attachDatabaseContext, this.getTableRowCount.bind(this));
 
     // Enhanced metrics endpoint
     this.app.get('/metrics', this.getMetrics.bind(this));

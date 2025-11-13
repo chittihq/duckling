@@ -31,8 +31,8 @@ const loadTables = async () => {
   loading.value = true
   try {
     const [tablesRes, countsRes] = await Promise.all([
-      get<any[]>(getApiUrlWithDatabase('/tables')),
-      get<Record<string, number>>(getApiUrlWithDatabase('/tables/counts/all'))
+      get<any[]>(getApiUrlWithDatabase('/api/tables')),
+      get<Record<string, number>>(getApiUrlWithDatabase('/api/tables/counts/all'))
     ])
 
     tables.value = tablesRes
@@ -80,7 +80,7 @@ const loadTableData = async (tableName: string) => {
 
   loadingData.value = true
   try {
-    const response = await get<any[]>(getApiUrlWithDatabase(`/tables/${tableName}/data?limit=1000`))
+    const response = await get<any[]>(getApiUrlWithDatabase(`/api/tables/${tableName}/data?limit=1000`))
 
     tableData.value = response
 

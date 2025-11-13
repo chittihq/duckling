@@ -69,7 +69,7 @@ const executeQuery = async () => {
 
   try {
     const response = await post<{ result: any[] }>(
-      getApiUrlWithDatabase('/query'),
+      getApiUrlWithDatabase('/api/query'),
       { sql: sqlQuery.value.trim(), database: selectedDatabase.value }
     )
 
