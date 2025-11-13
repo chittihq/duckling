@@ -6,8 +6,7 @@ definePageMeta({
   layout: 'default'
 })
 
-const config = useRuntimeConfig()
-const apiBase = config.public.apiBase
+const { get } = useApi()
 const { getApiUrlWithDatabase, selectedDatabaseId } = useDatabase()
 
 interface SyncLog {
@@ -65,9 +64,8 @@ const fetchLogs = async () => {
       params.append('status', filters.value.status.join(','))
     }
 
-    const response = await $fetch<{ success: boolean; logs: SyncLog[] }>(
-      getApiUrlWithDatabase(`${apiBase}/api/sync-logs?${params}`),
-      { credentials: 'include' }
+    const response = await get<{ success: boolean; logs: SyncLog[] }>(
+      getApiUrlWithDatabase(`/api/sync-logs?${params}`)
     )
 
     if (response.success && response.logs) {

@@ -134,7 +134,7 @@ const saving = ref(false);
 const testing = ref('');
 const deleting = ref('');
 const connectionStatus = ref<Record<string, { mysql: string; duckdb: string }>>({});
-const config = useRuntimeConfig()
+const { get, post, put, delete: del } = useApi()
 
 onMounted(() => {
   loadDatabases();
@@ -145,8 +145,7 @@ async function loadDatabases() {
     loading.value = true;
     error.value = '';
 
-    const response = await fetch(`${config.public.apiBase}/api/databases`);
-    const data = await response.json();
+    const data = await get<{ success: boolean; databases: Database[]; error?: string }>('/api/databases');
 
     if (data.success) {
       databases.value = data.databases;
@@ -174,19 +173,9 @@ async function saveDatabase() {
   try {
     saving.value = true;
 
-    const url = editingDb.value
-      ? `${config.public.apiBase}/api/databases/${editingDb.value.id}`
-      : `${config.public.apiBase}/api/databases`;
-
-    const method = editingDb.value ? 'PUT' : 'POST';
-
-    const response = await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(formData.value)
-    });
-
-    const data = await response.json();
+    const data = editingDb.value
+      ? await put<{ success: boolean; error?: string }>(`/api/databases/${editingDb.value.id}`, formData.value)
+      : await post<{ success: boolean; error?: string }>('/api/databases', formData.value);
 
     if (data.success) {
       showAddDialog.value = false;
@@ -212,11 +201,7 @@ async function deleteDatabase(id: string) {
   try {
     deleting.value = id;
 
-    const response = await fetch(`${config.public.apiBase}/api/databases/${id}`, {
-      method: 'DELETE'
-    });
-
-    const data = await response.json();
+    const data = await del<{ success: boolean; error?: string }>(`/api/databases/${id}`);
 
     if (data.success) {
       await loadDatabases();
@@ -235,13 +220,11 @@ async function testConnection(id: string) {
   try {
     testing.value = id;
 
-    const response = await fetch(`${config.public.apiBase}/api/databases/${id}/test`, {
-      method: 'POST'
-    });
+    const data = await post<{ success: boolean; connections?: { mysql: string; duckdb: string }; error?: string }>(
+      `/api/databases/${id}/test`
+    );
 
-    const data = await response.json();
-
-    if (data.success) {
+    if (data.success && data.connections) {
       connectionStatus.value[id] = data.connections;
     } else {
       alert(data.error || 'Failed to test connection');

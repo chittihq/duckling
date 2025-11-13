@@ -6,8 +6,7 @@ definePageMeta({
   layout: 'default'
 })
 
-const config = useRuntimeConfig()
-const apiBase = config.public.apiBase
+const { get, post } = useApi()
 const { getApiUrlWithDatabase, selectedDatabaseId } = useDatabase()
 
 interface Table {
@@ -32,8 +31,8 @@ const loadTables = async () => {
   loading.value = true
   try {
     const [tablesRes, countsRes] = await Promise.all([
-      $fetch<any[]>(getApiUrlWithDatabase(`${apiBase}/tables`), { credentials: 'include' }),
-      $fetch<Record<string, number>>(getApiUrlWithDatabase(`${apiBase}/tables/counts/all`), { credentials: 'include' })
+      get<any[]>(getApiUrlWithDatabase('/tables')),
+      get<Record<string, number>>(getApiUrlWithDatabase('/tables/counts/all'))
     ])
 
     tables.value = tablesRes
@@ -81,9 +80,7 @@ const loadTableData = async (tableName: string) => {
 
   loadingData.value = true
   try {
-    const response = await $fetch<any[]>(getApiUrlWithDatabase(`${apiBase}/tables/${tableName}/data?limit=1000`), {
-      credentials: 'include'
-    })
+    const response = await get<any[]>(getApiUrlWithDatabase(`/tables/${tableName}/data?limit=1000`))
 
     tableData.value = response
 
@@ -113,10 +110,7 @@ const refreshTableData = async () => {
 const syncTable = async (tableName: string) => {
   syncingTable.value = tableName
   try {
-    const response = await $fetch<{ recordsProcessed: number }>(getApiUrlWithDatabase(`${apiBase}/sync/table/${tableName}`), {
-      method: 'POST',
-      credentials: 'include'
-    })
+    const response = await post<{ recordsProcessed: number }>(getApiUrlWithDatabase(`/sync/table/${tableName}`))
 
     alert(`Table "${tableName}" synced successfully: ${response.recordsProcessed || 0} records`)
     await loadTables()

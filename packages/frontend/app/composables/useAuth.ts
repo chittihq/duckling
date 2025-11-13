@@ -1,3 +1,46 @@
+const TOKEN_KEY = 'duckling_jwt_token'
+
+/**
+ * Get JWT token from localStorage
+ */
+export const getAuthToken = (): string | null => {
+  if (process.client) {
+    return localStorage.getItem(TOKEN_KEY)
+  }
+  return null
+}
+
+/**
+ * Set JWT token in localStorage
+ */
+export const setAuthToken = (token: string): void => {
+  if (process.client) {
+    localStorage.setItem(TOKEN_KEY, token)
+  }
+}
+
+/**
+ * Remove JWT token from localStorage
+ */
+export const removeAuthToken = (): void => {
+  if (process.client) {
+    localStorage.removeItem(TOKEN_KEY)
+  }
+}
+
+/**
+ * Get authorization headers with JWT token
+ */
+export const getAuthHeaders = (): Record<string, string> => {
+  const token = getAuthToken()
+  if (token) {
+    return {
+      'Authorization': `Bearer ${token}`
+    }
+  }
+  return {}
+}
+
 export const useAuth = () => {
   const config = useRuntimeConfig()
   const apiBase = config.public.apiBase
@@ -9,8 +52,16 @@ export const useAuth = () => {
   const checkAuth = async () => {
     try {
       isLoading.value = true
-      const response = await $fetch<{ authenticated: boolean; username?: string }>(`${apiBase}/api/check-auth`, {
-        credentials: 'include'
+      const token = getAuthToken()
+
+      if (!token) {
+        isAuthenticated.value = false
+        username.value = null
+        return false
+      }
+
+      const response = await $fetch<{ authenticated: boolean; username?: string; authMethod?: string }>(`${apiBase}/api/check-auth`, {
+        headers: getAuthHeaders()
       })
 
       isAuthenticated.value = response.authenticated
@@ -20,6 +71,7 @@ export const useAuth = () => {
     } catch (error) {
       isAuthenticated.value = false
       username.value = null
+      removeAuthToken() // Remove invalid token
       return false
     } finally {
       isLoading.value = false
@@ -29,16 +81,29 @@ export const useAuth = () => {
   const login = async (loginUsername: string, password: string) => {
     try {
       isLoading.value = true
-      const response = await $fetch<{ success: boolean; message: string; username?: string }>(`${apiBase}/api/login`, {
+      const response = await $fetch<{
+        success: boolean;
+        message: string;
+        username?: string;
+        token?: string;
+        expiresIn?: string;
+      }>(`${apiBase}/api/login`, {
         method: 'POST',
-        body: { username: loginUsername, password },
-        credentials: 'include'
+        body: { username: loginUsername, password }
       })
 
-      if (response.success) {
+      if (response.success && response.token) {
+        // Store JWT token
+        setAuthToken(response.token)
+
         isAuthenticated.value = true
         username.value = response.username || loginUsername
-        return { success: true, message: response.message }
+
+        return {
+          success: true,
+          message: response.message,
+          expiresIn: response.expiresIn
+        }
       } else {
         return { success: false, message: response.message }
       }
@@ -54,13 +119,18 @@ export const useAuth = () => {
 
   const logout = async () => {
     try {
-      await $fetch(`${apiBase}/api/logout`, {
-        method: 'POST',
-        credentials: 'include'
-      })
+      const token = getAuthToken()
+      if (token) {
+        await $fetch(`${apiBase}/api/logout`, {
+          method: 'POST',
+          headers: getAuthHeaders()
+        })
+      }
     } catch (error) {
       console.error('Logout error:', error)
     } finally {
+      // Clear token and state
+      removeAuthToken()
       isAuthenticated.value = false
       username.value = null
     }
@@ -72,6 +142,8 @@ export const useAuth = () => {
     isLoading,
     checkAuth,
     login,
-    logout
+    logout,
+    getAuthToken,
+    getAuthHeaders
   }
 }

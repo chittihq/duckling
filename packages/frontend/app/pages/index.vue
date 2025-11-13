@@ -6,8 +6,7 @@ definePageMeta({
   layout: 'default'
 })
 
-const config = useRuntimeConfig()
-const apiBase = config.public.apiBase
+const { get, post } = useApi()
 const { getApiUrlWithDatabase, selectedDatabaseId } = useDatabase()
 
 interface HealthData {
@@ -47,8 +46,8 @@ const queryItemsPerPage = ref(100)
 const refreshData = async () => {
   try {
     const [healthRes, statusRes] = await Promise.all([
-      $fetch<HealthData>(getApiUrlWithDatabase(`${apiBase}/health`), { credentials: 'include' }),
-      $fetch<StatusData>(getApiUrlWithDatabase(`${apiBase}/status`), { credentials: 'include' })
+      get<HealthData>(getApiUrlWithDatabase('/health')),
+      get<StatusData>(getApiUrlWithDatabase('/status'))
     ])
     health.value = healthRes
     status.value = statusRes
@@ -69,11 +68,10 @@ const executeQuery = async () => {
   const startTime = Date.now()
 
   try {
-    const response = await $fetch<{ result: any[] }>(getApiUrlWithDatabase(`${apiBase}/query`), {
-      method: 'POST',
-      body: { sql: sqlQuery.value.trim(), database: selectedDatabase.value },
-      credentials: 'include'
-    })
+    const response = await post<{ result: any[] }>(
+      getApiUrlWithDatabase('/query'),
+      { sql: sqlQuery.value.trim(), database: selectedDatabase.value }
+    )
 
     queryExecutionTime.value = Date.now() - startTime
     queryResults.value = response.result || []

@@ -6,8 +6,7 @@ definePageMeta({
   layout: 'default'
 })
 
-const config = useRuntimeConfig()
-const apiBase = config.public.apiBase
+const { get, post, delete: del } = useApi()
 const { getApiUrlWithDatabase, selectedDatabaseId } = useDatabase()
 
 interface TableValidation {
@@ -38,8 +37,8 @@ const loadTables = async () => {
 
   try {
     const [duckdbTablesRes, mysqlTablesRes] = await Promise.all([
-      $fetch<any[]>(getApiUrlWithDatabase(`${apiBase}/tables`), { credentials: 'include' }),
-      $fetch<string[]>(getApiUrlWithDatabase(`${apiBase}/api/validation/mysql-tables`), { credentials: 'include' })
+      get<any[]>(getApiUrlWithDatabase('/tables')),
+      get<string[]>(getApiUrlWithDatabase('/api/validation/mysql-tables'))
     ])
 
     const duckdbTables = duckdbTablesRes.map(t => t.name || t).filter((name: string) => !name.startsWith('temp_'))
@@ -94,11 +93,10 @@ const startValidation = async () => {
 
 const loadTableDetails = async (table: TableValidation) => {
   try {
-    const response = await $fetch<any>(getApiUrlWithDatabase(`${apiBase}/api/validation/table-details`), {
-      method: 'POST',
-      body: { tableName: table.name },
-      credentials: 'include'
-    })
+    const response = await post<any>(
+      getApiUrlWithDatabase('/api/validation/table-details'),
+      { tableName: table.name }
+    )
 
     table.duckdb = response.duckdb
     table.mysql = response.mysql
@@ -130,10 +128,7 @@ const syncTable = async (table: TableValidation) => {
   table.syncing = true
 
   try {
-    const response = await $fetch<any>(getApiUrlWithDatabase(`${apiBase}/sync/table/${table.name}`), {
-      method: 'POST',
-      credentials: 'include'
-    })
+    const response = await post<any>(getApiUrlWithDatabase(`/sync/table/${table.name}`))
 
     table.syncing = false
     await revalidateTable(table)
@@ -160,12 +155,8 @@ const deleteTable = async (table: TableValidation) => {
   table.deleting = true
 
   try {
-    const response = await $fetch<{ success: boolean; message: string }>(
-      getApiUrlWithDatabase(`${apiBase}/api/validation/table/${table.name}`),
-      {
-        method: 'DELETE',
-        credentials: 'include'
-      }
+    const response = await del<{ success: boolean; message: string }>(
+      getApiUrlWithDatabase(`/api/validation/table/${table.name}`)
     )
 
     if (response.success) {
@@ -211,12 +202,8 @@ const bulkDeleteFiltered = async () => {
 
     const results = await Promise.allSettled(
       batch.map(async table => {
-        const response = await $fetch<{ success: boolean }>(
-          getApiUrlWithDatabase(`${apiBase}/api/validation/table/${table.name}`),
-          {
-            method: 'DELETE',
-            credentials: 'include'
-          }
+        const response = await del<{ success: boolean }>(
+          getApiUrlWithDatabase(`/api/validation/table/${table.name}`)
         )
         return { table, response }
       })

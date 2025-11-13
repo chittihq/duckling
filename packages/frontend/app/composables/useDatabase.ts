@@ -34,9 +34,8 @@ export function useDatabase() {
 
   async function loadDatabases() {
     try {
-      const config = useRuntimeConfig()
-      const response = await fetch(`${config.public.apiBase}/api/databases`);
-      const data = await response.json();
+      const { get } = useApi();
+      const data = await get<{ success: boolean; databases: Database[] }>('/api/databases');
 
       if (data.success) {
         databases.value = data.databases;
