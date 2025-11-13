@@ -6,7 +6,7 @@ definePageMeta({
   layout: 'default'
 })
 
-const { get, post } = useApi()
+const { get, post, delete: del } = useApi()
 const { getApiUrlWithDatabase, selectedDatabaseId } = useDatabase()
 
 interface HealthData {
@@ -132,10 +132,9 @@ LIMIT 100;`
 const runFullSync = async () => {
   operating.value = 'full-sync'
   try {
-    const response = await $fetch<{ totalRecords: number }>(getApiUrlWithDatabase(`${apiBase}/sync/full`), {
-      method: 'POST',
-      credentials: 'include'
-    })
+    const response = await post<{ totalRecords: number }>(
+      getApiUrlWithDatabase('/sync/full')
+    )
     alert(`Full sync completed: ${response.totalRecords} records`)
   } catch (err: any) {
     alert('Full sync failed: ' + (err.data?.error || err.message))
@@ -148,10 +147,9 @@ const runFullSync = async () => {
 const runIncrementalSync = async () => {
   operating.value = 'incremental-sync'
   try {
-    const response = await $fetch<{ totalRecords: number }>(getApiUrlWithDatabase(`${apiBase}/sync/incremental`), {
-      method: 'POST',
-      credentials: 'include'
-    })
+    const response = await post<{ totalRecords: number }>(
+      getApiUrlWithDatabase('/sync/incremental')
+    )
     alert(`Incremental sync completed: ${response.totalRecords} records`)
   } catch (err: any) {
     alert('Incremental sync failed: ' + (err.data?.error || err.message))
@@ -164,7 +162,7 @@ const runIncrementalSync = async () => {
 const validateSync = async () => {
   operating.value = 'validate'
   try {
-    const response = await $fetch<any[]>(getApiUrlWithDatabase(`${apiBase}/sync/validate`), { credentials: 'include' })
+    const response = await get<any[]>(getApiUrlWithDatabase('/sync/validate'))
     const mismatches = response.filter(r => !r.match)
     alert(mismatches.length === 0 ? 'All tables are in sync!' : `Found ${mismatches.length} mismatches`)
   } catch (err: any) {
@@ -181,7 +179,7 @@ const clearAllData = async () => {
 
   operating.value = 'clear-all'
   try {
-    await $fetch(getApiUrlWithDatabase(`${apiBase}/storage/clear-all`), { method: 'DELETE', credentials: 'include' })
+    await del(getApiUrlWithDatabase('/storage/clear-all'))
     alert('All data cleared successfully')
   } catch (err: any) {
     alert('Clear all data failed: ' + (err.data?.error || err.message))
