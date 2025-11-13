@@ -50,34 +50,87 @@ duckling/
 - Add package to root: `pnpm add -w <package-name>`
 
 ### Build & Development
-- Build all packages: `pnpm run build`
-- Build specific package: `pnpm run build:server` | `build:frontend` | `build:sdk` | `build:shared`
-- Development with hot reload (all): `pnpm run dev`
-- Development (specific): `pnpm run dev:server` | `dev:frontend` | `dev:sdk`
-- Start production: `pnpm run start:server` | `start:frontend`
+
+**IMPORTANT:** Since development happens in Docker containers, always run build/lint commands **inside the running container**:
+
+```bash
+# ✅ CORRECT - Run commands inside Docker containers:
+docker exec duckling-server pnpm run build:server
+docker exec duckling-frontend pnpm run build:frontend
+docker exec duckling-server pnpm run lint
+docker exec duckling-frontend pnpm run lint
+
+# ❌ WRONG - Don't run locally (different Node versions, missing dependencies):
+pnpm run build:server
+pnpm run lint
+```
+
+**Build Commands (run inside container):**
+- Build server: `docker exec duckling-server pnpm run build:server`
+- Build frontend: `docker exec duckling-frontend pnpm run build:frontend`
+- Build SDK: `docker exec duckling-server pnpm run build:sdk`
+- Build shared: `docker exec duckling-server pnpm run build:shared`
+- Build all: `docker exec duckling-server pnpm run build`
+
+**Lint Commands (run inside container):**
+- Lint server: `docker exec duckling-server pnpm run lint`
+- Lint frontend: `docker exec duckling-frontend pnpm run lint`
+
+**Development Mode:**
+- Development runs automatically in containers via docker-compose (hot reload enabled)
+- No need to manually run `pnpm run dev` - containers start with dev mode by default
+- Check logs: `docker-compose logs -f duckdb-server` or `docker-compose logs -f duckdb-frontend`
 
 ### CLI Operations (Server)
-- Run full sync: `pnpm run sync` or `node packages/server/dist/cli.js sync`
-- Run incremental sync: `pnpm run sync:incremental` or `node packages/server/dist/cli.js sync-incremental`
-- Health check: `pnpm run health` or `node packages/server/dist/cli.js health`
-- System status: `pnpm run status` or `node packages/server/dist/cli.js status`
-- Validate data integrity: `pnpm run validate` or `node packages/server/dist/cli.js validate`
-- List tables: `node packages/server/dist/cli.js tables`
-- Execute query: `node packages/server/dist/cli.js query "SELECT * FROM table_name"`
+
+Run CLI commands **inside the Docker container**:
+
+```bash
+# Run CLI commands inside container
+docker exec duckling-server node packages/server/dist/cli.js <command>
+
+# Examples:
+docker exec duckling-server node packages/server/dist/cli.js health
+docker exec duckling-server node packages/server/dist/cli.js sync
+docker exec duckling-server node packages/server/dist/cli.js tables
+docker exec duckling-server node packages/server/dist/cli.js query "SELECT COUNT(*) FROM User"
+```
+
+**Available CLI Commands:**
+- Health check: `docker exec duckling-server node packages/server/dist/cli.js health`
+- Full sync: `docker exec duckling-server node packages/server/dist/cli.js sync`
+- Incremental sync: `docker exec duckling-server node packages/server/dist/cli.js sync-incremental`
+- System status: `docker exec duckling-server node packages/server/dist/cli.js status`
+- Validate data: `docker exec duckling-server node packages/server/dist/cli.js validate`
+- List tables: `docker exec duckling-server node packages/server/dist/cli.js tables`
+- Execute query: `docker exec duckling-server node packages/server/dist/cli.js query "SELECT * FROM table_name"`
 
 ### MySQL Query Utility
+
 Direct MySQL query execution (bypasses DuckDB, queries source directly):
+
 ```bash
-node scripts/mysql.js "SELECT COUNT(*) FROM User"
-./scripts/mysql.js "SHOW TABLES"
+# Run inside Docker container
+docker exec duckling-server node scripts/mysql.js "SELECT COUNT(*) FROM User"
+docker exec duckling-server node scripts/mysql.js "SHOW TABLES"
 ```
+
 Returns JSON results. Uses `MYSQL_CONNECTION_STRING` from environment.
 
 ### Docker Development
+
+**Development Environment:**
+All development happens in a **docker-compose environment running in dev mode** with hot reload enabled:
+- Both server and frontend run inside Docker containers
+- Volume mounts sync local code changes to containers
+- Hot reload automatically applies changes without restart
+- No need to run `pnpm run dev` locally - containers handle it
+
+**Docker Commands:**
 - Start all services: `docker-compose up -d`
 - View server logs: `docker-compose logs -f duckdb-server`
 - View frontend logs: `docker-compose logs -f duckdb-frontend`
-- Restart specific service: `docker-compose restart duckdb-server`
+- Stop all services: `docker-compose down`
 
 **Service Ports:**
 - Server: http://localhost:3001 (backend API)
@@ -90,20 +143,31 @@ Returns JSON results. Uses `MYSQL_CONNECTION_STRING` from environment.
   - Updating system dependencies (apt packages)
   - Major structural changes (monorepo reorganization)
 
-- ❌ **DON'T rebuild** for:
+- ❌ **DON'T rebuild or restart** for:
   - Code changes in `.ts` or `.vue` files (hot reload via nodemon/Nuxt)
   - Configuration changes in `.env` files
   - View/template changes in `packages/server/public/` directory
   - Component changes in `packages/frontend/app/` directory
   - **Both containers use hot reload - changes apply automatically!**
 
+**Hot Reload Details:**
+- **Server (nodemon)**: Watches `.ts` files, auto-restarts Node.js process on changes
+- **Frontend (Nuxt HMR)**: Watches `.vue`, `.ts` files, hot module replacement without page reload
+- **No manual restart needed** - Just save your file and wait a few seconds
+
 ```bash
-# For code changes, just restart the container (NO rebuild needed):
+# ❌ WRONG - Don't do this for code changes:
 docker-compose restart duckdb-server
 docker-compose restart duckdb-frontend
 
-# Or simply let it run - hot reload will detect changes automatically
+# ✅ CORRECT - Just save the file and let hot reload handle it:
+# (Make code changes, save file, hot reload detects and applies changes automatically)
 ```
+
+**When to Restart (rarely needed):**
+- Only restart if hot reload fails or you need to clear stuck state
+- After changing environment variables in docker-compose.yml
+- After modifying volume mounts or network settings
 
 ## Architecture Overview
 
@@ -574,11 +638,14 @@ All data endpoints (health, sync, tables, query) accept the `?db={database_id}` 
 - Error context preservation for debugging
 
 ### Testing Database Operations
-Always build and test CLI commands before modifying database operations:
+Always build and test CLI commands inside Docker before modifying database operations:
 ```bash
-pnpm run build
-node dist/cli.js health
-node dist/cli.js sync
+# Build inside container
+docker exec duckling-server pnpm run build:server
+
+# Test CLI commands
+docker exec duckling-server node packages/server/dist/cli.js health
+docker exec duckling-server node packages/server/dist/cli.js sync
 ```
 
 ### Memory Management
@@ -675,4 +742,4 @@ The automation is powered by `AutomationService` (`src/services/automationServic
 - Integrates with `SequentialAppenderService` for health tracking
 - Provides manual override endpoints for emergency operations
 - Respects `?db={database_id}` parameter for multi-database support
-- always run pnpm run build:server inside the running docker container
+- Always build inside container: `docker exec duckling-server pnpm run build:server`
