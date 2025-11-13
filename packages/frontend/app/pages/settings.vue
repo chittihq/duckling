@@ -36,7 +36,6 @@
                   Edit
                 </Button>
                 <Button
-                  v-if="db.id !== 'default'"
                   @click="deleteDatabase(db.id)"
                   variant="destructive"
                   size="sm"
