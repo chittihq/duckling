@@ -197,8 +197,9 @@ class AutomationService {
   private async startAutoCleanup(): Promise<void> {
     logger.info(`🧹 Auto-cleanup enabled: Every ${config.automation.cleanupIntervalHours}h, retention ${config.automation.retentionDays} days`);
 
-    // Run cleanup immediately on startup
-    await this.performCleanup();
+    // Skip immediate cleanup on startup to speed up server initialization
+    // First cleanup will run after the scheduled interval
+    // await this.performCleanup();
 
     // Schedule periodic cleanup
     const intervalMs = config.automation.cleanupIntervalHours * 60 * 60 * 1000;
@@ -231,8 +232,9 @@ class AutomationService {
   private async startAutoBackup(): Promise<void> {
     logger.info(`💾 Auto-backup enabled: Every ${config.automation.backupIntervalHours}h, retention ${config.automation.backupRetentionDays} days`);
 
-    // Run backup immediately on startup
-    await this.performBackup();
+    // Skip immediate backup on startup to speed up server initialization (especially for large 5GB+ databases)
+    // First backup will run after the scheduled interval (24 hours by default)
+    // await this.performBackup();
 
     // Schedule periodic backup
     const intervalMs = config.automation.backupIntervalHours * 60 * 60 * 1000;

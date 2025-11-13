@@ -1244,13 +1244,13 @@ class DuckDBServer {
     try {
       console.log('Starting DuckDB Server...');
 
-      // Initialize all databases
-      console.log('Initializing all databases...');
+      // Initialize all databases in parallel for faster startup
+      console.log('Initializing all databases in parallel...');
       const dbManager = DatabaseConfigManager.getInstance();
       const allDatabases = dbManager.getAllDatabases();
 
-      for (let i = 0; i < allDatabases.length; i++) {
-        const dbConfig = allDatabases[i];
+      // Create initialization promises for all databases
+      const initPromises = allDatabases.map(async (dbConfig, i) => {
         try {
           console.log(`Initializing database: ${dbConfig.name} (${dbConfig.id})`);
 
@@ -1280,7 +1280,10 @@ class DuckDBServer {
           console.error(`✗ Failed to initialize database ${dbConfig.name}:`, error);
           // Continue with other databases even if one fails
         }
-      }
+      });
+
+      // Wait for all databases to initialize in parallel
+      await Promise.all(initPromises);
 
       // Create HTTP server and attach WebSocket
       console.log('Starting HTTP server...');

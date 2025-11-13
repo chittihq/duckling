@@ -98,50 +98,8 @@ class DuckDBConnection {
       // Wait for connection to be ready (especially important for large database files)
       await this.waitForConnection();
 
-      // Configure WAL settings for optimal performance
-      await this.configureWAL();
-
-      // Log WAL size for monitoring
-      const walSize = await this.getWALSize();
-      if (walSize > 0) {
-        logger.info(`Current WAL size: ${(walSize / 1024 / 1024).toFixed(2)} MB`);
-      }
-
-      // Check if sync_log exists and what type it is (VIEW or TABLE)
-      const syncLogCheck = await this.executeRaw(`
-        SELECT table_type FROM information_schema.tables
-        WHERE table_schema = 'main' AND table_name = 'sync_log'
-      `);
-
-      // Only drop and recreate if it's a VIEW (not a TABLE)
-      if (syncLogCheck.length > 0 && syncLogCheck[0].table_type === 'VIEW') {
-        await this.runRaw(`DROP VIEW IF EXISTS sync_log`);
-        logger.info('Dropped sync_log VIEW (will recreate as TABLE)');
-      }
-
-      // Same for sync_metadata
-      const syncMetadataCheck = await this.executeRaw(`
-        SELECT table_type FROM information_schema.tables
-        WHERE table_schema = 'main' AND table_name = 'sync_metadata'
-      `);
-
-      if (syncMetadataCheck.length > 0 && syncMetadataCheck[0].table_type === 'VIEW') {
-        await this.runRaw(`DROP VIEW IF EXISTS sync_metadata`);
-        logger.info('Dropped sync_metadata VIEW (will recreate as TABLE)');
-      }
-
-      // Check if appender_watermarks needs schema migration (BIGINT -> VARCHAR for string IDs)
-      try {
-        const watermarkSchema = await this.executeRaw(`DESCRIBE appender_watermarks`);
-        const idColumn = watermarkSchema.find((col: any) => col.column_name === 'last_processed_id');
-
-        if (idColumn && idColumn.column_type.includes('BIGINT')) {
-          logger.info('Migrating appender_watermarks table: BIGINT -> VARCHAR for last_processed_id');
-          await this.runRaw(`DROP TABLE IF EXISTS appender_watermarks`);
-        }
-      } catch (error) {
-        // Table doesn't exist yet, that's fine
-      }
+      // Create required tables immediately (needed for sync operations)
+      // Schema checks and migrations are deferred to background for faster startup
 
       // Create appender watermarks table (used by SequentialAppenderService)
       // Note: last_processed_id is VARCHAR to support string IDs (e.g., Razorpay: 'pay_XXX', Facebook: 'xxx_yyy')
@@ -172,19 +130,91 @@ class DuckDBConnection {
         )
       `);
 
-      logger.info('sync_log table ready (preserved existing data if any)');
-
       await this.runRaw(`
         CREATE SEQUENCE IF NOT EXISTS sync_log_id_seq START 1
       `);
 
-      logger.info('DuckDB database initialized successfully');
+      logger.info('DuckDB database initialized successfully (optimization running in background)');
+
+      // Run non-critical optimizations in background to speed up startup
+      this.runOptimizationAsync();
     } catch (error) {
       logger.error('Failed to initialize DuckDB database:', error);
       throw error;
     } finally {
       this.isInitializing = false;
     }
+  }
+
+  /**
+   * Run non-critical optimizations in background after initialization
+   * This speeds up server startup by deferring WAL config and schema migrations
+   */
+  private runOptimizationAsync(): void {
+    setImmediate(async () => {
+      try {
+        // Configure WAL settings for optimal performance
+        await this.configureWAL();
+
+        // Log WAL size for monitoring
+        const walSize = await this.getWALSize();
+        if (walSize > 0) {
+          logger.info(`Current WAL size: ${(walSize / 1024 / 1024).toFixed(2)} MB`);
+        }
+
+        // Check if sync_log exists and what type it is (VIEW or TABLE)
+        const syncLogCheck = await this.executeRaw(`
+          SELECT table_type FROM information_schema.tables
+          WHERE table_schema = 'main' AND table_name = 'sync_log'
+        `);
+
+        // Only drop and recreate if it's a VIEW (not a TABLE)
+        if (syncLogCheck.length > 0 && syncLogCheck[0].table_type === 'VIEW') {
+          await this.runRaw(`DROP VIEW IF EXISTS sync_log`);
+          logger.info('Dropped sync_log VIEW (will recreate as TABLE)');
+        }
+
+        // Same for sync_metadata
+        const syncMetadataCheck = await this.executeRaw(`
+          SELECT table_type FROM information_schema.tables
+          WHERE table_schema = 'main' AND table_name = 'sync_metadata'
+        `);
+
+        if (syncMetadataCheck.length > 0 && syncMetadataCheck[0].table_type === 'VIEW') {
+          await this.runRaw(`DROP VIEW IF EXISTS sync_metadata`);
+          logger.info('Dropped sync_metadata VIEW (will recreate as TABLE)');
+        }
+
+        // Check if appender_watermarks needs schema migration (BIGINT -> VARCHAR for string IDs)
+        try {
+          const watermarkSchema = await this.executeRaw(`DESCRIBE appender_watermarks`);
+          const idColumn = watermarkSchema.find((col: any) => col.column_name === 'last_processed_id');
+
+          if (idColumn && idColumn.column_type.includes('BIGINT')) {
+            logger.info('Migrating appender_watermarks table: BIGINT -> VARCHAR for last_processed_id');
+            await this.runRaw(`DROP TABLE IF EXISTS appender_watermarks`);
+            // Recreate with correct schema
+            await this.runRaw(`
+              CREATE TABLE IF NOT EXISTS appender_watermarks (
+                table_name VARCHAR PRIMARY KEY,
+                last_processed_id VARCHAR,
+                last_processed_timestamp TIMESTAMP,
+                primary_key_column VARCHAR,
+                timestamp_column VARCHAR,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+              )
+            `);
+          }
+        } catch (error) {
+          // Table doesn't exist or schema check failed, skip migration
+          logger.debug('Background schema check skipped:', error);
+        }
+
+        logger.info('DuckDB background optimization completed');
+      } catch (error) {
+        logger.warn('Background optimization failed (non-critical):', error);
+      }
+    });
   }
 
   /**
