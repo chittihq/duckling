@@ -152,6 +152,9 @@
         <slot />
       </div>
     </main>
+
+    <!-- Toast Notifications -->
+    <Toaster />
   </div>
 </template>
 

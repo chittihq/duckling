@@ -114,6 +114,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import { toast } from '@/components/ui/toast';
 
 interface Database {
   id: string;
@@ -182,11 +183,23 @@ async function saveDatabase() {
       editingDb.value = null;
       formData.value = { name: '', mysqlConnectionString: '' };
       await loadDatabases();
+      toast({
+        title: 'Success',
+        description: 'Database saved successfully'
+      });
     } else {
-      alert(data.error || 'Failed to save database');
+      toast({
+        title: 'Error',
+        description: data.error || 'Failed to save database',
+        variant: 'destructive'
+      });
     }
   } catch (err) {
-    alert('Failed to save database');
+    toast({
+      title: 'Error',
+      description: 'Failed to save database',
+      variant: 'destructive'
+    });
     console.error(err);
   } finally {
     saving.value = false;
@@ -205,11 +218,23 @@ async function deleteDatabase(id: string) {
 
     if (data.success) {
       await loadDatabases();
+      toast({
+        title: 'Success',
+        description: 'Database deleted successfully'
+      });
     } else {
-      alert(data.error || 'Failed to delete database');
+      toast({
+        title: 'Error',
+        description: data.error || 'Failed to delete database',
+        variant: 'destructive'
+      });
     }
   } catch (err) {
-    alert('Failed to delete database');
+    toast({
+      title: 'Error',
+      description: 'Failed to delete database',
+      variant: 'destructive'
+    });
     console.error(err);
   } finally {
     deleting.value = '';
@@ -226,11 +251,23 @@ async function testConnection(id: string) {
 
     if (data.success && data.connections) {
       connectionStatus.value[id] = data.connections;
+      toast({
+        title: 'Success',
+        description: 'Connection test successful'
+      });
     } else {
-      alert(data.error || 'Failed to test connection');
+      toast({
+        title: 'Error',
+        description: data.error || 'Failed to test connection',
+        variant: 'destructive'
+      });
     }
   } catch (err) {
-    alert('Failed to test connection');
+    toast({
+      title: 'Error',
+      description: 'Failed to test connection',
+      variant: 'destructive'
+    });
     console.error(err);
   } finally {
     testing.value = '';

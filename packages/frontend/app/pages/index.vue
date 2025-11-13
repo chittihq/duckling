@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
+import { toast } from '@/components/ui/toast'
 
 definePageMeta({
   middleware: 'auth',
@@ -135,9 +136,16 @@ const runFullSync = async () => {
     const response = await post<{ totalRecords: number }>(
       getApiUrlWithDatabase('/sync/full')
     )
-    alert(`Full sync completed: ${response.totalRecords} records`)
+    toast({
+      title: 'Success',
+      description: `Full sync completed: ${response.totalRecords} records`
+    })
   } catch (err: any) {
-    alert('Full sync failed: ' + (err.data?.error || err.message))
+    toast({
+      title: 'Error',
+      description: 'Full sync failed: ' + (err.data?.error || err.message),
+      variant: 'destructive'
+    })
   } finally {
     operating.value = false
     await refreshData()
@@ -150,9 +158,16 @@ const runIncrementalSync = async () => {
     const response = await post<{ totalRecords: number }>(
       getApiUrlWithDatabase('/sync/incremental')
     )
-    alert(`Incremental sync completed: ${response.totalRecords} records`)
+    toast({
+      title: 'Success',
+      description: `Incremental sync completed: ${response.totalRecords} records`
+    })
   } catch (err: any) {
-    alert('Incremental sync failed: ' + (err.data?.error || err.message))
+    toast({
+      title: 'Error',
+      description: 'Incremental sync failed: ' + (err.data?.error || err.message),
+      variant: 'destructive'
+    })
   } finally {
     operating.value = false
     await refreshData()
@@ -164,9 +179,17 @@ const validateSync = async () => {
   try {
     const response = await get<any[]>(getApiUrlWithDatabase('/sync/validate'))
     const mismatches = response.filter(r => !r.match)
-    alert(mismatches.length === 0 ? 'All tables are in sync!' : `Found ${mismatches.length} mismatches`)
+    toast({
+      title: mismatches.length === 0 ? 'Success' : 'Warning',
+      description: mismatches.length === 0 ? 'All tables are in sync!' : `Found ${mismatches.length} mismatches`,
+      variant: mismatches.length === 0 ? undefined : 'destructive'
+    })
   } catch (err: any) {
-    alert('Validation failed: ' + (err.data?.error || err.message))
+    toast({
+      title: 'Error',
+      description: 'Validation failed: ' + (err.data?.error || err.message),
+      variant: 'destructive'
+    })
   } finally {
     operating.value = false
   }
@@ -180,9 +203,16 @@ const clearAllData = async () => {
   operating.value = 'clear-all'
   try {
     await del(getApiUrlWithDatabase('/storage/clear-all'))
-    alert('All data cleared successfully')
+    toast({
+      title: 'Success',
+      description: 'All data cleared successfully'
+    })
   } catch (err: any) {
-    alert('Clear all data failed: ' + (err.data?.error || err.message))
+    toast({
+      title: 'Error',
+      description: 'Clear all data failed: ' + (err.data?.error || err.message),
+      variant: 'destructive'
+    })
   } finally {
     operating.value = false
     await refreshData()

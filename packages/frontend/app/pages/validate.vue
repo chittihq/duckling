@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { toast } from '@/components/ui/toast'
 
 definePageMeta({
   middleware: 'auth',
@@ -59,7 +60,11 @@ const loadTables = async () => {
       .sort((a, b) => a.name.localeCompare(b.name))
   } catch (error: any) {
     console.error('Failed to load tables:', error)
-    alert('Failed to load tables: ' + error.message)
+    toast({
+      title: 'Error',
+      description: 'Failed to load tables: ' + error.message,
+      variant: 'destructive'
+    })
   } finally {
     initialLoading.value = false
   }
@@ -85,7 +90,11 @@ const startValidation = async () => {
     }
   } catch (error: any) {
     console.error('Validation failed:', error)
-    alert('Validation failed: ' + error.message)
+    toast({
+      title: 'Error',
+      description: 'Validation failed: ' + error.message,
+      variant: 'destructive'
+    })
   } finally {
     validating.value = false
   }
@@ -132,10 +141,17 @@ const syncTable = async (table: TableValidation) => {
 
     table.syncing = false
     await revalidateTable(table)
-    alert(`Table "${table.name}" synced successfully`)
+    toast({
+      title: 'Success',
+      description: `Table "${table.name}" synced successfully`
+    })
   } catch (error: any) {
     table.syncing = false
-    alert(`Failed to sync table "${table.name}": ${error.data?.error || error.message}`)
+    toast({
+      title: 'Error',
+      description: `Failed to sync table "${table.name}": ${error.data?.error || error.message}`,
+      variant: 'destructive'
+    })
   }
 }
 
@@ -163,11 +179,18 @@ const deleteTable = async (table: TableValidation) => {
       table.deleting = false
       table.duckdb = { exists: false, columnCount: 0, recordCount: 0 }
       table.status = 'missing'
-      alert(`Table "${table.name}" deleted successfully.\n\n${response.message}`)
+      toast({
+        title: 'Success',
+        description: `Table "${table.name}" deleted successfully.\n\n${response.message}`
+      })
     }
   } catch (error: any) {
     table.deleting = false
-    alert(`Failed to delete table "${table.name}": ${error.data?.error || error.message}`)
+    toast({
+      title: 'Error',
+      description: `Failed to delete table "${table.name}": ${error.data?.error || error.message}`,
+      variant: 'destructive'
+    })
   }
 }
 
@@ -182,7 +205,10 @@ const bulkDeleteFiltered = async () => {
   const tablesToDelete = filteredTables.value.filter(t => t.duckdb.exists)
 
   if (tablesToDelete.length === 0) {
-    alert('No tables to delete')
+    toast({
+      title: 'Info',
+      description: 'No tables to delete'
+    })
     return
   }
 
@@ -228,9 +254,10 @@ const bulkDeleteFiltered = async () => {
   }
 
   bulkDeleting.value = false
-  alert(
-    `Bulk delete completed!\n\nDeleted: ${deleted}\nFailed: ${failed}\n\nNext sync will recreate these tables with current MySQL schemas.`
-  )
+  toast({
+    title: 'Bulk Delete Completed',
+    description: `Deleted: ${deleted}\nFailed: ${failed}\n\nNext sync will recreate these tables with current MySQL schemas.`
+  })
 }
 
 const formatNumber = (num: number) => {

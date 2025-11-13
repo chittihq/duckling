@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { toast } from '@/components/ui/toast'
 
 definePageMeta({
   middleware: 'auth',
@@ -55,7 +56,11 @@ const loadTables = async () => {
       .sort((a, b) => a.name.localeCompare(b.name))
   } catch (error: any) {
     console.error('Failed to load tables:', error)
-    alert('Failed to load tables: ' + error.message)
+    toast({
+      title: 'Error',
+      description: 'Failed to load tables: ' + error.message,
+      variant: 'destructive'
+    })
   } finally {
     loading.value = false
   }
@@ -93,7 +98,11 @@ const loadTableData = async (tableName: string) => {
     currentPage.value = 1
   } catch (error: any) {
     console.error('Failed to load table data:', error)
-    alert('Failed to load table data: ' + error.message)
+    toast({
+      title: 'Error',
+      description: 'Failed to load table data: ' + error.message,
+      variant: 'destructive'
+    })
     tableData.value = []
     tableColumns.value = []
   } finally {
@@ -112,13 +121,20 @@ const syncTable = async (tableName: string) => {
   try {
     const response = await post<{ recordsProcessed: number }>(getApiUrlWithDatabase(`/sync/table/${tableName}`))
 
-    alert(`Table "${tableName}" synced successfully: ${response.recordsProcessed || 0} records`)
+    toast({
+      title: 'Success',
+      description: `Table "${tableName}" synced successfully: ${response.recordsProcessed || 0} records`
+    })
     await loadTables()
     if (selectedTable.value === tableName) {
       await refreshTableData()
     }
   } catch (error: any) {
-    alert(`Failed to sync table "${tableName}": ${error.data?.error || error.message}`)
+    toast({
+      title: 'Error',
+      description: `Failed to sync table "${tableName}": ${error.data?.error || error.message}`,
+      variant: 'destructive'
+    })
   } finally {
     syncingTable.value = null
   }
