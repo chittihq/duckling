@@ -63,3 +63,5 @@ backups/
 tmp/
 temp/
 *.tmp
+
+data/
