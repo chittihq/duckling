@@ -33,9 +33,11 @@ export default defineNuxtConfig({
   css: ['~/assets/css/main.css'],
 
   // Runtime config for API base URL
+  // Empty string means relative URLs - works in production when frontend is served from same server
+  // Use NUXT_PUBLIC_API_BASE env var for development or different domains
   runtimeConfig: {
     public: {
-      apiBase: process.env.NUXT_PUBLIC_API_BASE || 'http://localhost:3001'
+      apiBase: process.env.NUXT_PUBLIC_API_BASE || ''
     }
   },
 

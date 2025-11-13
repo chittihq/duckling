@@ -64,4 +64,7 @@ tmp/
 temp/
 *.tmp
 
+# Data directories (will be mounted as volumes)
 data/
+backups/
+logs/
