@@ -92,17 +92,41 @@
       </nav>
 
       <!-- User -->
-      <div class="border-t border-border p-2">
+      <div class="border-t border-border p-2 relative profile-dropdown">
         <button
-          @click="handleLogout"
+          @click="showProfileMenu = !showProfileMenu"
           class="w-full h-12 flex items-center justify-center rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors group relative"
-          :title="`Logout (${username})`"
+          :title="`Profile (${username})`"
         >
           <span class="text-xs font-semibold">{{ userInitials }}</span>
           <span class="absolute left-full ml-2 px-2 py-1 bg-popover text-popover-foreground text-sm rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
-            Logout
+            Profile
           </span>
         </button>
+
+        <!-- Profile Dropdown Menu -->
+        <div
+          v-if="showProfileMenu"
+          class="absolute bottom-full left-2 mb-2 w-48 bg-popover border border-border rounded-md shadow-lg z-50"
+        >
+          <div class="p-3 border-b border-border">
+            <p class="text-sm font-medium">{{ username }}</p>
+            <p class="text-xs text-muted-foreground">Logged in</p>
+          </div>
+          <div class="py-1">
+            <button
+              @click="handleLogout"
+              class="w-full px-3 py-2 text-left text-sm hover:bg-accent transition-colors flex items-center gap-2"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                <polyline points="16 17 21 12 16 7"/>
+                <line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+              Logout
+            </button>
+          </div>
+        </div>
       </div>
     </aside>
 
@@ -132,9 +156,13 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue'
+
 const router = useRouter()
 const { username, logout } = useAuth()
 const { selectedDatabaseId, databases, setDatabase, loadDatabases } = useDatabase()
+
+const showProfileMenu = ref(false)
 
 const userInitials = computed(() => {
   if (!username.value) return 'U'
@@ -142,12 +170,32 @@ const userInitials = computed(() => {
 })
 
 const handleLogout = async () => {
+  showProfileMenu.value = false
   await logout()
   router.push('/login')
+}
+
+// Close dropdown when clicking outside
+const closeProfileMenu = (event: MouseEvent) => {
+  const target = event.target as HTMLElement
+  if (!target.closest('.profile-dropdown')) {
+    showProfileMenu.value = false
+  }
 }
 
 // Load databases on mount
 onMounted(() => {
   loadDatabases()
+
+  // Add click outside listener
+  if (process.client) {
+    document.addEventListener('click', closeProfileMenu)
+  }
+})
+
+onUnmounted(() => {
+  if (process.client) {
+    document.removeEventListener('click', closeProfileMenu)
+  }
 })
 </script>

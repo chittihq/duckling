@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 
+definePageMeta({
+  layout: false
+})
+
 const { login, isAuthenticated, isLoading } = useAuth()
 const router = useRouter()
 
@@ -92,12 +96,6 @@ const handleKeyPress = (event: KeyboardEvent) => {
             {{ isLoading ? 'Logging in...' : 'Login' }}
           </Button>
         </CardContent>
-
-        <CardFooter class="justify-center">
-          <p class="text-sm text-muted-foreground text-center">
-            Default credentials are configured in your .env file
-          </p>
-        </CardFooter>
       </Card>
     </div>
   </div>
