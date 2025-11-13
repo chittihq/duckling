@@ -361,12 +361,14 @@ class SequentialAppenderService {
       let lastLoggedAt = 0;
       const PROGRESS_LOG_INTERVAL = 10000;
 
-      // Start transaction for atomic operation (includes DELETE and INSERTs)
+      // Clear existing data for full sync (separate transaction to avoid huge rollback)
       await this.duckdb.run('BEGIN TRANSACTION');
+      await this.duckdb.run(`DELETE FROM ${tableName}`);
+      await this.duckdb.run('COMMIT');
+
+      logger.info(`${tableName}: Table cleared, starting insert with periodic commits`);
 
       try {
-        // Clear existing data for full sync (inside transaction for atomicity)
-        await this.duckdb.run(`DELETE FROM ${tableName}`);
         // Get column names for INSERT statement
         const columns = schema.map(col => col.Field);
         const placeholders = columns.map(() => '?').join(', ');
@@ -385,6 +387,13 @@ class SequentialAppenderService {
         const insertBatchSize = Math.min(config.sync.insertBatchSize, maxSafeBatchSize);
 
         logger.info(`${tableName}: columns=${columnCount}, fetchBatchSize=${fetchBatchSize}, insertBatchSize=${insertBatchSize} (max safe: ${maxSafeBatchSize})`);
+
+        // Commit every 50k records to prevent huge WAL file on crash
+        const CHECKPOINT_INTERVAL = 50000;
+        let recordsSinceLastCommit = 0;
+
+        // Start transaction for inserts
+        await this.duckdb.run('BEGIN TRANSACTION');
 
         for await (const fetchedBatch of this.mysql.streamTableData(tableName, fetchBatchSize)) {
           // Process fetched batch in smaller bulk inserts to avoid stack overflow
@@ -409,6 +418,15 @@ class SequentialAppenderService {
             await this.duckdb.run(bulkInsertQuery, allValues);
 
             recordsProcessed += batch.length;
+            recordsSinceLastCommit += batch.length;
+
+            // Periodic commit to keep WAL file small (prevents slow rollback on crash)
+            if (recordsSinceLastCommit >= CHECKPOINT_INTERVAL) {
+              await this.duckdb.run('COMMIT');
+              await this.duckdb.run('BEGIN TRANSACTION');
+              logger.info(`${tableName}: Checkpoint at ${recordsProcessed.toLocaleString()} records (WAL flushed)`);
+              recordsSinceLastCommit = 0;
+            }
 
             // Log progress for large tables
             if (totalRecords >= PROGRESS_LOG_INTERVAL && recordsProcessed - lastLoggedAt >= PROGRESS_LOG_INTERVAL) {
@@ -421,7 +439,7 @@ class SequentialAppenderService {
           logger.debug(`Bulk inserted ${fetchedBatch.length} records to ${tableName}, total: ${recordsProcessed}`);
         }
 
-        // Commit transaction - all records inserted atomically
+        // Final commit
         await this.duckdb.run('COMMIT');
 
         // Get max ID for watermark (supports both numeric and string IDs)
