@@ -46,3 +46,4 @@ deploy.tar
 # Private deployment files (do not commit)
 caprover.sh
 .npmrc
+deploy.zip

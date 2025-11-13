@@ -25,7 +25,6 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml .npmrc ./
 # Copy all package.json files for dependency resolution
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/server/package.json ./packages/server/
-COPY packages/sdk/package.json ./packages/sdk/
 COPY packages/frontend/package.json ./packages/frontend/
 
 # Install all dependencies with frozen lockfile (with hoisting for TypeScript resolution)
@@ -34,12 +33,10 @@ RUN pnpm install --frozen-lockfile --shamefully-hoist && pnpm rebuild
 # Copy all source code
 COPY packages/shared ./packages/shared
 COPY packages/server ./packages/server
-COPY packages/sdk ./packages/sdk
 COPY packages/frontend ./packages/frontend
 
 # Build all packages in correct order
 RUN pnpm build:shared && \
-    pnpm build:sdk && \
     pnpm build:server && \
     pnpm build:frontend
 
@@ -62,7 +59,6 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml .npmrc ./
 # Copy package.json files for all packages
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/server/package.json ./packages/server/
-COPY packages/sdk/package.json ./packages/sdk/
 
 # Install production dependencies only (no devDependencies, with hoisting)
 RUN pnpm install --prod --frozen-lockfile --shamefully-hoist
@@ -71,10 +67,6 @@ RUN pnpm install --prod --frozen-lockfile --shamefully-hoist
 # Shared package
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/packages/shared/package.json ./packages/shared/
-
-# SDK package
-COPY --from=builder /app/packages/sdk/dist ./packages/sdk/dist
-COPY --from=builder /app/packages/sdk/package.json ./packages/sdk/
 
 # Server package (built)
 COPY --from=builder /app/packages/server/dist ./packages/server/dist

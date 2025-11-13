@@ -64,6 +64,9 @@ tmp/
 temp/
 *.tmp
 
+# Scripts (development utilities not needed in production)
+**/scripts/
+
 # Data directories (will be mounted as volumes)
 data/
 backups/
