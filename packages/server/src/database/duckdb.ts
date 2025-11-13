@@ -98,6 +98,15 @@ class DuckDBConnection {
       // Wait for connection to be ready (especially important for large database files)
       await this.waitForConnection();
 
+      // Configure WAL settings for optimal performance
+      await this.configureWAL();
+
+      // Log WAL size for monitoring
+      const walSize = await this.getWALSize();
+      if (walSize > 0) {
+        logger.info(`Current WAL size: ${(walSize / 1024 / 1024).toFixed(2)} MB`);
+      }
+
       // Check if sync_log exists and what type it is (VIEW or TABLE)
       const syncLogCheck = await this.executeRaw(`
         SELECT table_type FROM information_schema.tables
@@ -307,6 +316,52 @@ class DuckDBConnection {
 
   async query(sql: string, params?: any[]): Promise<any[]> {
     return this.execute(sql, params);
+  }
+
+  /**
+   * Force a WAL checkpoint to merge changes into main database file
+   * This reduces WAL file size and improves startup performance
+   */
+  async checkpoint(): Promise<void> {
+    try {
+      await this.run('CHECKPOINT');
+      logger.info('DuckDB checkpoint completed - WAL merged into database file');
+    } catch (error) {
+      logger.warn('Failed to checkpoint DuckDB:', error);
+    }
+  }
+
+  /**
+   * Configure WAL settings for optimal performance
+   * Called during initialization to set up WAL behavior
+   */
+  async configureWAL(): Promise<void> {
+    try {
+      // Set checkpoint threshold (checkpoint when WAL reaches this size in MB)
+      // Lower value = more frequent checkpoints = smaller WAL files = faster recovery
+      await this.run("PRAGMA wal_autocheckpoint='10MB'"); // Checkpoint every 10MB of WAL
+
+      logger.info('DuckDB WAL configuration applied (autocheckpoint: 10MB)');
+    } catch (error) {
+      logger.warn('Failed to configure WAL settings:', error);
+    }
+  }
+
+  /**
+   * Get WAL file size for monitoring
+   */
+  async getWALSize(): Promise<number> {
+    try {
+      const walPath = `${this.dbPath}.wal`;
+      if (require('fs').existsSync(walPath)) {
+        const stats = require('fs').statSync(walPath);
+        return stats.size;
+      }
+      return 0;
+    } catch (error) {
+      logger.debug('Could not get WAL size:', error);
+      return 0;
+    }
   }
 
   async close(): Promise<void> {

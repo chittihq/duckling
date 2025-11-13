@@ -161,6 +161,10 @@ class AutomationService {
       this.restartAttempts = 0;
 
       logger.info(`✅ Scheduled full sync completed: ${stats.successfulTables}/${stats.totalTables} tables, ${stats.totalRecords} records`);
+
+      // Checkpoint after sync to merge WAL into main database file
+      // This ensures fast restart and minimal WAL size
+      await this.duckdb.checkpoint();
     } catch (error) {
       logger.error('Scheduled full sync failed:', error);
     }
@@ -178,6 +182,10 @@ class AutomationService {
       this.restartAttempts = 0;
 
       logger.info(`✅ Scheduled incremental sync completed: ${stats.successfulTables}/${stats.totalTables} tables, ${stats.totalRecords} records`);
+
+      // Checkpoint after sync to merge WAL into main database file
+      // This ensures fast restart and minimal WAL size
+      await this.duckdb.checkpoint();
     } catch (error) {
       logger.error('Scheduled incremental sync failed:', error);
     }
