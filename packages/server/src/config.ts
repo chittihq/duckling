@@ -44,6 +44,7 @@ export const config = {
   sync: {
     intervalMinutes: parseInt(process.env.SYNC_INTERVAL_MINUTES || '15'),
     batchSize: parseInt(process.env.BATCH_SIZE || '1000'),
+    insertBatchSize: parseInt(process.env.INSERT_BATCH_SIZE || '2000'),
     maxRetries: parseInt(process.env.MAX_RETRIES || '3'),
     retryBaseDelayMs: parseInt(process.env.RETRY_BASE_DELAY_MS || '1000'),
     retryMaxDelayMs: parseInt(process.env.RETRY_MAX_DELAY_MS || '60000'),

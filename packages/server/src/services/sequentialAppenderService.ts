@@ -378,9 +378,14 @@ class SequentialAppenderService {
 
         // Stream records from MySQL and insert in bulk
         const fetchBatchSize = config.sync.batchSize; // Configurable via BATCH_SIZE env var
-        const insertBatchSize = 500;  // Insert 500 rows per bulk INSERT (prevents stack overflow)
 
-        logger.info(`${tableName}: Using fetchBatchSize=${fetchBatchSize}, insertBatchSize=${insertBatchSize}`);
+        // Calculate safe insert batch size based on column count
+        // JavaScript/Node.js has ~65K function argument limit
+        const columnCount = schema.length;
+        const maxSafeBatchSize = Math.floor(65000 / columnCount); // Safety margin for parameter binding
+        const insertBatchSize = Math.min(config.sync.insertBatchSize, maxSafeBatchSize);
+
+        logger.info(`${tableName}: columns=${columnCount}, fetchBatchSize=${fetchBatchSize}, insertBatchSize=${insertBatchSize} (max safe: ${maxSafeBatchSize})`);
 
         for await (const fetchedBatch of this.mysql.streamTableData(tableName, fetchBatchSize)) {
           // Process fetched batch in smaller bulk inserts to avoid stack overflow
@@ -566,8 +571,15 @@ class SequentialAppenderService {
         // Create column type map for sanitization
         const columnTypes = new Map(schema.map(col => [col.Field, col.Type]));
 
+        // Calculate safe insert batch size based on column count
+        // JavaScript/Node.js has ~65K function argument limit
+        const columnCount = schema.length;
+        const maxSafeBatchSize = Math.floor(65000 / columnCount); // Safety margin for parameter binding
+        const insertBatchSize = Math.min(config.sync.insertBatchSize, maxSafeBatchSize);
+
+        logger.info(`${tableName}: watermark sync - columns=${columnCount}, insertBatchSize=${insertBatchSize} (max safe: ${maxSafeBatchSize})`);
+
         // Process incremental data in batches to avoid stack overflow
-        const insertBatchSize = 500;
         for (let i = 0; i < incrementalData.length; i += insertBatchSize) {
           const batch = incrementalData.slice(i, i + insertBatchSize);
 
