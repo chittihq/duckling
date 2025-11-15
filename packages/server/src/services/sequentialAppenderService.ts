@@ -1124,12 +1124,13 @@ class SequentialAppenderService {
    */
   private async getTableWatermark(tableName: string): Promise<TableWatermark | null> {
     try {
-      const result = await this.duckdb.execute(`
+      const result = await this.duckdb.executeInternal(`
         SELECT * FROM appender_watermarks WHERE table_name = ?
       `, [tableName]);
 
       if (result.length > 0) {
         const row = result[0];
+        // executeInternal returns arrays: [table_name, last_processed_id, last_processed_timestamp, primary_key_column, timestamp_column, updated_at]
 
         // Convert DuckDB timestamp format to JavaScript Date
         // DuckDB returns timestamps as objects: {"micros": "1763212777581000"} or {"micros": 1763212777581000n}
@@ -1156,12 +1157,12 @@ class SequentialAppenderService {
         };
 
         return {
-          tableName: row.table_name,
-          lastProcessedId: row.last_processed_id,
-          lastProcessedTimestamp: convertTimestamp(row.last_processed_timestamp),
-          primaryKeyColumn: row.primary_key_column,
-          timestampColumn: row.timestamp_column,
-          updatedAt: convertTimestamp(row.updated_at) || new Date()
+          tableName: row[0],
+          lastProcessedId: row[1],
+          lastProcessedTimestamp: convertTimestamp(row[2]),
+          primaryKeyColumn: row[3],
+          timestampColumn: row[4],
+          updatedAt: convertTimestamp(row[5]) || new Date()
         };
       }
 

@@ -273,8 +273,11 @@ class DuckDBConnection {
   /**
    * Execute query without waiting for initialization (internal use only during initialization)
    * Uses @duckdb/node-api connection pattern
+   * @param query SQL query to execute
+   * @param params Optional query parameters
+   * @param skipConversion Skip array-to-object conversion for performance (internal operations)
    */
-  private async executeRaw(query: string, params?: any[]): Promise<any[]> {
+  private async executeRaw(query: string, params?: any[], skipConversion: boolean = false): Promise<any[]> {
     const dbInstance = await this.getDbInstance();
     const connection = await dbInstance.connect();
 
@@ -327,7 +330,12 @@ class DuckDBConnection {
       // But we can explicitly close for better resource management
       connection.closeSync();
 
-      // Convert array results to objects with proper column names
+      // Skip conversion for internal operations (sync, etc.) to save memory
+      if (skipConversion) {
+        return result || [];
+      }
+
+      // Convert array results to objects with proper column names for API responses
       if (result && result.length > 0 && columnNames && columnNames.length > 0) {
         return result.map(row => {
           const obj: any = {};
@@ -379,7 +387,16 @@ class DuckDBConnection {
 
   async execute(query: string, params?: any[]): Promise<any[]> {
     await this.ensureInitialized();
-    return this.executeRaw(query, params);
+    return this.executeRaw(query, params, false); // Convert to objects with column names
+  }
+
+  /**
+   * Execute query for internal operations (sync, etc.)
+   * Returns raw arrays without conversion for better memory efficiency
+   */
+  async executeInternal(query: string, params?: any[]): Promise<any[]> {
+    await this.ensureInitialized();
+    return this.executeRaw(query, params, true); // Skip conversion for performance
   }
 
   /**
