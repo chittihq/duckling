@@ -1,11 +1,11 @@
-import duckdb from 'duckdb';
+import { DuckDBInstance } from '@duckdb/node-api';
 import * as fs from 'fs';
 import * as path from 'path';
 import config from '../config';
 import logger from '../logger';
 
 class DuckDBConnection {
-  private db: duckdb.Database;
+  private dbInstance: DuckDBInstance | null = null;
   private static instances: Map<string, DuckDBConnection> = new Map();
   private static initializedInstances: Set<string> = new Set();
   private dbPath: string;
@@ -15,9 +15,56 @@ class DuckDBConnection {
   private constructor(dbPath: string) {
     this.dbPath = dbPath;
     this.ensureDirectory();
-    // Use file-based database for persistent storage
-    // Note: Constructor is synchronous but connection may not be ready immediately for large files
-    this.db = new duckdb.Database(dbPath);
+  }
+
+  /**
+   * Get or create the DuckDB instance
+   * Uses instance caching for existing databases, fresh creation for new ones
+   * Handles invalidated instances by forcing fresh instance creation
+   */
+  private async getDbInstance(): Promise<DuckDBInstance> {
+    if (!this.dbInstance) {
+      try {
+        logger.info(`Creating DuckDBInstance at ${this.dbPath}...`);
+
+        // Special handling for chitti_common database that was deleted and has cache issues
+        if (this.dbPath.includes('chitti_common')) {
+          logger.info('Using DuckDBInstance.create() for chitti_common (cache bypass)...');
+          this.dbInstance = await DuckDBInstance.create(this.dbPath);
+          logger.info('Fresh chitti_common DuckDBInstance created successfully');
+        } else {
+          // Check if database file exists - if not, use create() to avoid cache issues
+          const dbExists = fs.existsSync(this.dbPath);
+
+          if (!dbExists) {
+            logger.info('Database file does not exist, using DuckDBInstance.create()...');
+            // For new databases, use create() to avoid cache issues
+            this.dbInstance = await DuckDBInstance.create(this.dbPath);
+            logger.info('New DuckDBInstance created successfully');
+          } else {
+            // For existing databases, try fromCache first, then fall back to create() if invalidated
+            try {
+              this.dbInstance = await DuckDBInstance.fromCache(this.dbPath);
+              logger.info('DuckDBInstance created from cache successfully');
+            } catch (cacheError: any) {
+              const cacheErrorMessage = cacheError.message || cacheError.toString();
+              if (cacheErrorMessage.includes('invalidated')) {
+                logger.warn('Cached instance is invalidated, creating fresh instance...');
+                this.dbInstance = await DuckDBInstance.create(this.dbPath);
+                logger.info('Fresh DuckDBInstance created successfully');
+              } else {
+                throw cacheError;
+              }
+            }
+          }
+        }
+      } catch (error: any) {
+        const errorMessage = error.message || error.toString();
+        logger.error(`Failed to create DuckDBInstance: ${errorMessage}`);
+        throw error;
+      }
+    }
+    return this.dbInstance;
   }
 
   /**
@@ -32,12 +79,12 @@ class DuckDBConnection {
         logger.info(`DuckDB connection established successfully (attempt ${i + 1}/${maxRetries})`);
         return; // Connection is ready
       } catch (error: any) {
-        if (error.errorType === 'Connection' && i < maxRetries - 1) {
+        if (i < maxRetries - 1) {
           logger.warn(`DuckDB connection not ready yet (attempt ${i + 1}/${maxRetries}), waiting ${delayMs}ms...`);
           await new Promise(resolve => setTimeout(resolve, delayMs));
         } else {
           logger.error(`DuckDB connection failed after ${maxRetries} retries:`, error);
-          throw error; // Re-throw if not a connection error or max retries reached
+          throw error; // Re-throw if max retries reached
         }
       }
     }
@@ -77,6 +124,13 @@ class DuckDBConnection {
     }
   }
 
+  /**
+   * Get the database file path
+   */
+  getDbPath(): string {
+    return this.dbPath;
+  }
+
   private ensureDirectory(): void {
     const dir = path.dirname(this.dbPath);
     if (!fs.existsSync(dir)) {
@@ -86,7 +140,6 @@ class DuckDBConnection {
 
   private async ensureInitialized(): Promise<void> {
     // Wait for initialization to complete before allowing queries
-    // initializeDatabase() uses Raw methods, so this won't cause deadlock
     if (this.initializationPromise) {
       await this.initializationPromise;
     }
@@ -219,29 +272,76 @@ class DuckDBConnection {
 
   /**
    * Execute query without waiting for initialization (internal use only during initialization)
+   * Uses @duckdb/node-api connection pattern
    */
-  private executeRaw(query: string, params?: any[]): Promise<any[]> {
-    return new Promise((resolve, reject) => {
+  private async executeRaw(query: string, params?: any[]): Promise<any[]> {
+    const dbInstance = await this.getDbInstance();
+    const connection = await dbInstance.connect();
+
+    try {
+      let result: any[];
+
       if (params && params.length > 0) {
-        this.db.all(query, ...params, (err: any, rows: any) => {
-          if (err) {
-            logger.error('DuckDB query error:', { query, params, error: err });
-            reject(err);
+        // Use prepared statement for parameterized queries
+        const prepared = await connection.prepare(query);
+
+        // Bind parameters (simple binding for now, can be enhanced with type detection)
+        for (let i = 0; i < params.length; i++) {
+          const value = params[i];
+          if (value === null || value === undefined) {
+            prepared.bindNull(i + 1);
+          } else if (typeof value === 'string') {
+            prepared.bindVarchar(i + 1, value);
+          } else if (typeof value === 'number') {
+            if (Number.isInteger(value)) {
+              prepared.bindInteger(i + 1, value);
+            } else {
+              prepared.bindDouble(i + 1, value);
+            }
+          } else if (typeof value === 'boolean') {
+            prepared.bindBoolean(i + 1, value);
+          } else if (value instanceof Date) {
+            // Convert Date to string in ISO format for timestamp binding
+            prepared.bindVarchar(i + 1, value.toISOString());
           } else {
-            resolve(rows || []);
+            // Fallback to string representation
+            prepared.bindVarchar(i + 1, String(value));
           }
-        });
+        }
+
+        const reader = await prepared.runAndReadAll();
+        result = reader.getRows();
+        // Prepared statement cleanup is automatic, no need to finalize
       } else {
-        this.db.all(query, (err: any, rows: any) => {
-          if (err) {
-            logger.error('DuckDB query error:', { query, error: err });
-            reject(err);
-          } else {
-            resolve(rows || []);
-          }
-        });
+        // Simple query without parameters
+        const reader = await connection.runAndReadAll(query);
+        result = reader.getRows();
       }
-    });
+
+      // Connection cleanup happens automatically when reference is dropped
+      // But we can explicitly close for better resource management
+      connection.closeSync();
+
+      return result || [];
+    } catch (error: any) {
+      // Ensure connection is closed on error
+      try {
+        connection.closeSync();
+      } catch (closeError) {
+        // Ignore close errors
+      }
+
+      const errorMessage = error.message || error.toString();
+
+      // If database is invalidated, clear instance and let caller retry
+      if (errorMessage.includes('invalidated')) {
+        logger.warn('Database instance invalidated during query, clearing instance for retry...');
+        this.dbInstance = null;
+      }
+
+      logger.error('DuckDB query error:', { query, params, error: errorMessage });
+      throw error;
+    }
   }
 
   async execute(query: string, params?: any[]): Promise<any[]> {
@@ -251,29 +351,64 @@ class DuckDBConnection {
 
   /**
    * Run query without waiting for initialization (internal use only during initialization)
+   * For queries that don't return results (INSERT, UPDATE, DELETE, CREATE, etc.)
    */
-  private runRaw(query: string, params?: any[]): Promise<void> {
-    return new Promise((resolve, reject) => {
+  private async runRaw(query: string, params?: any[]): Promise<void> {
+    const dbInstance = await this.getDbInstance();
+    const connection = await dbInstance.connect();
+
+    try {
       if (params && params.length > 0) {
-        this.db.run(query, ...params, (err: any) => {
-          if (err) {
-            logger.error('DuckDB run error:', { query, params, error: err });
-            reject(err);
+        const prepared = await connection.prepare(query);
+
+        // Bind parameters
+        for (let i = 0; i < params.length; i++) {
+          const value = params[i];
+          if (value === null || value === undefined) {
+            prepared.bindNull(i + 1);
+          } else if (typeof value === 'string') {
+            prepared.bindVarchar(i + 1, value);
+          } else if (typeof value === 'number') {
+            if (Number.isInteger(value)) {
+              prepared.bindInteger(i + 1, value);
+            } else {
+              prepared.bindDouble(i + 1, value);
+            }
+          } else if (typeof value === 'boolean') {
+            prepared.bindBoolean(i + 1, value);
+          } else if (value instanceof Date) {
+            // Convert Date to string in ISO format for timestamp binding
+            prepared.bindVarchar(i + 1, value.toISOString());
           } else {
-            resolve();
+            prepared.bindVarchar(i + 1, String(value));
           }
-        });
+        }
+
+        await prepared.run();
+        // Prepared statement cleanup is automatic, no need to finalize
       } else {
-        this.db.run(query, (err: any) => {
-          if (err) {
-            logger.error('DuckDB run error:', { query, error: err });
-            reject(err);
-          } else {
-            resolve();
-          }
-        });
+        await connection.run(query);
       }
-    });
+
+      connection.closeSync();
+    } catch (error: any) {
+      try {
+        connection.closeSync();
+      } catch (closeError) {
+        // Ignore close errors
+      }
+
+      const errorMessage = error.message || error.toString();
+
+      // If database is invalidated, clear instance and let caller retry
+      if (errorMessage.includes('invalidated')) {
+        logger.warn('Database instance invalidated during run, clearing instance for retry...');
+        this.dbInstance = null;
+      }
+
+      logger.error('DuckDB run error:', { query, params, error: errorMessage });
+      throw error;
+    }
   }
 
   async run(query: string, params?: any[]): Promise<void> {
@@ -395,14 +530,16 @@ class DuckDBConnection {
   }
 
   async close(): Promise<void> {
-    return new Promise((resolve) => {
-      this.db.close((err: any) => {
-        if (err) {
-          logger.error('Error closing DuckDB:', err);
-        }
-        resolve();
-      });
-    });
+    if (this.dbInstance) {
+      try {
+        // DuckDBInstance doesn't have a close method in the API
+        // Instance cleanup happens automatically when reference is dropped
+        this.dbInstance = null;
+        logger.info('DuckDB instance reference cleared');
+      } catch (error) {
+        logger.error('Error clearing DuckDB instance:', error);
+      }
+    }
   }
 
   /**
@@ -477,6 +614,24 @@ class DuckDBConnection {
     } catch (error) {
       logger.warn(`Failed to clear checkpoint for ${tableName}:`, error);
     }
+  }
+
+  /**
+   * Create an Appender for high-performance bulk loading
+   * Returns both the appender and the connection (connection must be kept alive until appender is closed)
+   */
+  async createAppender(tableName: string): Promise<{ appender: any; connection: any }> {
+    const dbInstance = await this.getDbInstance();
+    const connection = await dbInstance.connect();
+
+    // Create appender with just the table name (Appender API handles schema automatically)
+    const appender = await connection.createAppender(tableName);
+
+    logger.debug(`Appender created for table ${tableName}`);
+
+    // Return both appender and connection
+    // IMPORTANT: Connection must not be closed until appender is flushed and closed
+    return { appender, connection };
   }
 }
 

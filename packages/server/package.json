@@ -45,7 +45,8 @@
   "packageManager": "pnpm@10.0.0",
   "pnpm": {
     "onlyBuiltDependencies": [
-      "duckdb"
+      "duckdb",
+      "@duckdb/node-api"
     ]
   }
 }
