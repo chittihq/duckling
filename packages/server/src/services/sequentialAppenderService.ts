@@ -551,10 +551,11 @@ class SequentialAppenderService {
 
         if (primaryKeyColumn && recordsProcessed > 0) {
           try {
-            const maxResult = await this.duckdb.execute(`SELECT MAX(${primaryKeyColumn}) as maxId FROM ${tableName}`);
-            if (maxResult.length > 0 && maxResult[0].maxId !== null) {
+            const maxResult = await this.duckdb.execute(`SELECT MAX(${primaryKeyColumn}) FROM ${tableName}`);
+            // @duckdb/node-api returns arrays: [maxValue]
+            if (maxResult.length > 0 && maxResult[0][0] !== null && maxResult[0][0] !== undefined) {
               // Convert BigInt to number for numeric IDs, keep strings as-is
-              const value = maxResult[0].maxId;
+              const value = maxResult[0][0];
               if (typeof value === 'bigint') {
                 maxId = Number(value);
               } else if (typeof value === 'string' || typeof value === 'number') {
@@ -721,10 +722,11 @@ class SequentialAppenderService {
 
         if (primaryKeyColumn && recordsProcessed > 0) {
           try {
-            const maxResult = await this.duckdb.execute(`SELECT MAX(${primaryKeyColumn}) as maxId FROM ${tableName}`);
-            if (maxResult.length > 0 && maxResult[0].maxId !== null) {
+            const maxResult = await this.duckdb.execute(`SELECT MAX(${primaryKeyColumn}) FROM ${tableName}`);
+            // @duckdb/node-api returns arrays: [maxValue]
+            if (maxResult.length > 0 && maxResult[0][0] !== null && maxResult[0][0] !== undefined) {
               // Convert BigInt to number for numeric IDs, keep strings as-is
-              const value = maxResult[0].maxId;
+              const value = maxResult[0][0];
               if (typeof value === 'bigint') {
                 maxId = Number(value);
               } else if (typeof value === 'string' || typeof value === 'number') {
@@ -812,6 +814,10 @@ class SequentialAppenderService {
         logger.info(`No watermark found for ${tableName}, performing sequential sync with Appender`);
         return await this.syncTableSequentialWithAppender(tableName);
       }
+
+      // Debug logging for watermark validation
+      logger.info(`${tableName} watermark - ID: ${watermark.lastProcessedId}, TS: ${watermark.lastProcessedTimestamp?.toISOString()}, PKCol: ${watermark.primaryKeyColumn}, TSCol: ${watermark.timestampColumn}`);
+
 
       // Get table schema
       const schema = await this.mysql.getTableSchema(tableName);
@@ -1124,13 +1130,38 @@ class SequentialAppenderService {
 
       if (result.length > 0) {
         const row = result[0];
+
+        // Convert DuckDB timestamp format to JavaScript Date
+        // DuckDB returns timestamps as objects: {"micros": "1763212777581000"} or {"micros": 1763212777581000n}
+        const convertTimestamp = (ts: any): Date | undefined => {
+          if (!ts) return undefined;
+          if (ts instanceof Date) return ts;
+          if (typeof ts === 'object' && ts.micros !== undefined) {
+            // Convert microseconds to milliseconds
+            // Handle BigInt, string, or number
+            let microsNumber: number;
+            if (typeof ts.micros === 'bigint') {
+              microsNumber = Number(ts.micros);
+            } else if (typeof ts.micros === 'string') {
+              microsNumber = parseInt(ts.micros);
+            } else {
+              microsNumber = ts.micros;
+            }
+            return new Date(microsNumber / 1000);
+          }
+          if (typeof ts === 'string' || typeof ts === 'number') {
+            return new Date(ts);
+          }
+          return undefined;
+        };
+
         return {
           tableName: row.table_name,
           lastProcessedId: row.last_processed_id,
-          lastProcessedTimestamp: row.last_processed_timestamp ? new Date(row.last_processed_timestamp) : undefined,
+          lastProcessedTimestamp: convertTimestamp(row.last_processed_timestamp),
           primaryKeyColumn: row.primary_key_column,
           timestampColumn: row.timestamp_column,
-          updatedAt: new Date(row.updated_at)
+          updatedAt: convertTimestamp(row.updated_at) || new Date()
         };
       }
 

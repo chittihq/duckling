@@ -280,6 +280,7 @@ class DuckDBConnection {
 
     try {
       let result: any[];
+      let columnNames: string[] = [];
 
       if (params && params.length > 0) {
         // Use prepared statement for parameterized queries
@@ -311,16 +312,48 @@ class DuckDBConnection {
 
         const reader = await prepared.runAndReadAll();
         result = reader.getRows();
+        // Get column names from reader
+        columnNames = reader.columnNames();
         // Prepared statement cleanup is automatic, no need to finalize
       } else {
         // Simple query without parameters
         const reader = await connection.runAndReadAll(query);
         result = reader.getRows();
+        // Get column names from reader
+        columnNames = reader.columnNames();
       }
 
       // Connection cleanup happens automatically when reference is dropped
       // But we can explicitly close for better resource management
       connection.closeSync();
+
+      // Convert array results to objects with proper column names
+      if (result && result.length > 0 && columnNames && columnNames.length > 0) {
+        return result.map(row => {
+          const obj: any = {};
+          columnNames.forEach((colName, index) => {
+            const value = row[index];
+
+            // Convert DuckDB timestamp objects to JavaScript Date
+            // DuckDB returns timestamps as {micros: "1763212777581000"} or {micros: 1763212777581000n}
+            if (value && typeof value === 'object' && value.micros !== undefined) {
+              let microsNumber: number;
+              if (typeof value.micros === 'bigint') {
+                microsNumber = Number(value.micros);
+              } else if (typeof value.micros === 'string') {
+                microsNumber = parseInt(value.micros);
+              } else {
+                microsNumber = value.micros;
+              }
+              // Convert microseconds to milliseconds and create Date
+              obj[colName] = new Date(microsNumber / 1000);
+            } else {
+              obj[colName] = value;
+            }
+          });
+          return obj;
+        });
+      }
 
       return result || [];
     } catch (error: any) {
@@ -429,8 +462,9 @@ class DuckDBConnection {
 
   async getTableRowCount(tableName: string): Promise<number> {
     try {
-      const result = await this.execute(`SELECT COUNT(*) as count FROM ${tableName}`);
-      const count = result[0]?.count || 0;
+      const result = await this.execute(`SELECT COUNT(*) FROM ${tableName}`);
+      // @duckdb/node-api returns arrays, so result[0] is an array with the count at index 0
+      const count = Array.isArray(result[0]) ? result[0][0] : result[0]?.count || 0;
       return typeof count === 'bigint' ? Number(count) : count;
     } catch (error) {
       // If view doesn't exist yet, return 0
@@ -467,7 +501,8 @@ class DuckDBConnection {
         ORDER BY table_name
       `);
 
-      const tables = result.map((row: any) => row.table_name);
+      // @duckdb/node-api returns rows as arrays, not objects
+      const tables = result.map((row: any) => row[0] || row.table_name);
 
       // Filter excluded tables
       return tables.filter(table =>

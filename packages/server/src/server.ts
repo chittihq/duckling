@@ -51,6 +51,17 @@ class DuckDBServer {
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+    // BigInt-safe JSON response middleware
+    this.app.use((req, res, next) => {
+      const originalJson = res.json;
+      res.json = function(data: any) {
+        return originalJson.call(this, JSON.parse(JSON.stringify(data, (key, value) =>
+          typeof value === 'bigint' ? value.toString() : value
+        )));
+      };
+      next();
+    });
+
     // Request logging
     this.app.use((req, res, next) => {
       logger.info(`${req.method} ${req.path}`, {
@@ -468,6 +479,7 @@ class DuckDBServer {
       }
 
       // Convert BigInt values to strings for JSON serialization
+      // Both DuckDB and MySQL now return objects with column names
       const serializedResult = result.map((row: any) => {
         const serializedRow: any = {};
         for (const [key, value] of Object.entries(row)) {
@@ -511,7 +523,19 @@ class DuckDBServer {
       const { name } = req.params;
       const { duckdb } = req as RequestWithDatabase;
       const result = await duckdb.execute(`DESCRIBE ${name}`);
-      res.json({ columns: result });
+
+      // Transform array results to object format for compatibility
+      // @duckdb/node-api returns arrays: [column_name, column_type, null, key, default, extra]
+      const columns = result.map((row: any) => ({
+        column_name: row[0],
+        column_type: row[1],
+        null: row[2],
+        key: row[3],
+        default_value: row[4],
+        extra: row[5]
+      }));
+
+      res.json({ columns });
     } catch (error) {
       logger.error('Get table schema failed:', error);
       res.status(500).json({
@@ -524,22 +548,46 @@ class DuckDBServer {
     try {
       const { name } = req.params;
       const { duckdb } = req as RequestWithDatabase;
+      const { limit = 100, offset = 0 } = req.query;
 
-      const data = await duckdb.execute(
-        `SELECT * FROM ${name}`
-      );
+      // Build query with LIMIT and OFFSET to prevent loading too much data
+      let query = `SELECT * FROM ${name}`;
+      if (limit) {
+        query += ` LIMIT ${parseInt(limit.toString())}`;
+        if (offset) {
+          query += ` OFFSET ${parseInt(offset.toString())}`;
+        }
+      }
+
+      const data = await duckdb.execute(query);
 
       // Convert BigInt values to strings for JSON serialization
+      // Handle both array results (@duckdb/node-api) and object results (MySQL)
       const serializedData = data.map((row: any) => {
-        const serializedRow: any = {};
-        for (const [key, value] of Object.entries(row)) {
-          if (typeof value === 'bigint') {
-            serializedRow[key] = value.toString();
-          } else {
-            serializedRow[key] = value;
+        if (Array.isArray(row)) {
+          // For DuckDB arrays, we need column names - but query method doesn't provide them
+          // Convert array to object with generic column names
+          const serializedRow: any = {};
+          row.forEach((value, index) => {
+            if (typeof value === 'bigint') {
+              serializedRow[`column_${index}`] = value.toString();
+            } else {
+              serializedRow[`column_${index}`] = value;
+            }
+          });
+          return serializedRow;
+        } else {
+          // For MySQL objects
+          const serializedRow: any = {};
+          for (const [key, value] of Object.entries(row)) {
+            if (typeof value === 'bigint') {
+              serializedRow[key] = value.toString();
+            } else {
+              serializedRow[key] = value;
+            }
           }
+          return serializedRow;
         }
-        return serializedRow;
       });
 
       res.json(serializedData);
@@ -1089,7 +1137,8 @@ class DuckDBServer {
           // Get column count and names
           const schema = await duckdb.execute(`DESCRIBE ${tableName}`);
           duckdbColumnCount = schema.length;
-          duckdbColumns = schema.map((col: any) => col.column_name);
+          // @duckdb/node-api returns arrays: [column_name, column_type, null, key, default, extra]
+          duckdbColumns = schema.map((col: any) => col[0]);
 
           // Get record count
           const countResult = await duckdb.getTableRowCount(tableName);
@@ -1393,16 +1442,22 @@ class DuckDBServer {
       const logs = await duckdb.query(query);
 
       // Get total count
-      const countQuery = `SELECT COUNT(*) as total FROM sync_log ${whereClause}`;
+      const countQuery = `SELECT COUNT(*) as count FROM sync_log ${whereClause}`;
       const countResult = await duckdb.query(countQuery);
-      const total = countResult?.[0]?.total || 0;
+      const total = countResult?.[0]?.count || 0;
 
-      // Convert BigInt values to numbers for JSON serialization
-      const serializedLogs = logs.map(log => ({
-        ...log,
-        id: Number(log.id),
-        records_processed: Number(log.records_processed),
-        duration_ms: Number(log.duration_ms)
+      // Serialize BigInt values for JSON
+      const serializedLogs = logs.map((log: any) => ({
+        id: typeof log.id === 'bigint' ? log.id.toString() : log.id,
+        table_name: log.table_name,
+        sync_type: log.sync_type,
+        records_processed: typeof log.records_processed === 'bigint' ? Number(log.records_processed) : log.records_processed,
+        duration_ms: typeof log.duration_ms === 'bigint' ? Number(log.duration_ms) : log.duration_ms,
+        status: log.status,
+        error_message: log.error_message,
+        watermark_before: log.watermark_before,
+        watermark_after: log.watermark_after,
+        created_at: log.created_at
       }));
 
       res.json({
