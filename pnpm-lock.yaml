@@ -103,6 +103,9 @@ importers:
 
   packages/server:
     dependencies:
+      '@duckdb/node-api':
+        specifier: ^1.4.2-r.1
+        version: 1.4.2-r.1
       '@lmes/duckling-shared':
         specifier: workspace:*
         version: link:../shared
@@ -329,6 +332,37 @@ packages:
 
   '@dabh/diagnostics@2.0.3':
     resolution: {integrity: sha512-hrlQOIi7hAfzsMqlGSFyVucrx38O+j6wiGOf//H2ecvIEqYN4ADBSS2iLMh5UFyDunCNniUIPk/q3riFv45xRA==}
+
+  '@duckdb/node-api@1.4.2-r.1':
+    resolution: {integrity: sha512-8Ef4R/Lq+rXTpcqZIJZe6ALfgMGxy88HmiPvRpWrRw1fUTy85x1U0NnGrqCklZsmWyZUdPwVYj90MQOF2MY/TA==}
+
+  '@duckdb/node-bindings-darwin-arm64@1.4.2-r.1':
+    resolution: {integrity: sha512-C4yBI3zBX7iZ9iq8zJDvPatXA+2xM22sg1kX3fx76nG+qTqKtU/dGFVYL7Fx6cBYxBO1ZZ8Y+vjgYb6/bich8A==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@duckdb/node-bindings-darwin-x64@1.4.2-r.1':
+    resolution: {integrity: sha512-dgTSBuEfWyhymYovsGoRESjqcJuZWwJqla9l89SSsBDrGYcUp+EHsXUF73oUCspzTesT2lOvHrDufO8pKgtudw==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@duckdb/node-bindings-linux-arm64@1.4.2-r.1':
+    resolution: {integrity: sha512-r2Ml1LvU2vkVMx4YU04T79FjGkYg8YMVtbOz7j740SZGIi5Cch5P1/oy48jJBWRqoaXuqimpYWeTZiGVeCQiZA==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@duckdb/node-bindings-linux-x64@1.4.2-r.1':
+    resolution: {integrity: sha512-ed5KiNIu1rqSva5rgo4PRVYSmBolAMVqGFWsYWLoRZ94ka2F/dHwJNkarCTmBFCEDGVZWzWzjRyWTQgYTvQxTg==}
+    cpu: [x64]
+    os: [linux]
+
+  '@duckdb/node-bindings-win32-x64@1.4.2-r.1':
+    resolution: {integrity: sha512-kIIT8tuoW3mzr9EPcdSoKfv9CgOhTqRryHDI10Z0nuhc9UhqOWPUM/LnSUebfo1mdD9Drm7YrKCKYxNTr5dqBQ==}
+    cpu: [x64]
+    os: [win32]
+
+  '@duckdb/node-bindings@1.4.2-r.1':
+    resolution: {integrity: sha512-z0pJCdEnIj0Famkip6w7JZ/A17nm5VcYc6H7isOHXfEnPhBQ9PBusUTFgIzl6+3J8HOFQOv0szJq46zldbsHfQ==}
 
   '@dxup/nuxt@0.1.1':
     resolution: {integrity: sha512-ZQWCoeK4fQYgeP/xs+ldOMJHhd+7BSbx5JAYw0PEvbCfY2VLhz8sZDPtnSO5ur+o17wjApHc/DUTOqF8j+9Zag==}
@@ -4805,6 +4839,33 @@ snapshots:
       colorspace: 1.1.4
       enabled: 2.0.0
       kuler: 2.0.0
+
+  '@duckdb/node-api@1.4.2-r.1':
+    dependencies:
+      '@duckdb/node-bindings': 1.4.2-r.1
+
+  '@duckdb/node-bindings-darwin-arm64@1.4.2-r.1':
+    optional: true
+
+  '@duckdb/node-bindings-darwin-x64@1.4.2-r.1':
+    optional: true
+
+  '@duckdb/node-bindings-linux-arm64@1.4.2-r.1':
+    optional: true
+
+  '@duckdb/node-bindings-linux-x64@1.4.2-r.1':
+    optional: true
+
+  '@duckdb/node-bindings-win32-x64@1.4.2-r.1':
+    optional: true
+
+  '@duckdb/node-bindings@1.4.2-r.1':
+    optionalDependencies:
+      '@duckdb/node-bindings-darwin-arm64': 1.4.2-r.1
+      '@duckdb/node-bindings-darwin-x64': 1.4.2-r.1
+      '@duckdb/node-bindings-linux-arm64': 1.4.2-r.1
+      '@duckdb/node-bindings-linux-x64': 1.4.2-r.1
+      '@duckdb/node-bindings-win32-x64': 1.4.2-r.1
 
   '@dxup/nuxt@0.1.1(magicast@0.5.1)':
     dependencies:
