@@ -345,17 +345,17 @@ All data endpoints support the `?db={database_id}` query parameter:
 
 ```bash
 # Sync specific database
-curl -X POST 'http://localhost:3001/sync/full?db=lms' \
+curl -X POST 'http://localhost:3001/api/sync/full?db=lms' \
   -H 'Authorization: Bearer ${DUCKLING_API_KEY}'
 
 # Query specific database
-curl -X POST 'http://localhost:3001/query?db=lms' \
+curl -X POST 'http://localhost:3001/api/query?db=lms' \
   -H 'Authorization: Bearer ${DUCKLING_API_KEY}' \
   -H 'Content-Type: application/json' \
   -d '{"sql": "SELECT COUNT(*) FROM User"}'
 
 # Get tables from specific database
-curl 'http://localhost:3001/tables?db=lms' \
+curl 'http://localhost:3001/api/tables?db=lms' \
   -H 'Authorization: Bearer ${DUCKLING_API_KEY}'
 ```
 
@@ -441,7 +441,7 @@ Fact tables using append strategy can accumulate duplicates when:
 #### Verification
 Query specific table to check for duplicates:
 ```bash
-curl -X POST http://localhost:3001/query \
+curl -X POST http://localhost:3001/api/query \
   -H "Content-Type: application/json" \
   -d '{"sql": "SELECT COUNT(*) as total, COUNT(DISTINCT id) as unique FROM TableName"}'
 ```
