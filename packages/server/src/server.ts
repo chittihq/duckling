@@ -1137,8 +1137,8 @@ class DuckDBServer {
           // Get column count and names
           const schema = await duckdb.execute(`DESCRIBE ${tableName}`);
           duckdbColumnCount = schema.length;
-          // @duckdb/node-api returns arrays: [column_name, column_type, null, key, default, extra]
-          duckdbColumns = schema.map((col: any) => col[0]);
+          // After executeRaw conversion, DESCRIBE returns objects with column_name property
+          duckdbColumns = schema.map((col: any) => col.column_name);
 
           // Get record count
           const countResult = await duckdb.getTableRowCount(tableName);
