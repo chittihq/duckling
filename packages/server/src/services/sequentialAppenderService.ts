@@ -551,11 +551,11 @@ class SequentialAppenderService {
 
         if (primaryKeyColumn && recordsProcessed > 0) {
           try {
-            const maxResult = await this.duckdb.execute(`SELECT MAX(${primaryKeyColumn}) FROM ${tableName}`);
-            // @duckdb/node-api returns arrays: [maxValue]
-            if (maxResult.length > 0 && maxResult[0][0] !== null && maxResult[0][0] !== undefined) {
+            const maxResult = await this.duckdb.execute(`SELECT MAX(${primaryKeyColumn}) as max_id FROM ${tableName}`);
+            // execute() returns objects with column names
+            if (maxResult.length > 0 && maxResult[0]?.max_id !== null && maxResult[0]?.max_id !== undefined) {
               // Convert BigInt to number for numeric IDs, keep strings as-is
-              const value = maxResult[0][0];
+              const value = maxResult[0].max_id;
               if (typeof value === 'bigint') {
                 maxId = Number(value);
               } else if (typeof value === 'string' || typeof value === 'number') {
@@ -722,11 +722,11 @@ class SequentialAppenderService {
 
         if (primaryKeyColumn && recordsProcessed > 0) {
           try {
-            const maxResult = await this.duckdb.execute(`SELECT MAX(${primaryKeyColumn}) FROM ${tableName}`);
-            // @duckdb/node-api returns arrays: [maxValue]
-            if (maxResult.length > 0 && maxResult[0][0] !== null && maxResult[0][0] !== undefined) {
+            const maxResult = await this.duckdb.execute(`SELECT MAX(${primaryKeyColumn}) as max_id FROM ${tableName}`);
+            // execute() returns objects with column names
+            if (maxResult.length > 0 && maxResult[0]?.max_id !== null && maxResult[0]?.max_id !== undefined) {
               // Convert BigInt to number for numeric IDs, keep strings as-is
-              const value = maxResult[0][0];
+              const value = maxResult[0].max_id;
               if (typeof value === 'bigint') {
                 maxId = Number(value);
               } else if (typeof value === 'string' || typeof value === 'number') {
