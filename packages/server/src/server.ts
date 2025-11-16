@@ -524,15 +524,15 @@ class DuckDBServer {
       const { duckdb } = req as RequestWithDatabase;
       const result = await duckdb.execute(`DESCRIBE ${name}`);
 
-      // Transform array results to object format for compatibility
-      // @duckdb/node-api returns arrays: [column_name, column_type, null, key, default, extra]
+      // After executeRaw conversion, DESCRIBE returns objects with column_name, column_type, etc.
+      // Use bracket notation for reserved keywords (null, default)
       const columns = result.map((row: any) => ({
-        column_name: row[0],
-        column_type: row[1],
-        null: row[2],
-        key: row[3],
-        default_value: row[4],
-        extra: row[5]
+        column_name: row.column_name,
+        column_type: row.column_type,
+        null: row['null'],
+        key: row.key,
+        default_value: row['default'],
+        extra: row.extra
       }));
 
       res.json({ columns });
@@ -562,32 +562,17 @@ class DuckDBServer {
       const data = await duckdb.execute(query);
 
       // Convert BigInt values to strings for JSON serialization
-      // Handle both array results (@duckdb/node-api) and object results (MySQL)
+      // After executeRaw conversion, both DuckDB and MySQL return objects with column names
       const serializedData = data.map((row: any) => {
-        if (Array.isArray(row)) {
-          // For DuckDB arrays, we need column names - but query method doesn't provide them
-          // Convert array to object with generic column names
-          const serializedRow: any = {};
-          row.forEach((value, index) => {
-            if (typeof value === 'bigint') {
-              serializedRow[`column_${index}`] = value.toString();
-            } else {
-              serializedRow[`column_${index}`] = value;
-            }
-          });
-          return serializedRow;
-        } else {
-          // For MySQL objects
-          const serializedRow: any = {};
-          for (const [key, value] of Object.entries(row)) {
-            if (typeof value === 'bigint') {
-              serializedRow[key] = value.toString();
-            } else {
-              serializedRow[key] = value;
-            }
+        const serializedRow: any = {};
+        for (const [key, value] of Object.entries(row)) {
+          if (typeof value === 'bigint') {
+            serializedRow[key] = value.toString();
+          } else {
+            serializedRow[key] = value;
           }
-          return serializedRow;
         }
+        return serializedRow;
       });
 
       res.json(serializedData);

@@ -479,9 +479,9 @@ class DuckDBConnection {
 
   async getTableRowCount(tableName: string): Promise<number> {
     try {
-      const result = await this.execute(`SELECT COUNT(*) FROM ${tableName}`);
-      // @duckdb/node-api returns arrays, so result[0] is an array with the count at index 0
-      const count = Array.isArray(result[0]) ? result[0][0] : result[0]?.count || 0;
+      const result = await this.execute(`SELECT COUNT(*) as count FROM ${tableName}`);
+      // After executeRaw conversion, returns objects with column names
+      const count = result[0]?.count || 0;
       return typeof count === 'bigint' ? Number(count) : count;
     } catch (error) {
       // If view doesn't exist yet, return 0
@@ -518,8 +518,8 @@ class DuckDBConnection {
         ORDER BY table_name
       `);
 
-      // @duckdb/node-api returns rows as arrays, not objects
-      const tables = result.map((row: any) => row[0] || row.table_name);
+      // After executeRaw conversion, returns objects with column names
+      const tables = result.map((row: any) => row.table_name);
 
       // Filter excluded tables
       return tables.filter(table =>
