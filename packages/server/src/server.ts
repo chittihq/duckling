@@ -1101,7 +1101,7 @@ class DuckDBServer {
   private async getTableValidationDetails(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { mysql, duckdb } = req as RequestWithDatabase;
-      const { tableName } = req.body;
+      const { tableName, skipMySQLCount } = req.body;
 
       if (!tableName) {
         res.status(400).json({ error: 'Table name is required' });
@@ -1136,7 +1136,7 @@ class DuckDBServer {
       // Check MySQL
       let mysqlExists = false;
       let mysqlColumnCount = 0;
-      let mysqlRecordCount = 0;
+      let mysqlRecordCount: number | null = null; // null means "not counted yet"
       let mysqlColumns: string[] = [];
 
       try {
@@ -1144,14 +1144,16 @@ class DuckDBServer {
         mysqlExists = mysqlTables.includes(tableName);
 
         if (mysqlExists) {
-          // Get column count and names
+          // Get column count and names (fast - uses DESCRIBE)
           const schema = await mysql.getTableSchema(tableName);
           mysqlColumnCount = schema.length;
           mysqlColumns = schema.map((col: any) => col.Field);
 
-          // Get record count
-          const countResult = await mysql.getTableRowCount(tableName);
-          mysqlRecordCount = typeof countResult === 'bigint' ? Number(countResult) : countResult;
+          // Only count MySQL records if not skipped (COUNT(*) is slow for large tables)
+          if (!skipMySQLCount) {
+            const countResult = await mysql.getTableRowCount(tableName);
+            mysqlRecordCount = typeof countResult === 'bigint' ? Number(countResult) : countResult;
+          }
         }
       } catch (error) {
         logger.warn(`Failed to get MySQL details for ${tableName}:`, error);
@@ -1177,7 +1179,8 @@ class DuckDBServer {
         } else if (extraColumns.length > 0) {
           errorType = 'schema_mismatch';
           errorMessage = `Extra columns in DuckDB: ${extraColumns.join(', ')}`;
-        } else if (duckdbRecordCount !== mysqlRecordCount) {
+        } else if (mysqlRecordCount !== null && duckdbRecordCount !== mysqlRecordCount) {
+          // Only compare record counts if MySQL count is available
           errorType = 'record_count_mismatch';
           errorMessage = `Record count mismatch: DuckDB (${duckdbRecordCount}) vs MySQL (${mysqlRecordCount})`;
         }
@@ -1199,14 +1202,15 @@ class DuckDBServer {
         mysql: {
           exists: mysqlExists,
           columnCount: mysqlColumnCount,
-          recordCount: mysqlRecordCount,
+          recordCount: mysqlRecordCount, // null if skipMySQLCount was true
           columns: mysqlColumns
         },
         columnsMatch,
         missingColumns,
         extraColumns,
         errorType,
-        errorMessage
+        errorMessage,
+        mysqlCountSkipped: skipMySQLCount === true
       });
     } catch (error) {
       logger.error('Get table validation details failed:', error);

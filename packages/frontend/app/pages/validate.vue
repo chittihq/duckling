@@ -15,20 +15,23 @@ interface TableValidation {
   loading: boolean
   syncing: boolean
   deleting: boolean
+  countingMySQL: boolean // Loading state for MySQL count
   duckdb: { exists: boolean; columnCount: number; recordCount: number }
-  mysql: { exists: boolean; columnCount: number; recordCount: number }
-  status: 'pending' | 'loading' | 'match' | 'mismatch' | 'missing' | 'error'
+  mysql: { exists: boolean; columnCount: number; recordCount: number | null } // null = not counted yet
+  status: 'pending' | 'loading' | 'match' | 'mismatch' | 'missing' | 'error' | 'uncounted'
   columnsMatch?: boolean
   errorType?: string
   errorMessage?: string
   missingColumns?: string[]
   extraColumns?: string[]
+  mysqlCountSkipped?: boolean
 }
 
 const tables = ref<TableValidation[]>([])
 const validating = ref(false)
 const initialLoading = ref(false)
 const bulkDeleting = ref(false)
+const countingAllMySQL = ref(false) // Loading state for "Count All MySQL" button
 const searchQuery = ref('')
 const errorTypeFilter = ref('all')
 const showMismatchesOnly = ref(false)
@@ -53,8 +56,9 @@ const loadTables = async () => {
         loading: false,
         syncing: false,
         deleting: false,
+        countingMySQL: false,
         duckdb: { exists: false, columnCount: 0, recordCount: 0 },
-        mysql: { exists: false, columnCount: 0, recordCount: 0 },
+        mysql: { exists: false, columnCount: 0, recordCount: null }, // null = not counted
         status: 'pending' as const
       }))
       .sort((a, b) => a.name.localeCompare(b.name))
@@ -100,11 +104,11 @@ const startValidation = async () => {
   }
 }
 
-const loadTableDetails = async (table: TableValidation) => {
+const loadTableDetails = async (table: TableValidation, skipMySQLCount: boolean = true) => {
   try {
     const response = await post<any>(
       getApiUrlWithDatabase('/api/validation/table-details'),
-      { tableName: table.name }
+      { tableName: table.name, skipMySQLCount }
     )
 
     table.duckdb = response.duckdb
@@ -114,10 +118,14 @@ const loadTableDetails = async (table: TableValidation) => {
     table.errorMessage = response.errorMessage
     table.missingColumns = response.missingColumns || []
     table.extraColumns = response.extraColumns || []
+    table.mysqlCountSkipped = response.mysqlCountSkipped
     table.loading = false
 
     if (!response.duckdb.exists || !response.mysql.exists) {
       table.status = 'missing'
+    } else if (response.mysqlCountSkipped) {
+      // MySQL count was skipped - can't determine match status yet
+      table.status = response.columnsMatch ? 'uncounted' : 'mismatch'
     } else if (
       response.duckdb.recordCount === response.mysql.recordCount &&
       response.columnsMatch
@@ -158,7 +166,82 @@ const syncTable = async (table: TableValidation) => {
 const revalidateTable = async (table: TableValidation) => {
   table.loading = true
   table.status = 'loading'
-  await loadTableDetails(table)
+  await loadTableDetails(table, true) // Skip MySQL count by default
+}
+
+// Count MySQL records for all tables (slow operation)
+const countAllMySQLRecords = async () => {
+  const tablesToCount = tables.value.filter(t => t.mysql.exists && t.mysql.recordCount === null)
+
+  if (tablesToCount.length === 0) {
+    toast({
+      title: 'Info',
+      description: 'All MySQL tables have already been counted'
+    })
+    return
+  }
+
+  countingAllMySQL.value = true
+
+  try {
+    tablesToCount.forEach(table => {
+      table.countingMySQL = true
+    })
+
+    // Count tables sequentially to avoid overwhelming MySQL
+    for (const table of tablesToCount) {
+      await countMySQLRecordsForTable(table)
+    }
+
+    toast({
+      title: 'Success',
+      description: `Counted ${tablesToCount.length} MySQL tables`
+    })
+  } catch (error: any) {
+    console.error('Failed to count MySQL records:', error)
+    toast({
+      title: 'Error',
+      description: 'Failed to count MySQL records: ' + error.message,
+      variant: 'destructive'
+    })
+  } finally {
+    countingAllMySQL.value = false
+  }
+}
+
+// Count MySQL records for a single table
+const countMySQLRecordsForTable = async (table: TableValidation) => {
+  table.countingMySQL = true
+
+  try {
+    const response = await post<any>(
+      getApiUrlWithDatabase('/api/validation/table-details'),
+      { tableName: table.name, skipMySQLCount: false }
+    )
+
+    table.mysql.recordCount = response.mysql.recordCount
+    table.mysqlCountSkipped = false
+    table.countingMySQL = false
+
+    // Update status now that we have MySQL count
+    if (!response.duckdb.exists || !response.mysql.exists) {
+      table.status = 'missing'
+    } else if (
+      table.duckdb.recordCount === response.mysql.recordCount &&
+      table.columnsMatch
+    ) {
+      table.status = 'match'
+      table.errorType = undefined
+      table.errorMessage = undefined
+    } else if (table.duckdb.recordCount !== response.mysql.recordCount) {
+      table.status = 'mismatch'
+      table.errorType = 'record_count_mismatch'
+      table.errorMessage = `Record count mismatch: DuckDB (${table.duckdb.recordCount}) vs MySQL (${response.mysql.recordCount})`
+    }
+  } catch (error: any) {
+    console.error(`Failed to count MySQL records for ${table.name}:`, error)
+    table.countingMySQL = false
+  }
 }
 
 const deleteTable = async (table: TableValidation) => {
@@ -302,11 +385,13 @@ const summary = computed(() => {
   const loading = tables.value.filter(t => t.loading).length
   const pending = tables.value.filter(t => t.status === 'pending').length
   const matching = tables.value.filter(t => t.status === 'match').length
+  const uncounted = tables.value.filter(t => t.status === 'uncounted').length
   const mismatches = tables.value.filter(
     t => t.status === 'mismatch' || t.status === 'missing'
   ).length
+  const mysqlUncounted = tables.value.filter(t => t.mysql.exists && t.mysql.recordCount === null).length
 
-  return { total, loading: loading + pending, matching, mismatches }
+  return { total, loading: loading + pending, matching, mismatches, uncounted, mysqlUncounted }
 })
 
 const validationProgress = computed(() => {
@@ -344,7 +429,7 @@ watch(selectedDatabaseId, () => {
     <!-- Content -->
     <div class="flex-1 overflow-auto p-6 space-y-4">
       <!-- Summary Cards -->
-      <div class="grid grid-cols-4 gap-4">
+      <div class="grid grid-cols-5 gap-4">
         <div class="bg-card border rounded-lg p-4">
           <div class="text-sm text-muted-foreground">Total Tables</div>
           <div class="text-3xl font-bold mt-2">{{ summary.total }}</div>
@@ -358,6 +443,10 @@ watch(selectedDatabaseId, () => {
           <div class="text-3xl font-bold text-red-600 mt-2">{{ summary.mismatches }}</div>
         </div>
         <div class="bg-card border rounded-lg p-4">
+          <div class="text-sm text-muted-foreground">Uncounted</div>
+          <div class="text-3xl font-bold text-yellow-600 mt-2">{{ summary.uncounted }}</div>
+        </div>
+        <div class="bg-card border rounded-lg p-4">
           <div class="text-sm text-muted-foreground">Loading</div>
           <div class="text-3xl font-bold text-muted-foreground mt-2">{{ summary.loading }}</div>
         </div>
@@ -369,14 +458,23 @@ watch(selectedDatabaseId, () => {
           <div class="flex gap-2">
             <Button
               @click="startValidation()"
-              :disabled="validating"
+              :disabled="validating || countingAllMySQL"
               size="sm"
             >
               {{ validating ? 'Validating...' : tables.length > 0 ? 'Validate All Tables' : 'Start Validation' }}
             </Button>
             <Button
+              @click="countAllMySQLRecords()"
+              :disabled="validating || countingAllMySQL || summary.mysqlUncounted === 0"
+              size="sm"
+              variant="secondary"
+              title="Count all MySQL records (slow operation)"
+            >
+              {{ countingAllMySQL ? 'Counting...' : `Count MySQL (${summary.mysqlUncounted})` }}
+            </Button>
+            <Button
               @click="resetValidation()"
-              :disabled="validating"
+              :disabled="validating || countingAllMySQL"
               variant="secondary"
               size="sm"
             >
@@ -384,7 +482,7 @@ watch(selectedDatabaseId, () => {
             </Button>
             <Button
               @click="bulkDeleteFiltered()"
-              :disabled="validating || bulkDeleting || filteredTables.filter(t => t.duckdb.exists).length === 0"
+              :disabled="validating || bulkDeleting || countingAllMySQL || filteredTables.filter(t => t.duckdb.exists).length === 0"
               variant="destructive"
               size="sm"
             >
@@ -481,13 +579,17 @@ watch(selectedDatabaseId, () => {
                 <span v-else class="text-muted-foreground">-</span>
               </td>
               <td class="px-4 py-3 text-right">
+                <span v-if="table.loading" class="text-muted-foreground">-</span>
+                <span v-else-if="table.countingMySQL" class="text-muted-foreground animate-pulse">Counting...</span>
+                <span v-else-if="table.mysql.recordCount === null" class="text-yellow-600 cursor-pointer hover:underline" @click="countMySQLRecordsForTable(table)">
+                  Click to count
+                </span>
                 <span
-                  v-if="!table.loading"
-                  :class="table.duckdb.recordCount !== table.mysql.recordCount && !table.loading ? 'text-red-600 font-semibold' : ''"
+                  v-else
+                  :class="table.duckdb.recordCount !== table.mysql.recordCount ? 'text-red-600 font-semibold' : ''"
                 >
                   {{ formatNumber(table.mysql.recordCount) }}
                 </span>
-                <span v-else class="text-muted-foreground">-</span>
               </td>
               <td class="px-4 py-3 text-center">
                 <div v-if="!table.loading && table.errorType" class="text-xs">
@@ -511,8 +613,14 @@ watch(selectedDatabaseId, () => {
                 <span v-if="table.loading" class="inline-block px-2 py-1 bg-muted text-muted-foreground rounded text-xs">
                   Loading...
                 </span>
+                <span v-else-if="table.countingMySQL" class="inline-block px-2 py-1 bg-muted text-muted-foreground rounded text-xs animate-pulse">
+                  Counting...
+                </span>
                 <span v-else-if="table.status === 'pending'" class="inline-block px-2 py-1 bg-blue-100 text-blue-600 rounded text-xs">
                   Pending
+                </span>
+                <span v-else-if="table.status === 'uncounted'" class="inline-block px-2 py-1 bg-yellow-100 text-yellow-600 rounded text-xs">
+                  Uncounted
                 </span>
                 <span v-else-if="table.status === 'match'" class="inline-block px-2 py-1 bg-green-100 text-green-600 rounded text-xs">
                   Match
