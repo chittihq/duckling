@@ -61,14 +61,14 @@ data/
 
 ## Architecture Benefits
 
-| Feature | Sequential Appender | Previous Approach |
-|---------|-------------------|-------------------|
-| **Data Integrity** | ✅ ACID guaranteed | ❌ Partial writes possible |
-| **Duplicates** | ✅ None (PK constraints) | ❌ Possible in append mode |
-| **Missing Records** | ✅ None (transactions) | ❌ Possible on failure |
-| **Storage Layers** | ✅ One (DuckDB) | ❌ Two (Parquet + Views) |
-| **Restart Time** | ✅ Instant | ❌ View recreation needed |
-| **Code Complexity** | ✅ ~800 lines | ❌ ~2800+ lines |
+| Feature | Sequential Appender |
+|---------|-------------------|
+| **Data Integrity** | ✅ ACID guaranteed |
+| **Duplicates** | ✅ None (PK constraints) |
+| **Missing Records** | ✅ None (transactions) |
+| **Storage Layers** | ✅ One (DuckDB) |
+| **Restart Time** | ✅ Instant |
+| **Code Complexity** | ✅ ~800 lines |
 
 ## Quick Start
 
