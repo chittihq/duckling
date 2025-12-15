@@ -1,5 +1,5 @@
 {
-  "name": "@lmes/duckling",
+  "name": "@chittihq/duckling",
   "version": "0.0.4",
   "description": "High-performance WebSocket SDK for Duckling DuckDB Server",
   "type": "module",
@@ -36,10 +36,10 @@
     "client",
     "database"
   ],
-  "author": "LMES Team",
+  "author": "ChittiHQ Team",
   "license": "MIT",
   "dependencies": {
-    "@lmes/duckling-shared": "workspace:*",
+    "@chittihq/duckling-shared": "workspace:*",
     "ws": "^8.18.3"
   },
   "devDependencies": {

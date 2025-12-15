@@ -13,20 +13,20 @@ This project uses **pnpm workspaces** to manage multiple packages:
 ```
 duckling/
 ├── packages/
-│   ├── server/          # @lmes/duckling-server - DuckDB server with MySQL replication
+│   ├── server/          # @chittihq/duckling-server - DuckDB server with MySQL replication
 │   │   ├── src/         # TypeScript source code
 │   │   ├── public/      # Static web dashboard files
 │   │   ├── dist/        # Compiled JavaScript (after build)
 │   │   └── package.json
-│   ├── frontend/        # @lmes/duckling-frontend - Nuxt 4 web dashboard
+│   ├── frontend/        # @chittihq/duckling-frontend - Nuxt 4 web dashboard
 │   │   ├── app/         # Nuxt pages, components, layouts
 │   │   ├── assets/      # CSS and static assets
 │   │   └── package.json
-│   ├── sdk/             # @lmes/duckling - WebSocket SDK for DuckDB queries
+│   ├── sdk/             # @chittihq/duckling - WebSocket SDK for DuckDB queries
 │   │   ├── src/         # SDK source code
 │   │   ├── examples/    # Usage examples
 │   │   └── package.json
-│   └── shared/          # @lmes/duckling-shared - Shared TypeScript types
+│   └── shared/          # @chittihq/duckling-shared - Shared TypeScript types
 │       ├── src/         # Shared types and constants
 │       └── package.json
 ├── pnpm-workspace.yaml  # Workspace configuration
@@ -46,7 +46,7 @@ duckling/
 ### Package Management
 - Use `pnpm` instead of npm for all dependency management
 - Install all dependencies: `pnpm install` (from root)
-- Add package to specific workspace: `pnpm --filter @lmes/duckling-server add <package-name>`
+- Add package to specific workspace: `pnpm --filter @chittihq/duckling-server add <package-name>`
 - Add package to root: `pnpm add -w <package-name>`
 
 ### Build & Development

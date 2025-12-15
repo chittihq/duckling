@@ -1,5 +1,5 @@
 {
-  "name": "@lmes/duckling-server",
+  "name": "@chittihq/duckling-server",
   "version": "1.0.0",
   "description": "DuckDB server with MySQL replication using Sequential Appender architecture",
   "private": true,
@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@duckdb/node-api": "^1.4.2-r.1",
-    "@lmes/duckling-shared": "workspace:*",
+    "@chittihq/duckling-shared": "workspace:*",
     "@types/ws": "^8.18.1",
     "commander": "^11.1.0",
     "cors": "^2.8.5",

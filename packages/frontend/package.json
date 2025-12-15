@@ -1,5 +1,5 @@
 {
-  "name": "@lmes/duckling-frontend",
+  "name": "@chittihq/duckling-frontend",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -11,8 +11,8 @@
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
-    "@lmes/duckling": "workspace:*",
-    "@lmes/duckling-shared": "workspace:*",
+    "@chittihq/duckling": "workspace:*",
+    "@chittihq/duckling-shared": "workspace:*",
     "@vueuse/core": "^14.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

@@ -26,7 +26,7 @@ pnpm run build
 ## Quick Start
 
 ```typescript
-import { DucklingClient } from '@lmes/duckling';
+import { DucklingClient } from '@chittihq/duckling';
 
 // Initialize client - auto-connect and auto-ping enabled by default
 const client = new DucklingClient({
@@ -124,7 +124,7 @@ import {
   // Error types
   DuckDBError,
   DuckDBErrorType
-} from '@lmes/duckling';
+} from '@chittihq/duckling';
 ```
 
 For complete type documentation, see [TYPES.md](./TYPES.md).
@@ -256,7 +256,7 @@ pnpm run example:basic
 Simple query execution with auto-connect:
 
 ```typescript
-import { DucklingClient } from '@lmes/duckling';
+import { DucklingClient } from '@chittihq/duckling';
 
 const client = new DucklingClient({
   url: 'ws://localhost:3001/ws',
@@ -358,7 +358,7 @@ try {
 The SDK automatically connects on first query and keeps the connection alive:
 
 ```typescript
-import { DucklingClient } from '@lmes/duckling';
+import { DucklingClient } from '@chittihq/duckling';
 
 const client = new DucklingClient({
   url: 'ws://localhost:3001/ws',

@@ -364,7 +364,7 @@ type MaybePromise<T> = T | Promise<T>;
 ### Basic Typed Query
 
 ```typescript
-import { DucklingClient } from '@lmes/duckling';
+import { DucklingClient } from '@chittihq/duckling';
 
 interface User {
   id: number;
@@ -586,5 +586,5 @@ import {
   OptionalProperties,
   DeepPartial,
   MaybePromise
-} from '@lmes/duckling';
+} from '@chittihq/duckling';
 ```

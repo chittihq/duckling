@@ -1,5 +1,5 @@
 {
-  "name": "@lmes/duckling-shared",
+  "name": "@chittihq/duckling-shared",
   "version": "0.1.0",
   "description": "Shared types, constants, and utilities for Duckling DuckDB Server",
   "type": "module",
@@ -27,7 +27,7 @@
     "shared",
     "duckling"
   ],
-  "author": "LMES Team",
+  "author": "ChittiHQ Team",
   "license": "MIT",
   "devDependencies": {
     "tsup": "^8.0.1",

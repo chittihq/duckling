@@ -1,4 +1,4 @@
-# @lmes/duckling-frontend
+# @chittihq/duckling-frontend
 
 Modern web dashboard for Duckling DuckDB Server built with Nuxt 4, Tailwind CSS, and shadcn-vue.
 
@@ -19,20 +19,20 @@ Modern web dashboard for Duckling DuckDB Server built with Nuxt 4, Tailwind CSS,
 pnpm install
 
 # Start development server
-pnpm --filter @lmes/duckling-frontend dev
+pnpm --filter @chittihq/duckling-frontend dev
 
 # Build for production
-pnpm --filter @lmes/duckling-frontend build
+pnpm --filter @chittihq/duckling-frontend build
 
 # Preview production build
-pnpm --filter @lmes/duckling-frontend preview
+pnpm --filter @chittihq/duckling-frontend preview
 ```
 
 ## API Integration
 
 The frontend connects to the DuckDB server backend via:
 - Development proxy (configured in `nuxt.config.ts`)
-- WebSocket SDK for real-time queries (`@lmes/duckling`)
+- WebSocket SDK for real-time queries (`@chittihq/duckling`)
 - REST API for status and control endpoints
 
 ## Project Structure

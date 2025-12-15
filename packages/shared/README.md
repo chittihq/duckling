@@ -1,4 +1,4 @@
-# @lmes/duckling-shared
+# @chittihq/duckling-shared
 
 Shared TypeScript types, constants, and utilities for the Duckling DuckDB Server monorepo.
 
@@ -6,10 +6,10 @@ Shared TypeScript types, constants, and utilities for the Duckling DuckDB Server
 
 ```bash
 # Within the monorepo
-pnpm add @lmes/duckling-shared --workspace
+pnpm add @chittihq/duckling-shared --workspace
 
 # For external use (if published)
-pnpm add @lmes/duckling-shared
+pnpm add @chittihq/duckling-shared
 ```
 
 ## Usage
@@ -21,7 +21,7 @@ import {
   QueryResponse,
   API_ROUTES,
   DEFAULTS
-} from '@lmes/duckling-shared';
+} from '@chittihq/duckling-shared';
 
 // Use shared types
 const log: SyncLog = {

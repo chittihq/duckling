@@ -1,4 +1,4 @@
-import { DucklingClient } from '@lmes/duckling';
+import { DucklingClient } from '@chittihq/duckling';
 
 /**
  * Basic Query Example

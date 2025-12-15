@@ -6,10 +6,10 @@ A high-performance DuckDB server that replicates data from MySQL using **Sequent
 
 This project uses pnpm workspaces to manage multiple packages:
 
-- **`packages/server`** - DuckDB server with MySQL replication (`@lmes/duckling-server`)
-- **`packages/frontend`** - Nuxt 4 web dashboard (`@lmes/duckling-frontend`)
-- **`packages/sdk`** - WebSocket SDK for DuckDB queries (`@lmes/duckling`)
-- **`packages/shared`** - Shared TypeScript types and constants (`@lmes/duckling-shared`)
+- **`packages/server`** - DuckDB server with MySQL replication (`@chittihq/duckling-server`)
+- **`packages/frontend`** - Nuxt 4 web dashboard (`@chittihq/duckling-frontend`)
+- **`packages/sdk`** - WebSocket SDK for DuckDB queries (`@chittihq/duckling`)
+- **`packages/shared`** - Shared TypeScript types and constants (`@chittihq/duckling-shared`)
 
 ## 🚀 Performance Features
 
