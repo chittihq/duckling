@@ -39,7 +39,6 @@
   "author": "ChittiHQ Team",
   "license": "MIT",
   "dependencies": {
-    "@chittihq/duckling-shared": "workspace:*",
     "ws": "^8.18.3"
   },
   "devDependencies": {
