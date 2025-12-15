@@ -88,9 +88,46 @@ class MySQLConnection {
     return await this.execute(`DESCRIBE ${tableName}`);
   }
 
+  /**
+   * Get exact row count using COUNT(*) - SLOW for large tables
+   * Use getTableRowCountFast() for progress tracking or estimates
+   */
   async getTableRowCount(tableName: string): Promise<number> {
     const result = await this.execute(`SELECT COUNT(*) as count FROM ${tableName}`);
     return result[0].count;
+  }
+
+  /**
+   * Get estimated row count from information_schema - INSTANT
+   * Note: For InnoDB tables, this is approximate (typically within 10-20%)
+   * Perfect for progress tracking, validation estimates, and UI display
+   */
+  async getTableRowCountFast(tableName: string): Promise<number> {
+    const result = await this.execute(`
+      SELECT TABLE_ROWS as count
+      FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+    `, [tableName]);
+    return result[0]?.count || 0;
+  }
+
+  /**
+   * Get all table row counts in a single query - INSTANT
+   * Returns a Map of tableName -> estimated row count
+   * Much faster than calling getTableRowCountFast() N times
+   */
+  async getAllTableRowCountsFast(): Promise<Map<string, number>> {
+    const result = await this.execute(`
+      SELECT TABLE_NAME, TABLE_ROWS
+      FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE()
+    `);
+
+    const counts = new Map<string, number>();
+    for (const row of result) {
+      counts.set(row.TABLE_NAME, row.TABLE_ROWS || 0);
+    }
+    return counts;
   }
 
   async getLastUpdatedTimestamp(tableName: string): Promise<Date | null> {

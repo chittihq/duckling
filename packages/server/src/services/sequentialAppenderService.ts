@@ -465,8 +465,9 @@ class SequentialAppenderService {
       let recordsProcessed = 0;
       const watermarkBefore = await this.getTableWatermark(tableName);
 
-      // Get total record count for progress tracking
-      const totalRecords = await this.mysql.getTableRowCount(tableName);
+      // Get estimated record count for progress tracking (fast, uses information_schema)
+      // Note: For progress bars only - exact count not needed here
+      const totalRecords = await this.mysql.getTableRowCountFast(tableName);
       let lastLoggedAt = 0;
       const PROGRESS_LOG_INTERVAL = 10000;
 
@@ -647,8 +648,9 @@ class SequentialAppenderService {
       let recordsProcessed = 0;
       const watermarkBefore = await this.getTableWatermark(tableName);
 
-      // Get total record count for progress tracking
-      const totalRecords = await this.mysql.getTableRowCount(tableName);
+      // Get estimated record count for progress tracking (fast, uses information_schema)
+      // Note: For progress bars only - exact count not needed here
+      const totalRecords = await this.mysql.getTableRowCountFast(tableName);
       let lastLoggedAt = 0;
       const PROGRESS_LOG_INTERVAL = 10000;
 
