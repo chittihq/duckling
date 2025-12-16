@@ -278,91 +278,13 @@ pnpm run typecheck
    - DuckDB columnar format optimizes analytical queries automatically
    - Select only needed columns to minimize I/O
 
-## Docker Deployment
+## Deployment
 
-### Monorepo Multi-Stage Dockerfile
-
-The project uses multi-stage Docker builds for optimal image sizes:
-
-- **`Dockerfile`** - Production build with optimized layers for server and frontend
-- **`Dockerfile.dev`** - Development build with all dev dependencies
-
-### docker-compose.yml
-
-```yaml
-version: '3.8'
-
-services:
-  duckdb-server:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    ports:
-      - "3001:3000"
-    environment:
-      - MYSQL_CONNECTION_STRING=mysql://root:password@mysql:3306/myapp
-      - BATCH_SIZE=10000
-      - SYNC_INTERVAL_MINUTES=15
-    volumes:
-      - ./packages/server/src:/app/packages/server/src:ro
-      - ./packages/server/public:/app/packages/server/public:ro
-      - ./packages/shared:/app/packages/shared:ro
-      - ./data:/app/data
-      - ./logs:/app/logs
-    depends_on:
-      - mysql
-    restart: unless-stopped
-    command: pnpm dev:server
-
-  duckdb-frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    ports:
-      - "3000:3001"
-    volumes:
-      - ./packages/frontend:/app/packages/frontend:ro
-      - ./packages/shared:/app/packages/shared:ro
-      - ./packages/sdk:/app/packages/sdk:ro
-    depends_on:
-      - duckdb-server
-    restart: unless-stopped
-    command: pnpm dev:frontend
-
-  mysql:
-    image: mysql:8.0
-    environment:
-      MYSQL_ROOT_PASSWORD: password
-      MYSQL_DATABASE: myapp
-    volumes:
-      - mysql_data:/var/lib/mysql
-    restart: unless-stopped
-
-volumes:
-  mysql_data:
-  node_modules:
-```
-
-### Production Build
-
-```bash
-# Build production images
-docker build --target server -t duckling-server .
-docker build --target frontend -t duckling-frontend .
-
-# Run production containers
-docker run -d -p 3000:3000 duckling-server
-docker run -d -p 3001:3001 duckling-frontend
-```
-
-## Security
-
-- API key authentication for programmatic access
-- Session-based authentication for web dashboard
-- Input validation and SQL injection prevention
-- Rate limiting on API endpoints
-- Comprehensive audit logging in `sync_log` table
-- Secure file permissions for DuckDB database file
+See [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) for complete deployment documentation including:
+- Docker and docker-compose setup
+- Production builds
+- Health checks and monitoring
+- Backup and recovery
 
 ## Contributing
 
@@ -382,4 +304,3 @@ For issues and questions:
 - Create an issue on GitHub
 - Check the troubleshooting guide above
 - Review the logs for detailed error information
-- See `MIGRATION_SUMMARY.md` for migration guidance
