@@ -2,15 +2,6 @@
 
 A high-performance DuckDB server that replicates data from MySQL using **Sequential Appender architecture** with ACID transactions for guaranteed data integrity and **5-10x faster query performance**.
 
-## 📦 Monorepo Structure
-
-This project uses pnpm workspaces to manage multiple packages:
-
-- **`packages/server`** - DuckDB server with MySQL replication (`@chittihq/duckling-server`)
-- **`packages/frontend`** - Nuxt 4 web dashboard (`@chittihq/duckling-frontend`)
-- **`packages/sdk`** - WebSocket SDK for DuckDB queries (`@chittihq/duckling`)
-- **`packages/shared`** - Shared TypeScript types and constants (`@chittihq/duckling-shared`)
-
 ## 🚀 Performance Features
 
 - **⚡ 5-10x faster queries** through columnar storage
@@ -187,80 +178,12 @@ CONNECTION_TIMEOUT=30000
 QUERY_TIMEOUT=30000
 ```
 
-## API Endpoints
+## API Reference
 
-### Health & Status
-- `GET /health` - Health check with architecture info
-- `GET /status` - System status with table counts and uptime
-- `GET /metrics` - Sync performance metrics and history
-
-### Synchronization
-- `POST /sync/full` - Run full synchronization (atomic)
-- `POST /sync/incremental` - Run watermark-based incremental sync
-- `POST /sync/table/:tableName` - Sync specific table
-- `GET /sync/status` - Sync status with watermark info
-- `GET /sync/validate` - Validate data integrity (MySQL vs DuckDB counts)
-- `DELETE /sync/clear-all` - Clear all data and reinitialize
-
-### Automation & Recovery
-- `GET /automation/status` - Get automation service status
-- `POST /automation/start` - Start automation service
-- `POST /automation/stop` - Stop automation service
-- `POST /automation/backup` - Trigger manual backup
-- `POST /automation/restore` - Restore from latest backup
-- `POST /automation/cleanup` - Trigger manual cleanup
-
-### Data Access
-- `GET /tables` - List all replicated tables
-- `GET /tables/:name/schema` - Get table schema
-- `GET /tables/:name/data` - Get table data
-- `GET /tables/:name/count` - Get row count
-- `GET /tables/counts/all` - Get all table counts in parallel
-- `POST /query` - Execute SQL queries on DuckDB
-
-## Query Performance Examples
-
-### Star Schema Joins
-
-```sql
--- Columnar processing with DuckDB optimizations
-SELECT
-    c.region,
-    date_trunc('day', o.order_date) AS day,
-    SUM(o.amount) AS revenue
-FROM orders o
-JOIN customers c ON o.customer_id = c.customer_id
-WHERE o.order_date >= CURRENT_DATE - INTERVAL 7 DAY
-GROUP BY c.region, day
-ORDER BY day DESC;
-
--- Performance: ~200ms (was 2-5s)
-```
-
-### Time-Range Queries
-
-```sql
--- Efficient columnar filtering
-SELECT COUNT(*), AVG(amount)
-FROM orders
-WHERE order_date BETWEEN '2024-01-15' AND '2024-01-16';
-
--- Performance: ~50ms (was 1-2s)
-```
-
-### Analytical Queries
-
-```sql
--- Column-oriented processing
-SELECT
-    product_category,
-    COUNT(*) as order_count,
-    SUM(amount) as total_revenue
-FROM orders
-GROUP BY product_category;
-
--- Only scans needed columns, compressed data
-```
+See [API.md](./API.md) for complete API documentation including:
+- REST endpoints for sync, queries, and management
+- WebSocket SDK for high-performance real-time queries
+- Query examples and performance benchmarks
 
 ## CLI Commands
 
@@ -353,65 +276,6 @@ pnpm run typecheck
 | `SYNC_INTERVAL_MINUTES` | `15` | Auto-sync frequency |
 | `MAX_RETRIES` | `3` | Retry attempts for failed operations |
 | `CONNECTION_TIMEOUT` | `30000` | Connection timeout in ms |
-
-## Monitoring & Operations
-
-### Health Monitoring
-
-```bash
-# Check system health
-curl http://localhost:3000/health
-
-# Get system status
-curl http://localhost:3000/status
-
-# Get sync metrics
-curl http://localhost:3000/metrics
-```
-
-### Sync Operations
-
-```bash
-# Run full sync
-curl -X POST http://localhost:3000/sync/full
-
-# Run incremental sync
-curl -X POST http://localhost:3000/sync/incremental
-
-# Sync specific table
-curl -X POST http://localhost:3000/sync/table/orders
-
-# Validate data integrity
-curl http://localhost:3000/sync/validate
-```
-
-### Sync Status Response
-
-```json
-{
-  "tablesProcessed": 181,
-  "totalRecords": 1234567,
-  "successCount": 181,
-  "errorCount": 0,
-  "watermarks": [
-    {
-      "table": "orders",
-      "lastProcessedId": 98765,
-      "lastProcessedTimestamp": "2024-01-20T10:30:00Z"
-    }
-  ],
-  "recentLogs": [
-    {
-      "table": "orders",
-      "syncType": "incremental",
-      "recordsProcessed": 1523,
-      "duration": "2.3s",
-      "status": "success"
-    }
-  ],
-  "architecture": "sequential-appender"
-}
-```
 
 ## Performance Tuning
 
