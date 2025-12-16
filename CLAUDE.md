@@ -171,6 +171,22 @@ docker-compose restart duckdb-frontend
 
 ## Architecture Overview
 
+```
+MySQL (Source) → Sequential Appender → DuckDB Native Storage → API Clients
+                        ↓                      ↓
+                  BEGIN TRANSACTION      Columnar Format
+                  INSERT sequentially     (Compressed)
+                  COMMIT / ROLLBACK      Watermark Tracking
+                        ↓
+                 Atomic & ACID
+                 No Duplicates
+                 Data Integrity
+
+Storage Structure:
+data/
+└── duckling.db  # Single DuckDB file (persistent, columnar)
+```
+
 ### Sequential Appender Architecture
 
 This service uses **Sequential Appender architecture** that provides:

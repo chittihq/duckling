@@ -25,24 +25,6 @@ A high-performance DuckDB server that replicates data from MySQL using **Sequent
 - **🚀 Systemd service** for production deployment
 - **🛠️ Comprehensive CLI tools** for management
 
-## Architecture
-
-```
-MySQL (Source) → Sequential Appender → DuckDB Native Storage → API Clients
-                        ↓                      ↓
-                  BEGIN TRANSACTION      Columnar Format
-                  INSERT sequentially     (Compressed)
-                  COMMIT / ROLLBACK      Watermark Tracking
-                        ↓
-                 Atomic & ACID
-                 No Duplicates
-                 Data Integrity
-
-Storage Structure:
-data/
-└── duckling.db  # Single DuckDB file (persistent, columnar)
-```
-
 ## Performance Comparison
 
 | Metric | Before | After | Improvement |
