@@ -79,7 +79,50 @@ docker run -d -p 3000:3000 duckling-server
 docker run -d -p 3001:3001 duckling-frontend
 ```
 
-## Security
+## Security Configuration (REQUIRED)
+
+**⚠️ IMPORTANT: You MUST configure these security settings before deploying to production!**
+
+### Required Security Settings
+
+1. **Set Strong Admin Credentials**
+   ```bash
+   # In your .env file:
+   ADMIN_USERNAME=your-admin-username
+   ADMIN_PASSWORD=your-strong-password-here
+   ```
+
+   **WARNING:** Never use default credentials like `admin/admin` in production!
+
+2. **Generate Strong Session Secret**
+   ```bash
+   # Generate a secure random session secret:
+   SESSION_SECRET=$(openssl rand -hex 32)
+
+   # Add to .env file:
+   SESSION_SECRET=<generated-value>
+   ```
+
+3. **Set API Key for Programmatic Access**
+   ```bash
+   # Generate a secure API key:
+   DUCKLING_API_KEY=$(openssl rand -hex 32)
+
+   # Or use your own secure random string
+   # Add to .env file:
+   DUCKLING_API_KEY=<your-secure-api-key>
+   ```
+
+### Security Best Practices
+
+- **Never commit `.env` files** to version control (already in `.gitignore`)
+- **Use strong, unique passwords** for admin accounts
+- **Rotate API keys regularly** in production environments
+- **Enable HTTPS** when exposing the service externally
+- **Restrict network access** using firewall rules or VPC configurations
+- **Monitor authentication logs** for suspicious activity
+
+### Security Features
 
 - API key authentication for programmatic access
 - Session-based authentication for web dashboard
@@ -87,10 +130,6 @@ docker run -d -p 3001:3001 duckling-frontend
 - Rate limiting on API endpoints
 - Comprehensive audit logging in `sync_log` table
 - Secure file permissions for DuckDB database file
-
-### Security Configuration
-
-See the [Security Configuration](../README.md#security-configuration-required) section in README.md for required security settings before deploying to production.
 
 ## Environment Variables
 
