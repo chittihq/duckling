@@ -2,15 +2,6 @@
 
 A high-performance DuckDB server that replicates data from MySQL using **Sequential Appender architecture** with ACID transactions for guaranteed data integrity and **5-10x faster query performance**.
 
-## 📦 Monorepo Structure
-
-This project uses pnpm workspaces to manage multiple packages:
-
-- **`packages/server`** - DuckDB server with MySQL replication (`@chittihq/duckling-server`)
-- **`packages/frontend`** - Nuxt 4 web dashboard (`@chittihq/duckling-frontend`)
-- **`packages/sdk`** - WebSocket SDK for DuckDB queries (`@chittihq/duckling`)
-- **`packages/shared`** - Shared TypeScript types and constants (`@chittihq/duckling-shared`)
-
 ## 🚀 Performance Features
 
 - **⚡ 5-10x faster queries** through columnar storage
@@ -33,24 +24,6 @@ This project uses pnpm workspaces to manage multiple packages:
 - **🐳 Docker support** with docker-compose
 - **🚀 Systemd service** for production deployment
 - **🛠️ Comprehensive CLI tools** for management
-
-## Architecture
-
-```
-MySQL (Source) → Sequential Appender → DuckDB Native Storage → API Clients
-                        ↓                      ↓
-                  BEGIN TRANSACTION      Columnar Format
-                  INSERT sequentially     (Compressed)
-                  COMMIT / ROLLBACK      Watermark Tracking
-                        ↓
-                 Atomic & ACID
-                 No Duplicates
-                 Data Integrity
-
-Storage Structure:
-data/
-└── duckling.db  # Single DuckDB file (persistent, columnar)
-```
 
 ## Performance Comparison
 
@@ -120,49 +93,6 @@ pnpm run dev:frontend    # Frontend on port 3000 (Nuxt dev server)
 pnpm run dev:sdk         # SDK build watch mode
 ```
 
-## Security Configuration (REQUIRED)
-
-**⚠️ IMPORTANT: You MUST configure these security settings before deploying to production!**
-
-### Required Security Settings
-
-1. **Set Strong Admin Credentials**
-   ```bash
-   # In your .env file:
-   ADMIN_USERNAME=your-admin-username
-   ADMIN_PASSWORD=your-strong-password-here
-   ```
-
-   **WARNING:** Never use default credentials like `admin/admin` in production!
-
-2. **Generate Strong Session Secret**
-   ```bash
-   # Generate a secure random session secret:
-   SESSION_SECRET=$(openssl rand -hex 32)
-
-   # Add to .env file:
-   SESSION_SECRET=<generated-value>
-   ```
-
-3. **Set API Key for Programmatic Access**
-   ```bash
-   # Generate a secure API key:
-   DUCKLING_API_KEY=$(openssl rand -hex 32)
-
-   # Or use your own secure random string
-   # Add to .env file:
-   DUCKLING_API_KEY=<your-secure-api-key>
-   ```
-
-### Security Best Practices
-
-- **Never commit `.env` files** to version control (already in `.gitignore`)
-- **Use strong, unique passwords** for admin accounts
-- **Rotate API keys regularly** in production environments
-- **Enable HTTPS** when exposing the service externally
-- **Restrict network access** using firewall rules or VPC configurations
-- **Monitor authentication logs** for suspicious activity
-
 ## Configuration
 
 Environment variables (copy `.env.example` to `.env`):
@@ -187,80 +117,12 @@ CONNECTION_TIMEOUT=30000
 QUERY_TIMEOUT=30000
 ```
 
-## API Endpoints
+## API Reference
 
-### Health & Status
-- `GET /health` - Health check with architecture info
-- `GET /status` - System status with table counts and uptime
-- `GET /metrics` - Sync performance metrics and history
-
-### Synchronization
-- `POST /sync/full` - Run full synchronization (atomic)
-- `POST /sync/incremental` - Run watermark-based incremental sync
-- `POST /sync/table/:tableName` - Sync specific table
-- `GET /sync/status` - Sync status with watermark info
-- `GET /sync/validate` - Validate data integrity (MySQL vs DuckDB counts)
-- `DELETE /sync/clear-all` - Clear all data and reinitialize
-
-### Automation & Recovery
-- `GET /automation/status` - Get automation service status
-- `POST /automation/start` - Start automation service
-- `POST /automation/stop` - Stop automation service
-- `POST /automation/backup` - Trigger manual backup
-- `POST /automation/restore` - Restore from latest backup
-- `POST /automation/cleanup` - Trigger manual cleanup
-
-### Data Access
-- `GET /tables` - List all replicated tables
-- `GET /tables/:name/schema` - Get table schema
-- `GET /tables/:name/data` - Get table data
-- `GET /tables/:name/count` - Get row count
-- `GET /tables/counts/all` - Get all table counts in parallel
-- `POST /query` - Execute SQL queries on DuckDB
-
-## Query Performance Examples
-
-### Star Schema Joins
-
-```sql
--- Columnar processing with DuckDB optimizations
-SELECT
-    c.region,
-    date_trunc('day', o.order_date) AS day,
-    SUM(o.amount) AS revenue
-FROM orders o
-JOIN customers c ON o.customer_id = c.customer_id
-WHERE o.order_date >= CURRENT_DATE - INTERVAL 7 DAY
-GROUP BY c.region, day
-ORDER BY day DESC;
-
--- Performance: ~200ms (was 2-5s)
-```
-
-### Time-Range Queries
-
-```sql
--- Efficient columnar filtering
-SELECT COUNT(*), AVG(amount)
-FROM orders
-WHERE order_date BETWEEN '2024-01-15' AND '2024-01-16';
-
--- Performance: ~50ms (was 1-2s)
-```
-
-### Analytical Queries
-
-```sql
--- Column-oriented processing
-SELECT
-    product_category,
-    COUNT(*) as order_count,
-    SUM(amount) as total_revenue
-FROM orders
-GROUP BY product_category;
-
--- Only scans needed columns, compressed data
-```
+See [API.md](./API.md) for complete API documentation including:
+- REST endpoints for sync, queries, and management
+- WebSocket SDK for high-performance real-time queries
+- Query examples and performance benchmarks
 
 ## CLI Commands
 
@@ -354,65 +216,6 @@ pnpm run typecheck
 | `MAX_RETRIES` | `3` | Retry attempts for failed operations |
 | `CONNECTION_TIMEOUT` | `30000` | Connection timeout in ms |
 
-## Monitoring & Operations
-
-### Health Monitoring
-
-```bash
-# Check system health
-curl http://localhost:3000/health
-
-# Get system status
-curl http://localhost:3000/status
-
-# Get sync metrics
-curl http://localhost:3000/metrics
-```
-
-### Sync Operations
-
-```bash
-# Run full sync
-curl -X POST http://localhost:3000/sync/full
-
-# Run incremental sync
-curl -X POST http://localhost:3000/sync/incremental
-
-# Sync specific table
-curl -X POST http://localhost:3000/sync/table/orders
-
-# Validate data integrity
-curl http://localhost:3000/sync/validate
-```
-
-### Sync Status Response
-
-```json
-{
-  "tablesProcessed": 181,
-  "totalRecords": 1234567,
-  "successCount": 181,
-  "errorCount": 0,
-  "watermarks": [
-    {
-      "table": "orders",
-      "lastProcessedId": 98765,
-      "lastProcessedTimestamp": "2024-01-20T10:30:00Z"
-    }
-  ],
-  "recentLogs": [
-    {
-      "table": "orders",
-      "syncType": "incremental",
-      "recordsProcessed": 1523,
-      "duration": "2.3s",
-      "status": "success"
-    }
-  ],
-  "architecture": "sequential-appender"
-}
-```
-
 ## Performance Tuning
 
 1. **Batch Size Optimization**
@@ -432,91 +235,14 @@ curl http://localhost:3000/sync/validate
    - DuckDB columnar format optimizes analytical queries automatically
    - Select only needed columns to minimize I/O
 
-## Docker Deployment
+## Deployment
 
-### Monorepo Multi-Stage Dockerfile
-
-The project uses multi-stage Docker builds for optimal image sizes:
-
-- **`Dockerfile`** - Production build with optimized layers for server and frontend
-- **`Dockerfile.dev`** - Development build with all dev dependencies
-
-### docker-compose.yml
-
-```yaml
-version: '3.8'
-
-services:
-  duckdb-server:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    ports:
-      - "3001:3000"
-    environment:
-      - MYSQL_CONNECTION_STRING=mysql://root:password@mysql:3306/myapp
-      - BATCH_SIZE=10000
-      - SYNC_INTERVAL_MINUTES=15
-    volumes:
-      - ./packages/server/src:/app/packages/server/src:ro
-      - ./packages/server/public:/app/packages/server/public:ro
-      - ./packages/shared:/app/packages/shared:ro
-      - ./data:/app/data
-      - ./logs:/app/logs
-    depends_on:
-      - mysql
-    restart: unless-stopped
-    command: pnpm dev:server
-
-  duckdb-frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    ports:
-      - "3000:3001"
-    volumes:
-      - ./packages/frontend:/app/packages/frontend:ro
-      - ./packages/shared:/app/packages/shared:ro
-      - ./packages/sdk:/app/packages/sdk:ro
-    depends_on:
-      - duckdb-server
-    restart: unless-stopped
-    command: pnpm dev:frontend
-
-  mysql:
-    image: mysql:8.0
-    environment:
-      MYSQL_ROOT_PASSWORD: password
-      MYSQL_DATABASE: myapp
-    volumes:
-      - mysql_data:/var/lib/mysql
-    restart: unless-stopped
-
-volumes:
-  mysql_data:
-  node_modules:
-```
-
-### Production Build
-
-```bash
-# Build production images
-docker build --target server -t duckling-server .
-docker build --target frontend -t duckling-frontend .
-
-# Run production containers
-docker run -d -p 3000:3000 duckling-server
-docker run -d -p 3001:3001 duckling-frontend
-```
-
-## Security
-
-- API key authentication for programmatic access
-- Session-based authentication for web dashboard
-- Input validation and SQL injection prevention
-- Rate limiting on API endpoints
-- Comprehensive audit logging in `sync_log` table
-- Secure file permissions for DuckDB database file
+See [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) for complete deployment documentation including:
+- Security configuration (required before production)
+- Docker and docker-compose setup
+- Production builds
+- Health checks and monitoring
+- Backup and recovery
 
 ## Contributing
 
@@ -536,4 +262,3 @@ For issues and questions:
 - Create an issue on GitHub
 - Check the troubleshooting guide above
 - Review the logs for detailed error information
-- See `MIGRATION_SUMMARY.md` for migration guidance
