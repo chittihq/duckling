@@ -462,6 +462,26 @@ class SequentialAppenderService {
       }
     }
 
+    // Handle invalid time values for time columns
+    if (lowerType.includes('time') && !lowerType.includes('datetime') && !lowerType.includes('timestamp')) {
+      if (value === null || value === undefined) {
+        return null;
+      }
+
+      // Check for invalid time strings (hours >= 24)
+      if (typeof value === 'string') {
+        const timeMatch = value.match(/^(\d+):(\d+):(\d+)/);
+        if (timeMatch) {
+          const hours = parseInt(timeMatch[1], 10);
+          // If hours >= 24, the time is invalid - set to NULL
+          if (hours >= 24) {
+            logger.warn(`Invalid time value "${value}" (hours >= 24) - converting to NULL`);
+            return null;
+          }
+        }
+      }
+    }
+
     return value;
   }
 
