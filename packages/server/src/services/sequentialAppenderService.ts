@@ -331,8 +331,25 @@ class SequentialAppenderService {
     this.acquireSyncLock();
 
     try {
-      // Use watermark-based sync (same as incremental sync) - checks for watermark and does incremental if available
       logger.info(`Starting sync for table: ${tableName}`);
+
+      // Check if table exists in MySQL
+      const mysqlTables = await this.mysql.getTables();
+      if (!mysqlTables.includes(tableName)) {
+        // Use helper to clean up
+        await this.getSchemaOrCleanup(tableName, Date.now());
+
+        return {
+          table: tableName,
+          recordsProcessed: 0,
+          duration: 0,
+          status: 'error',
+          error: 'Table does not exist in MySQL',
+          syncType: 'sequential'
+        };
+      }
+
+      // Use watermark-based sync (same as incremental sync) - checks for watermark and does incremental if available
       return await this.syncTableWatermark(tableName);
     } finally {
       // Always release lock, even if sync fails
@@ -462,8 +479,19 @@ class SequentialAppenderService {
     try {
       logger.info(`Starting sequential sync for table: ${tableName}`);
 
-      // Get table schema
-      const schema = await this.mysql.getTableSchema(tableName);
+      // Get table schema (will fail if table doesn't exist in MySQL)
+      const schema = await this.getSchemaOrCleanup(tableName, startTime);
+      if (!schema) {
+        // Table was deleted from MySQL
+        return {
+          table: tableName,
+          recordsProcessed: 0,
+          duration: Date.now() - startTime,
+          status: 'error',
+          error: 'Table does not exist in MySQL',
+          syncType: 'sequential'
+        };
+      }
 
       // Initialize table if needed
       await this.ensureTableExists(tableName, schema);
@@ -642,8 +670,19 @@ class SequentialAppenderService {
     try {
       logger.info(`Starting Appender-based sequential sync for table: ${tableName}`);
 
-      // Get table schema
-      const schema = await this.mysql.getTableSchema(tableName);
+      // Get table schema (will fail if table doesn't exist in MySQL)
+      const schema = await this.getSchemaOrCleanup(tableName, startTime);
+      if (!schema) {
+        // Table was deleted from MySQL
+        return {
+          table: tableName,
+          recordsProcessed: 0,
+          duration: Date.now() - startTime,
+          status: 'error',
+          error: 'Table does not exist in MySQL',
+          syncType: 'sequential'
+        };
+      }
 
       // Initialize table if needed
       await this.ensureTableExists(tableName, schema);
@@ -827,8 +866,19 @@ class SequentialAppenderService {
       logger.info(`${tableName} watermark - ID: ${watermark.lastProcessedId}, TS: ${watermark.lastProcessedTimestamp?.toISOString()}, PKCol: ${watermark.primaryKeyColumn}, TSCol: ${watermark.timestampColumn}`);
 
 
-      // Get table schema
-      const schema = await this.mysql.getTableSchema(tableName);
+      // Get table schema (will fail if table doesn't exist in MySQL)
+      const schema = await this.getSchemaOrCleanup(tableName, startTime);
+      if (!schema) {
+        // Table was deleted from MySQL
+        return {
+          table: tableName,
+          recordsProcessed: 0,
+          duration: Date.now() - startTime,
+          status: 'error',
+          error: 'Table does not exist in MySQL',
+          syncType: 'watermark'
+        };
+      }
 
       // Ensure table exists (adds new columns if needed)
       await this.ensureTableExists(tableName, schema);
@@ -1080,6 +1130,30 @@ class SequentialAppenderService {
     } catch (error) {
       logger.error(`Failed to handle schema evolution for ${tableName}:`, error);
       throw error;
+    }
+  }
+
+  /**
+   * Get table schema and handle deleted tables
+   * Returns schema if table exists, null if table was deleted from MySQL
+   */
+  private async getSchemaOrCleanup(tableName: string, startTime: number): Promise<any[] | null> {
+    try {
+      return await this.mysql.getTableSchema(tableName);
+    } catch (error: any) {
+      // Table doesn't exist in MySQL - clean up DuckDB
+      if (error.code === 'ER_NO_SUCH_TABLE' || error.errno === 1146) {
+        logger.warn(`Table ${tableName} does not exist in MySQL, cleaning up from DuckDB`);
+        try {
+          await this.duckdb.run(`DROP TABLE IF EXISTS ${tableName}`);
+          await this.duckdb.run('DELETE FROM appender_watermarks WHERE table_name = ?', [tableName]);
+          logger.info(`Deleted orphaned table ${tableName} from DuckDB`);
+        } catch (cleanupError) {
+          logger.error(`Failed to cleanup table ${tableName}:`, cleanupError);
+        }
+        return null; // Signal that table was deleted
+      }
+      throw error; // Re-throw if it's a different error
     }
   }
 
