@@ -1,6 +1,6 @@
 # Duckling - DuckDB Server with MySQL Replication
 
-![Duckling Banner](docs/images/banner.png)
+![Duckling Banner](docs/images/banner.jpeg)
 
 A high-performance DuckDB server that replicates data from MySQL using **Sequential Appender architecture** with ACID transactions for guaranteed data integrity and **5-10x faster query performance**.
 
