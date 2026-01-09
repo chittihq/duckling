@@ -1017,12 +1017,12 @@ class SequentialAppenderService {
 
     const columns = schema.map(col => {
       const type = this.mapMySQLTypeToDuckDB(col.Type);
-      // Always make timestamp/datetime columns nullable to handle invalid MySQL timestamps (0000-00-00 00:00:00)
-      const isTimestamp = col.Type.toLowerCase().includes('timestamp') || col.Type.toLowerCase().includes('datetime');
-      const nullable = (col.Null === 'YES' || isTimestamp) ? '' : ' NOT NULL';
+      // Always make all columns nullable
+      // MySQL often has NULL values even in NOT NULL columns due to legacy data or lenient enforcement
+      // DuckDB enforces constraints strictly, so we allow NULL to prevent sync failures
 
       // Don't add PRIMARY KEY constraint here - we'll add it separately
-      return `${col.Field} ${type}${nullable}`;
+      return `${col.Field} ${type}`;
     });
 
     // Add composite primary key constraint if there are primary key columns
