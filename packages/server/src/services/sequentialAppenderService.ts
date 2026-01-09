@@ -1225,19 +1225,13 @@ class SequentialAppenderService {
     if (type.includes('time')) return 'TIME';
 
     // Numeric types (check these AFTER string types)
+    // Use BIGINT for all integer types to prevent overflow errors
+    // MySQL often has values that exceed INT32 range even in INT columns
     if (type.includes('bigint')) return 'BIGINT';
     if (type.includes('tinyint')) return 'TINYINT';
     if (type.includes('smallint')) return 'SMALLINT';
-    if (type.includes('mediumint')) return 'INTEGER';
-    if (type.includes('int(')) {
-      const sizeMatch = type.match(/int\((\d+)\)/);
-      if (sizeMatch) {
-        const size = parseInt(sizeMatch[1]);
-        return size >= 11 ? 'BIGINT' : 'INTEGER';
-      }
-      return 'INTEGER';
-    }
-    if (type.includes('int')) return 'INTEGER';
+    if (type.includes('mediumint')) return 'BIGINT';  // Use BIGINT instead of INTEGER
+    if (type.includes('int')) return 'BIGINT';  // Use BIGINT for all INT types
     if (type.includes('decimal') || type.includes('numeric')) return 'DECIMAL';
     if (type.includes('float')) return 'FLOAT';
     if (type.includes('double')) return 'DOUBLE';
