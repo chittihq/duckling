@@ -213,6 +213,9 @@ class SequentialAppenderService {
       const tables = await this.mysql.getTables();
       stats.totalTables = tables.length;
 
+      // Clean up tables that were deleted from MySQL
+      await this.cleanupDeletedTables(tables);
+
       for (const table of tables) {
         // Use Appender API for full sync (6-10x faster than INSERT)
         // Falls back to INSERT automatically on any Appender error
@@ -273,6 +276,9 @@ class SequentialAppenderService {
     try {
       const tables = await this.mysql.getTables();
       stats.totalTables = tables.length;
+
+      // Clean up tables that were deleted from MySQL
+      await this.cleanupDeletedTables(tables);
 
       for (let i = 0; i < tables.length; i++) {
         const table = tables[i];
@@ -1074,6 +1080,52 @@ class SequentialAppenderService {
     } catch (error) {
       logger.error(`Failed to handle schema evolution for ${tableName}:`, error);
       throw error;
+    }
+  }
+
+  /**
+   * Clean up tables in DuckDB that no longer exist in MySQL
+   */
+  private async cleanupDeletedTables(mysqlTables: string[]): Promise<void> {
+    try {
+      // Get all tables from DuckDB
+      const duckdbTables = await this.duckdb.getTables();
+
+      // Find tables that exist in DuckDB but not in MySQL
+      const mysqlTableSet = new Set(mysqlTables.map(t => t.toLowerCase()));
+      const tablesToDelete = duckdbTables.filter(table => {
+        // Skip system tables
+        if (table === 'appender_watermarks' || table === 'sync_log') {
+          return false;
+        }
+        return !mysqlTableSet.has(table.toLowerCase());
+      });
+
+      if (tablesToDelete.length === 0) {
+        return;
+      }
+
+      logger.info(`Found ${tablesToDelete.length} tables to delete from DuckDB (no longer in MySQL):`, tablesToDelete);
+
+      // Delete tables and their watermarks
+      for (const table of tablesToDelete) {
+        try {
+          // Drop the table
+          await this.duckdb.run(`DROP TABLE IF EXISTS ${table}`);
+          logger.info(`Deleted table ${table} from DuckDB`);
+
+          // Clean up watermark
+          await this.duckdb.run('DELETE FROM appender_watermarks WHERE table_name = ?', [table]);
+
+          // Clean up sync logs (optional - keep for audit trail)
+          // await this.duckdb.run('DELETE FROM sync_log WHERE table_name = ?', [table]);
+        } catch (error) {
+          logger.error(`Failed to delete table ${table}:`, error);
+        }
+      }
+    } catch (error) {
+      logger.error('Failed to cleanup deleted tables:', error);
+      // Don't throw - continue with sync even if cleanup fails
     }
   }
 
