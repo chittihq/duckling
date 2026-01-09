@@ -824,7 +824,7 @@ class SequentialAppenderService {
       // Get table schema
       const schema = await this.mysql.getTableSchema(tableName);
 
-      // Ensure table exists
+      // Ensure table exists (adds new columns if needed)
       await this.ensureTableExists(tableName, schema);
 
       let recordsProcessed = 0;
@@ -971,9 +971,11 @@ class SequentialAppenderService {
   }
 
   /**
-   * Ensure table exists with proper schema
+   * Ensure table exists with proper schema and handle schema evolution
+   * - Creates table if it doesn't exist
+   * - Adds new columns if MySQL schema has new columns
    */
-  private async ensureTableExists(tableName: string, schema: any[]): Promise<void> {
+  private async ensureTableExists(tableName: string, mysqlSchema: any[]): Promise<void> {
     try {
       // Check if a view exists with this name and drop it
       const views = await this.duckdb.execute(`
@@ -995,30 +997,82 @@ class SequentialAppenderService {
 
       if (tables.length === 0) {
         // Create table with proper schema
-        const primaryKeyColumns = schema.filter(col => col.Key === 'PRI').map(col => col.Field);
-
-        const columns = schema.map(col => {
-          const type = this.mapMySQLTypeToDuckDB(col.Type);
-          // Always make timestamp/datetime columns nullable to handle invalid MySQL timestamps (0000-00-00 00:00:00)
-          const isTimestamp = col.Type.toLowerCase().includes('timestamp') || col.Type.toLowerCase().includes('datetime');
-          const nullable = (col.Null === 'YES' || isTimestamp) ? '' : ' NOT NULL';
-
-          // Don't add PRIMARY KEY constraint here - we'll add it separately
-          return `${col.Field} ${type}${nullable}`;
-        });
-
-        // Add composite primary key constraint if there are primary key columns
-        if (primaryKeyColumns.length > 0) {
-          columns.push(`PRIMARY KEY (${primaryKeyColumns.join(', ')})`);
-        }
-
-        const createQuery = `CREATE TABLE ${tableName} (${columns.join(', ')})`;
-        await this.duckdb.run(createQuery);
-
-        logger.info(`Created table ${tableName} with ${columns.length} columns${primaryKeyColumns.length > 0 ? ` and composite primary key: (${primaryKeyColumns.join(', ')})` : ''}`);
+        await this.createTable(tableName, mysqlSchema);
+        return;
       }
+
+      // Table exists - check for new columns and add them
+      await this.handleSchemaEvolution(tableName, mysqlSchema);
     } catch (error) {
       logger.error(`Failed to ensure table ${tableName} exists:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create a new table with the given schema
+   */
+  private async createTable(tableName: string, schema: any[]): Promise<void> {
+    const primaryKeyColumns = schema.filter(col => col.Key === 'PRI').map(col => col.Field);
+
+    const columns = schema.map(col => {
+      const type = this.mapMySQLTypeToDuckDB(col.Type);
+      // Always make timestamp/datetime columns nullable to handle invalid MySQL timestamps (0000-00-00 00:00:00)
+      const isTimestamp = col.Type.toLowerCase().includes('timestamp') || col.Type.toLowerCase().includes('datetime');
+      const nullable = (col.Null === 'YES' || isTimestamp) ? '' : ' NOT NULL';
+
+      // Don't add PRIMARY KEY constraint here - we'll add it separately
+      return `${col.Field} ${type}${nullable}`;
+    });
+
+    // Add composite primary key constraint if there are primary key columns
+    if (primaryKeyColumns.length > 0) {
+      columns.push(`PRIMARY KEY (${primaryKeyColumns.join(', ')})`);
+    }
+
+    const createQuery = `CREATE TABLE ${tableName} (${columns.join(', ')})`;
+    await this.duckdb.run(createQuery);
+
+    logger.info(`Created table ${tableName} with ${schema.length} columns${primaryKeyColumns.length > 0 ? ` and primary key: (${primaryKeyColumns.join(', ')})` : ''}`);
+  }
+
+  /**
+   * Handle schema evolution - add new columns from MySQL to DuckDB
+   * Only handles adding columns; other changes are ignored
+   */
+  private async handleSchemaEvolution(tableName: string, mysqlSchema: any[]): Promise<boolean> {
+    try {
+      // Get current DuckDB schema
+      const duckdbColumns = await this.duckdb.execute(`
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'main' AND table_name = ?
+        ORDER BY ordinal_position
+      `, [tableName]);
+
+      const duckdbColumnNames = new Set(duckdbColumns.map(col => col.column_name.toLowerCase()));
+
+      // Find new columns (in MySQL but not in DuckDB)
+      const newColumns = mysqlSchema.filter(col => !duckdbColumnNames.has(col.Field.toLowerCase()));
+
+      if (newColumns.length === 0) {
+        return false; // No new columns
+      }
+
+      // Add new columns via ALTER TABLE
+      for (const col of newColumns) {
+        const type = this.mapMySQLTypeToDuckDB(col.Type);
+
+        // Add column - DuckDB defaults to NULL for new columns
+        const alterQuery = `ALTER TABLE ${tableName} ADD COLUMN ${col.Field} ${type}`;
+        await this.duckdb.run(alterQuery);
+
+        logger.info(`Schema evolution: Added column '${col.Field}' (${type}) to table ${tableName}`);
+      }
+
+      return false; // No rebuild needed
+    } catch (error) {
+      logger.error(`Failed to handle schema evolution for ${tableName}:`, error);
       throw error;
     }
   }
