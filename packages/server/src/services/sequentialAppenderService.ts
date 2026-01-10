@@ -520,7 +520,8 @@ class SequentialAppenderService {
       const watermarkBefore = await this.getTableWatermark(tableName);
 
       // Get estimated record count for progress tracking (fast, uses information_schema)
-      // Note: For progress bars only - exact count not needed here
+      // Note: This is an ESTIMATE and may be 10-20% off for InnoDB tables
+      // Actual count may exceed this estimate during sync (will show ">100%")
       const totalRecords = await this.mysql.getTableRowCountFast(tableName);
       let lastLoggedAt = 0;
       const PROGRESS_LOG_INTERVAL = 10000;
@@ -715,7 +716,8 @@ class SequentialAppenderService {
       const watermarkBefore = await this.getTableWatermark(tableName);
 
       // Get estimated record count for progress tracking (fast, uses information_schema)
-      // Note: For progress bars only - exact count not needed here
+      // Note: This is an ESTIMATE and may be 10-20% off for InnoDB tables
+      // Actual count may exceed this estimate during sync (will show ">100%")
       const totalRecords = await this.mysql.getTableRowCountFast(tableName);
       let lastLoggedAt = 0;
       const PROGRESS_LOG_INTERVAL = 10000;
@@ -780,11 +782,19 @@ class SequentialAppenderService {
 
           // Log progress for large tables
           if (totalRecords >= PROGRESS_LOG_INTERVAL && recordsProcessed - lastLoggedAt >= PROGRESS_LOG_INTERVAL) {
-            const percent = ((recordsProcessed / totalRecords) * 100).toFixed(1);
+            // Cap percentage at 100% (totalRecords is an estimate from information_schema, may be inaccurate)
+            const rawPercent = (recordsProcessed / totalRecords) * 100;
+            const percent = Math.min(rawPercent, 100).toFixed(1);
             const memUsage = process.memoryUsage();
             const heapUsedMB = (memUsage.heapUsed / 1024 / 1024).toFixed(1);
             const heapTotalMB = (memUsage.heapTotal / 1024 / 1024).toFixed(1);
-            logger.info(`${tableName}: Processing... ${recordsProcessed.toLocaleString()}/${totalRecords.toLocaleString()} records (${percent}%) | Memory: ${heapUsedMB}/${heapTotalMB} MB`);
+
+            // If estimate was wrong (>100%), show actual count without percentage
+            if (rawPercent > 100) {
+              logger.info(`${tableName}: Processing... ${recordsProcessed.toLocaleString()} records (est. ${totalRecords.toLocaleString()}) | Memory: ${heapUsedMB}/${heapTotalMB} MB`);
+            } else {
+              logger.info(`${tableName}: Processing... ${recordsProcessed.toLocaleString()}/${totalRecords.toLocaleString()} records (${percent}%) | Memory: ${heapUsedMB}/${heapTotalMB} MB`);
+            }
             lastLoggedAt = recordsProcessed;
           }
 
