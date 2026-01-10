@@ -33,6 +33,9 @@ COPY packages/frontend ./packages/frontend
 # Create necessary directories
 RUN mkdir -p /var/lib/duckdb /app/logs /app/data
 
+# Set Node.js options for memory optimization
+ENV NODE_OPTIONS="--max-old-space-size=4096 --expose-gc"
+
 EXPOSE 3000 3001
 
 # Default command for development (will be overridden by docker-compose)

@@ -84,7 +84,9 @@ RUN mkdir -p /var/lib/duckdb /app/data /app/logs
 ENV NODE_ENV=production
 
 # Set Node.js heap size to 8GB for large sync operations
-ENV NODE_OPTIONS="--max-old-space-size=8192"
+# --max-old-space-size=8192: 8GB heap for production workloads
+# --expose-gc: Enable manual garbage collection for memory cleanup
+ENV NODE_OPTIONS="--max-old-space-size=8192 --expose-gc"
 
 # Expose server port (serves both API + Frontend)
 EXPOSE 3000

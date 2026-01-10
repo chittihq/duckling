@@ -711,6 +711,7 @@ class SequentialAppenderService {
       await this.duckdb.checkpoint();
 
       let recordsProcessed = 0;
+      let lastFlushedAt = 0; // Track last flush point for periodic memory cleanup
       const watermarkBefore = await this.getTableWatermark(tableName);
 
       // Get estimated record count for progress tracking (fast, uses information_schema)
@@ -739,7 +740,7 @@ class SequentialAppenderService {
 
         // Stream records from MySQL and append
         const fetchBatchSize = config.sync.batchSize; // Configurable via BATCH_SIZE env var
-        const FLUSH_INTERVAL = 50000; // Flush appender every 50K records to prevent memory exhaustion
+        const FLUSH_INTERVAL = 20000; // Flush appender every 20K records to prevent memory exhaustion
 
         logger.info(`${tableName}: fetchBatchSize=${fetchBatchSize}, flushInterval=${FLUSH_INTERVAL}, using Appender API`);
 
@@ -762,11 +763,19 @@ class SequentialAppenderService {
           recordsProcessed += fetchedBatch.length;
 
           // Flush appender periodically to prevent memory exhaustion
-          // This commits data to DuckDB and frees memory
-          if (recordsProcessed >= FLUSH_INTERVAL && recordsProcessed % FLUSH_INTERVAL < fetchBatchSize) {
-            logger.debug(`${tableName}: Flushing appender at ${recordsProcessed.toLocaleString()} records to free memory...`);
+          // This commits data to DuckDB and frees memory immediately
+          if (recordsProcessed - lastFlushedAt >= FLUSH_INTERVAL) {
+            logger.info(`${tableName}: Flushing appender at ${recordsProcessed.toLocaleString()} records to free memory...`);
             appender.flushSync();
-            logger.debug(`${tableName}: Appender flushed successfully`);
+            lastFlushedAt = recordsProcessed;
+
+            // Force garbage collection if available (helps in low memory situations)
+            if (global.gc) {
+              global.gc();
+              logger.debug(`${tableName}: Garbage collection triggered after flush`);
+            }
+
+            logger.info(`${tableName}: Appender flushed successfully, memory freed`);
           }
 
           // Log progress for large tables

@@ -35,6 +35,11 @@ COPY packages/frontend ./packages/frontend
 # Create necessary directories
 RUN mkdir -p /var/lib/duckdb /app/logs /app/data
 
+# Set Node.js options for memory optimization
+# --max-old-space-size=4096: Increase heap size to 4GB to handle large table syncs
+# --expose-gc: Enable manual garbage collection for memory cleanup after flushes
+ENV NODE_OPTIONS="--max-old-space-size=4096 --expose-gc"
+
 # Expose server port
 EXPOSE 3000
 
