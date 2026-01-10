@@ -739,8 +739,9 @@ class SequentialAppenderService {
 
         // Stream records from MySQL and append
         const fetchBatchSize = config.sync.batchSize; // Configurable via BATCH_SIZE env var
+        const FLUSH_INTERVAL = 50000; // Flush appender every 50K records to prevent memory exhaustion
 
-        logger.info(`${tableName}: fetchBatchSize=${fetchBatchSize}, using Appender API (no insert batch size limit)`);
+        logger.info(`${tableName}: fetchBatchSize=${fetchBatchSize}, flushInterval=${FLUSH_INTERVAL}, using Appender API`);
 
         for await (const fetchedBatch of this.mysql.streamTableData(tableName, fetchBatchSize)) {
           // Append each row using Appender API
@@ -760,10 +761,21 @@ class SequentialAppenderService {
 
           recordsProcessed += fetchedBatch.length;
 
+          // Flush appender periodically to prevent memory exhaustion
+          // This commits data to DuckDB and frees memory
+          if (recordsProcessed >= FLUSH_INTERVAL && recordsProcessed % FLUSH_INTERVAL < fetchBatchSize) {
+            logger.debug(`${tableName}: Flushing appender at ${recordsProcessed.toLocaleString()} records to free memory...`);
+            appender.flushSync();
+            logger.debug(`${tableName}: Appender flushed successfully`);
+          }
+
           // Log progress for large tables
           if (totalRecords >= PROGRESS_LOG_INTERVAL && recordsProcessed - lastLoggedAt >= PROGRESS_LOG_INTERVAL) {
             const percent = ((recordsProcessed / totalRecords) * 100).toFixed(1);
-            logger.info(`${tableName}: Processing... ${recordsProcessed.toLocaleString()}/${totalRecords.toLocaleString()} records (${percent}%)`);
+            const memUsage = process.memoryUsage();
+            const heapUsedMB = (memUsage.heapUsed / 1024 / 1024).toFixed(1);
+            const heapTotalMB = (memUsage.heapTotal / 1024 / 1024).toFixed(1);
+            logger.info(`${tableName}: Processing... ${recordsProcessed.toLocaleString()}/${totalRecords.toLocaleString()} records (${percent}%) | Memory: ${heapUsedMB}/${heapTotalMB} MB`);
             lastLoggedAt = recordsProcessed;
           }
 
