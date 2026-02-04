@@ -6,6 +6,7 @@ import DuckDBConnection from './database/duckdb';
 import MySQLConnection from './database/mysql';
 import SequentialAppenderService from './services/sequentialAppenderService';
 import AutomationService from './services/automationService';
+import CDCService from './services/cdcService';
 import WebSocketService from './services/websocketService';
 import LogBufferService from './services/logBufferService';
 import { DatabaseConfigManager } from './database/databaseConfig';
@@ -176,6 +177,12 @@ class DuckDBServer {
     this.app.post('/automation/backup', attachDatabaseContext, this.manualBackup.bind(this));
     this.app.post('/automation/restore', attachDatabaseContext, this.restoreFromBackup.bind(this));
     this.app.post('/automation/cleanup', attachDatabaseContext, this.manualCleanup.bind(this));
+
+    // CDC (Change Data Capture) endpoints (with database context)
+    this.app.get('/cdc/status', attachDatabaseContext, this.getCDCStatus.bind(this));
+    this.app.post('/cdc/start', attachDatabaseContext, this.startCDC.bind(this));
+    this.app.post('/cdc/stop', attachDatabaseContext, this.stopCDC.bind(this));
+    this.app.post('/cdc/reset-stats', attachDatabaseContext, this.resetCDCStats.bind(this));
 
     // Data access endpoints (with database context)
     this.app.post('/api/query', attachDatabaseContext, this.executeQuery.bind(this));
@@ -828,6 +835,141 @@ class DuckDBServer {
       });
     } catch (error) {
       logger.error('Manual cleanup failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  // CDC (Change Data Capture) endpoint handlers
+  private async getCDCStatus(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { databaseId } = req as RequestWithDatabase;
+      const cdcService = CDCService.getInstance(databaseId);
+
+      if (!cdcService) {
+        res.json({
+          success: true,
+          status: {
+            isRunning: false,
+            message: 'CDC service not initialized for this database'
+          },
+          enabled: config.cdc.enabled
+        });
+        return;
+      }
+
+      const stats = cdcService.getStats();
+      res.json({
+        success: true,
+        status: stats,
+        enabled: config.cdc.enabled
+      });
+    } catch (error) {
+      logger.error('Get CDC status failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  private async startCDC(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { databaseId } = req as RequestWithDatabase;
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(databaseId);
+
+      if (!dbConfig) {
+        res.status(404).json({
+          success: false,
+          error: `Database '${databaseId}' not found`
+        });
+        return;
+      }
+
+      if (!dbConfig.mysqlConnectionString) {
+        res.status(400).json({
+          success: false,
+          error: 'MySQL connection string not configured for this database'
+        });
+        return;
+      }
+
+      // Parse connection string and create CDC config
+      const cdcConfig = CDCService.parseConnectionString(dbConfig.mysqlConnectionString, databaseId);
+
+      // Add exclude tables from sync config
+      cdcConfig.excludeTables = config.sync.excludedTables;
+
+      // Create and start CDC service
+      const cdcService = CDCService.createInstance(cdcConfig);
+      await cdcService.start();
+
+      res.json({
+        success: true,
+        message: `CDC service started for database '${databaseId}'`,
+        status: cdcService.getStats()
+      });
+    } catch (error) {
+      logger.error('Start CDC failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  private async stopCDC(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { databaseId } = req as RequestWithDatabase;
+      const cdcService = CDCService.getInstance(databaseId);
+
+      if (!cdcService) {
+        res.status(404).json({
+          success: false,
+          error: `CDC service not running for database '${databaseId}'`
+        });
+        return;
+      }
+
+      cdcService.stop();
+
+      res.json({
+        success: true,
+        message: `CDC service stopped for database '${databaseId}'`
+      });
+    } catch (error) {
+      logger.error('Stop CDC failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  private async resetCDCStats(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { databaseId } = req as RequestWithDatabase;
+      const cdcService = CDCService.getInstance(databaseId);
+
+      if (!cdcService) {
+        res.status(404).json({
+          success: false,
+          error: `CDC service not running for database '${databaseId}'`
+        });
+        return;
+      }
+
+      cdcService.resetStats();
+
+      res.json({
+        success: true,
+        message: `CDC stats reset for database '${databaseId}'`,
+        status: cdcService.getStats()
+      });
+    } catch (error) {
+      logger.error('Reset CDC stats failed:', error);
       res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'

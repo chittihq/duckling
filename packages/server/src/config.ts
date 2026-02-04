@@ -65,6 +65,13 @@ export const config = {
     autoRestart: process.env.AUTO_RESTART !== 'false',
     maxRestartAttempts: parseInt(process.env.MAX_RESTART_ATTEMPTS || '3'),
   },
+
+  cdc: {
+    enabled: process.env.CDC_ENABLED === 'true', // Disabled by default, opt-in
+    autoStart: process.env.CDC_AUTO_START === 'true', // Auto-start on server boot
+    reconnectAttempts: parseInt(process.env.CDC_RECONNECT_ATTEMPTS || '10'),
+    reconnectDelayMs: parseInt(process.env.CDC_RECONNECT_DELAY_MS || '5000'),
+  },
   
   monitoring: {
     enableHealthChecks: process.env.ENABLE_HEALTH_CHECKS !== 'false',
