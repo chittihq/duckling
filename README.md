@@ -45,6 +45,20 @@ A high-performance DuckDB server that replicates data from MySQL using **Sequent
 | **Restart Time** | ✅ Instant |
 | **Code Complexity** | ✅ ~800 lines |
 
+## Why DuckDB over MariaDB ColumnStore?
+
+We evaluated MariaDB ColumnStore but chose DuckDB for these reasons:
+
+- **Zero infrastructure** - DuckDB is embedded, no separate server needed
+- **Low resource requirements** - Runs on 4GB RAM vs ColumnStore's 128GB RAM + 64 cores for production
+- **Empty string support** - ColumnStore treats empty strings as NULL, breaking MySQL compatibility
+- **Full SQL support** - ColumnStore doesn't use indexes (uses extent elimination), no ORDER BY in DELETE/UPDATE
+- **Simple deployment** - Single file vs distributed cluster management
+- **Cost effective** - $20/month droplet vs $500+/month infrastructure
+- **Better for CDC** - In-process writes with zero network latency
+
+ColumnStore makes sense for petabyte-scale (100TB+) distributed analytics. For MySQL replication under 100GB, DuckDB is optimal.
+
 ## Quick Start
 
 ### Docker (Recommended)
