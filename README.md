@@ -59,6 +59,20 @@ We evaluated MariaDB ColumnStore but chose DuckDB for these reasons:
 
 ColumnStore makes sense for petabyte-scale (100TB+) distributed analytics. For MySQL replication under 100GB, DuckDB is optimal.
 
+## Why DuckDB over ClickHouse?
+
+We evaluated ClickHouse but chose DuckDB for these reasons:
+
+- **Lower resource requirements** - DuckDB runs on 4GB RAM vs ClickHouse's 32-64GB minimum for production
+- **Stable MySQL replication** - ClickHouse's `MaterializedMySQL` is experimental and not production-ready
+- **No cluster overhead** - ClickHouse requires ZooKeeper/Keeper even for single-node setups
+- **Better JOIN support** - ClickHouse recommends max 3-4 JOINs; DuckDB handles complex queries natively
+- **ACID transactions** - DuckDB provides full ACID; ClickHouse is optimized for append-only workloads
+- **Simple operations** - Single embedded file vs cluster management, monitoring, and tuning
+- **Cost effective** - $20/month droplet vs $300+/month infrastructure
+
+ClickHouse excels at 10B+ rows with 100K+ rows/sec ingestion and dedicated DevOps teams. For MySQL replication under 100GB, DuckDB is optimal.
+
 ## Quick Start
 
 ### Docker (Recommended)
