@@ -903,7 +903,7 @@ class DuckDBServer {
       cdcConfig.excludeTables = config.sync.excludedTables;
 
       // Create and start CDC service
-      const cdcService = CDCService.createInstance(cdcConfig);
+      const cdcService = await CDCService.createInstance(cdcConfig);
       await cdcService.start();
 
       res.json({
@@ -933,7 +933,7 @@ class DuckDBServer {
         return;
       }
 
-      cdcService.stop();
+      await cdcService.stop();
 
       res.json({
         success: true,
@@ -1606,6 +1606,35 @@ class DuckDBServer {
         message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
+  }
+
+  /**
+   * Stop the HTTP server gracefully
+   */
+  async stop(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.server) {
+        resolve();
+        return;
+      }
+
+      // Stop accepting new connections and wait for existing to close
+      this.server.close((err) => {
+        if (err) {
+          logger.error('Error closing HTTP server:', err);
+          reject(err);
+        } else {
+          logger.info('HTTP server closed successfully');
+          resolve();
+        }
+      });
+
+      // Force close after 10 seconds
+      setTimeout(() => {
+        logger.warn('Forcing HTTP server close after timeout');
+        resolve();
+      }, 10000);
+    });
   }
 
 }

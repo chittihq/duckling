@@ -66,6 +66,8 @@ export class CDCService {
   // Event queue for serialized processing (EventEmitter doesn't await async handlers)
   private eventQueue: Array<() => Promise<void>> = [];
   private isProcessingQueue: boolean = false;
+  private queueDrainPromise: Promise<void> | null = null;
+  private queueDrainResolve: (() => void) | null = null;
 
   constructor(config: CDCConfig) {
     this.databaseId = config.databaseId;
@@ -101,10 +103,10 @@ export class CDCService {
   /**
    * Create and register a new CDC service instance
    */
-  static createInstance(config: CDCConfig): CDCService {
+  static async createInstance(config: CDCConfig): Promise<CDCService> {
     if (CDCService.instances.has(config.databaseId)) {
       const existing = CDCService.instances.get(config.databaseId)!;
-      existing.stop();
+      await existing.stop();
     }
 
     const instance = new CDCService(config);
@@ -256,6 +258,35 @@ export class CDCService {
     }
 
     this.isProcessingQueue = false;
+
+    // Resolve drain promise if someone is waiting
+    if (this.queueDrainResolve) {
+      this.queueDrainResolve();
+      this.queueDrainResolve = null;
+      this.queueDrainPromise = null;
+    }
+  }
+
+  /**
+   * Wait for the event queue to drain completely
+   */
+  private async waitForQueueDrain(): Promise<void> {
+    // If queue is empty and not processing, resolve immediately
+    if (this.eventQueue.length === 0 && !this.isProcessingQueue) {
+      return;
+    }
+
+    // If already have a drain promise, reuse it
+    if (this.queueDrainPromise) {
+      return this.queueDrainPromise;
+    }
+
+    // Create a new drain promise
+    this.queueDrainPromise = new Promise<void>((resolve) => {
+      this.queueDrainResolve = resolve;
+    });
+
+    return this.queueDrainPromise;
   }
 
   /**
@@ -636,7 +667,7 @@ export class CDCService {
       }
 
       try {
-        this.stop();
+        await this.stop();
         await this.start();
       } catch (error) {
         logger.error(`CDC reconnect failed for ${this.databaseId}:`, error);
@@ -646,9 +677,9 @@ export class CDCService {
   }
 
   /**
-   * Stop CDC streaming
+   * Stop CDC streaming gracefully, waiting for queue to drain
    */
-  stop(): void {
+  async stop(): Promise<void> {
     this.isStopped = true; // Mark as explicitly stopped
 
     // Clear any pending reconnect timeout
@@ -657,6 +688,7 @@ export class CDCService {
       this.reconnectTimeoutId = null;
     }
 
+    // Stop zongji first to prevent new events
     if (this.zongji) {
       try {
         this.zongji.stop();
@@ -664,6 +696,13 @@ export class CDCService {
         logger.warn(`Error stopping zongji for ${this.databaseId}:`, error);
       }
       this.zongji = null;
+    }
+
+    // Wait for pending events in queue to finish processing
+    if (this.eventQueue.length > 0 || this.isProcessingQueue) {
+      logger.info(`CDC waiting for ${this.eventQueue.length} pending events to drain for ${this.databaseId}...`);
+      await this.waitForQueueDrain();
+      logger.info(`CDC queue drained for ${this.databaseId}`);
     }
 
     this.isRunning = false;
@@ -700,13 +739,18 @@ export class CDCService {
   }
 
   /**
-   * Stop all CDC instances
+   * Stop all CDC instances gracefully, waiting for all queues to drain
    */
-  static stopAll(): void {
+  static async stopAll(): Promise<void> {
+    const stopPromises: Promise<void>[] = [];
+
     for (const [databaseId, instance] of CDCService.instances) {
       logger.info(`Stopping CDC for ${databaseId}`);
-      instance.stop();
+      stopPromises.push(instance.stop());
     }
+
+    // Wait for all instances to stop
+    await Promise.all(stopPromises);
     CDCService.instances.clear();
   }
 
