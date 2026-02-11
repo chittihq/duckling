@@ -3,6 +3,7 @@ import logger from './logger';
 import config from './config';
 import * as fs from 'fs';
 import * as path from 'path';
+import { CDCService } from './services/cdcService';
 
 // Enable garbage collection if available
 if (global.gc) {
@@ -42,6 +43,40 @@ process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
   process.exit(1);
 });
+
+// Track if shutdown is in progress to prevent duplicate handling
+let isShuttingDown = false;
+
+/**
+ * Graceful shutdown handler - stops CDC pipeline, closes HTTP server
+ */
+async function gracefulShutdown(signal: string, server: DuckDBServer): Promise<void> {
+  if (isShuttingDown) {
+    console.log('Shutdown already in progress...');
+    return;
+  }
+  isShuttingDown = true;
+
+  console.log(`Received ${signal}, starting graceful shutdown...`);
+
+  try {
+    // Stop all CDC instances first (waits for event queues to drain)
+    console.log('Stopping CDC services...');
+    await CDCService.stopAll();
+    console.log('CDC services stopped');
+
+    // Close HTTP server
+    console.log('Closing HTTP server...');
+    await server.stop();
+    console.log('HTTP server closed');
+
+    console.log('Graceful shutdown complete');
+    process.exit(0);
+  } catch (error) {
+    console.error('Error during graceful shutdown:', error);
+    process.exit(1);
+  }
+}
 
 async function main() {
   try {
@@ -88,15 +123,9 @@ async function main() {
     // Note: Initial sync is handled by the automation service
     // See automationService.ts startPeriodicSync() for automatic sync configuration
 
-    process.on('SIGINT', () => {
-      console.log('Received SIGINT, shutting down gracefully');
-      process.exit(0);
-    });
-
-    process.on('SIGTERM', () => {
-      console.log('Received SIGTERM, shutting down gracefully');
-      process.exit(0);
-    });
+    // Register graceful shutdown handlers
+    process.on('SIGINT', () => gracefulShutdown('SIGINT', server));
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM', server));
 
     console.log('DuckDB Server started successfully and is ready to accept connections');
     console.log('🚀 New Features Available:');
