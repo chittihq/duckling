@@ -16,6 +16,7 @@ import ZongJi from '@vlasky/zongji';
 import logger from '../logger';
 import DuckDBConnection from '../database/duckdb';
 import { DatabaseConfigManager } from '../database/databaseConfig';
+import config from '../config';
 
 interface BinlogPosition {
   filename: string;
@@ -54,11 +55,17 @@ export class CDCService {
   private zongji: ZongJi | null = null;
   private duckdb: DuckDBConnection;
   private isRunning: boolean = false;
+  private isStopped: boolean = false; // Flag to prevent reconnect after explicit stop
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 10;
   private reconnectDelay: number = 5000;
+  private reconnectTimeoutId: NodeJS.Timeout | null = null; // Track pending reconnect
   private stats: CDCStats;
   private tableSchemas: Map<string, Map<string, string>> = new Map(); // tableName -> columnName -> type
+
+  // Event queue for serialized processing (EventEmitter doesn't await async handlers)
+  private eventQueue: Array<() => Promise<void>> = [];
+  private isProcessingQueue: boolean = false;
 
   constructor(config: CDCConfig) {
     this.databaseId = config.databaseId;
@@ -109,15 +116,31 @@ export class CDCService {
    * Parse MySQL connection string to extract CDC config
    */
   static parseConnectionString(connectionString: string, databaseId: string): CDCConfig {
-    const url = new URL(connectionString);
-    return {
-      databaseId,
-      mysqlHost: url.hostname,
-      mysqlPort: parseInt(url.port) || 3306,
-      mysqlUser: url.username,
-      mysqlPassword: url.password,
-      mysqlDatabase: url.pathname.replace('/', '').split('?')[0]
-    };
+    try {
+      const url = new URL(connectionString);
+
+      // Validate required components
+      if (!url.hostname) {
+        throw new Error('Missing hostname');
+      }
+      if (!url.username) {
+        throw new Error('Missing username');
+      }
+      if (!url.pathname || url.pathname === '/') {
+        throw new Error('Missing database name');
+      }
+
+      return {
+        databaseId,
+        mysqlHost: url.hostname,
+        mysqlPort: parseInt(url.port) || 3306,
+        mysqlUser: url.username,
+        mysqlPassword: url.password,
+        mysqlDatabase: url.pathname.replace('/', '').split('?')[0]
+      };
+    } catch (error) {
+      throw new Error(`Invalid MySQL connection string format: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   }
 
   /**
@@ -207,6 +230,35 @@ export class CDCService {
   }
 
   /**
+   * Quote SQL identifier to prevent syntax errors with reserved words/special chars
+   */
+  private quoteIdentifier(name: string): string {
+    return `"${name.replace(/"/g, '""')}"`;
+  }
+
+  /**
+   * Process event queue serially to ensure correct ordering
+   */
+  private async processEventQueue(): Promise<void> {
+    if (this.isProcessingQueue) return;
+    this.isProcessingQueue = true;
+
+    while (this.eventQueue.length > 0) {
+      const task = this.eventQueue.shift();
+      if (task) {
+        try {
+          await task();
+        } catch (error) {
+          this.stats.errors++;
+          logger.error(`CDC event processing error:`, error);
+        }
+      }
+    }
+
+    this.isProcessingQueue = false;
+  }
+
+  /**
    * Check if table should be processed
    */
   private shouldProcessTable(tableName: string): boolean {
@@ -243,17 +295,27 @@ export class CDCService {
     }
 
     try {
-      for (const row of rows) {
-        const columns = Object.keys(row);
-        const values = columns.map(col => this.sanitizeValue(row[col]));
-        const placeholders = columns.map(() => '?').join(', ');
+      // Use transaction for atomicity
+      await this.duckdb.run('BEGIN TRANSACTION');
 
-        const query = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`;
-        await this.duckdb.run(query, values);
+      try {
+        for (const row of rows) {
+          const columns = Object.keys(row);
+          const quotedColumns = columns.map(col => this.quoteIdentifier(col)).join(', ');
+          const values = columns.map(col => this.sanitizeValue(row[col]));
+          const placeholders = columns.map(() => '?').join(', ');
+
+          const query = `INSERT INTO ${this.quoteIdentifier(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
+          await this.duckdb.run(query, values);
+        }
+
+        await this.duckdb.run('COMMIT');
+        this.stats.insertsProcessed += rows.length;
+        logger.debug(`CDC INSERT: ${tableName} - ${rows.length} rows`);
+      } catch (error) {
+        await this.duckdb.run('ROLLBACK');
+        throw error;
       }
-
-      this.stats.insertsProcessed += rows.length;
-      logger.debug(`CDC INSERT: ${tableName} - ${rows.length} rows`);
     } catch (error) {
       this.stats.errors++;
       logger.error(`CDC INSERT failed for ${tableName}:`, error);
@@ -275,20 +337,30 @@ export class CDCService {
     }
 
     try {
-      for (const row of rows) {
-        // row.after contains the new values
-        const afterRow = row.after || row;
-        const columns = Object.keys(afterRow);
-        const values = columns.map(col => this.sanitizeValue(afterRow[col]));
-        const placeholders = columns.map(() => '?').join(', ');
+      // Use transaction for atomicity
+      await this.duckdb.run('BEGIN TRANSACTION');
 
-        // Use INSERT OR REPLACE for upsert behavior
-        const query = `INSERT OR REPLACE INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`;
-        await this.duckdb.run(query, values);
+      try {
+        for (const row of rows) {
+          // row.after contains the new values
+          const afterRow = row.after || row;
+          const columns = Object.keys(afterRow);
+          const quotedColumns = columns.map(col => this.quoteIdentifier(col)).join(', ');
+          const values = columns.map(col => this.sanitizeValue(afterRow[col]));
+          const placeholders = columns.map(() => '?').join(', ');
+
+          // Use INSERT OR REPLACE for upsert behavior
+          const query = `INSERT OR REPLACE INTO ${this.quoteIdentifier(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
+          await this.duckdb.run(query, values);
+        }
+
+        await this.duckdb.run('COMMIT');
+        this.stats.updatesProcessed += rows.length;
+        logger.debug(`CDC UPDATE: ${tableName} - ${rows.length} rows`);
+      } catch (error) {
+        await this.duckdb.run('ROLLBACK');
+        throw error;
       }
-
-      this.stats.updatesProcessed += rows.length;
-      logger.debug(`CDC UPDATE: ${tableName} - ${rows.length} rows`);
     } catch (error) {
       this.stats.errors++;
       logger.error(`CDC UPDATE failed for ${tableName}:`, error);
@@ -304,26 +376,35 @@ export class CDCService {
     await this.cacheTableSchema(tableName);
 
     try {
-      for (const row of rows) {
-        // Try to find primary key column
-        const pkColumn = this.findPrimaryKeyColumn(tableName, row);
+      // Use transaction for atomicity
+      await this.duckdb.run('BEGIN TRANSACTION');
 
-        if (pkColumn && row[pkColumn] !== undefined) {
-          const query = `DELETE FROM ${tableName} WHERE ${pkColumn} = ?`;
-          await this.duckdb.run(query, [row[pkColumn]]);
-        } else {
-          // Fallback: delete by all columns (exact match)
-          const columns = Object.keys(row);
-          const conditions = columns.map(col => `${col} = ?`).join(' AND ');
-          const values = columns.map(col => this.sanitizeValue(row[col]));
+      try {
+        for (const row of rows) {
+          // Try to find primary key column
+          const pkColumn = this.findPrimaryKeyColumn(tableName, row);
 
-          const query = `DELETE FROM ${tableName} WHERE ${conditions}`;
-          await this.duckdb.run(query, values);
+          if (pkColumn && row[pkColumn] !== undefined) {
+            const query = `DELETE FROM ${this.quoteIdentifier(tableName)} WHERE ${this.quoteIdentifier(pkColumn)} = ?`;
+            await this.duckdb.run(query, [row[pkColumn]]);
+          } else {
+            // Fallback: delete by all columns (exact match)
+            const columns = Object.keys(row);
+            const conditions = columns.map(col => `${this.quoteIdentifier(col)} = ?`).join(' AND ');
+            const values = columns.map(col => this.sanitizeValue(row[col]));
+
+            const query = `DELETE FROM ${this.quoteIdentifier(tableName)} WHERE ${conditions}`;
+            await this.duckdb.run(query, values);
+          }
         }
-      }
 
-      this.stats.deletesProcessed += rows.length;
-      logger.debug(`CDC DELETE: ${tableName} - ${rows.length} rows`);
+        await this.duckdb.run('COMMIT');
+        this.stats.deletesProcessed += rows.length;
+        logger.debug(`CDC DELETE: ${tableName} - ${rows.length} rows`);
+      } catch (error) {
+        await this.duckdb.run('ROLLBACK');
+        throw error;
+      }
     } catch (error) {
       this.stats.errors++;
       logger.error(`CDC DELETE failed for ${tableName}:`, error);
@@ -396,6 +477,7 @@ export class CDCService {
       return;
     }
 
+    this.isStopped = false; // Reset stopped flag
     logger.info(`Starting CDC service for ${this.databaseId}...`);
 
     try {
@@ -412,8 +494,9 @@ export class CDCService {
         user: this.config.mysqlUser,
         password: this.config.mysqlPassword,
         // SSL for DigitalOcean managed MySQL
+        // rejectUnauthorized defaults to true for security, set CDC_SSL_REJECT_UNAUTHORIZED=false for self-signed certs
         ssl: {
-          rejectUnauthorized: false
+          rejectUnauthorized: config.cdc.sslRejectUnauthorized
         }
       });
 
@@ -464,9 +547,10 @@ export class CDCService {
       logger.info(`CDC connected to MySQL binlog for ${this.databaseId}`);
     });
 
-    // Binlog event
-    this.zongji.on('binlog', async (event: any) => {
-      try {
+    // Binlog event - queue events for serial processing to ensure correct ordering
+    this.zongji.on('binlog', (event: any) => {
+      // Push event processing to queue
+      this.eventQueue.push(async () => {
         this.stats.eventsProcessed++;
         this.stats.lastEventAt = new Date();
 
@@ -504,10 +588,10 @@ export class CDCService {
               break;
           }
         }
-      } catch (error) {
-        this.stats.errors++;
-        logger.error(`CDC event processing error for ${this.databaseId}:`, error);
-      }
+      });
+
+      // Process queue (will be no-op if already processing)
+      this.processEventQueue();
     });
 
     // Error event
@@ -529,6 +613,11 @@ export class CDCService {
    * Schedule reconnection attempt
    */
   private scheduleReconnect(): void {
+    if (this.isStopped) {
+      logger.debug(`CDC reconnect skipped - service was explicitly stopped for ${this.databaseId}`);
+      return;
+    }
+
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       logger.error(`CDC max reconnect attempts reached for ${this.databaseId}`);
       return;
@@ -539,7 +628,13 @@ export class CDCService {
 
     logger.info(`CDC reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
 
-    setTimeout(async () => {
+    this.reconnectTimeoutId = setTimeout(async () => {
+      // Check if stopped before attempting reconnect
+      if (this.isStopped) {
+        logger.debug(`CDC reconnect cancelled - service was stopped for ${this.databaseId}`);
+        return;
+      }
+
       try {
         this.stop();
         await this.start();
@@ -554,6 +649,14 @@ export class CDCService {
    * Stop CDC streaming
    */
   stop(): void {
+    this.isStopped = true; // Mark as explicitly stopped
+
+    // Clear any pending reconnect timeout
+    if (this.reconnectTimeoutId) {
+      clearTimeout(this.reconnectTimeoutId);
+      this.reconnectTimeoutId = null;
+    }
+
     if (this.zongji) {
       try {
         this.zongji.stop();

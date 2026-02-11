@@ -3,6 +3,7 @@ import logger from './logger';
 import config from './config';
 import * as fs from 'fs';
 import * as path from 'path';
+import { CDCService } from './services/cdcService';
 
 // Enable garbage collection if available
 if (global.gc) {
@@ -90,11 +91,13 @@ async function main() {
 
     process.on('SIGINT', () => {
       console.log('Received SIGINT, shutting down gracefully');
+      CDCService.stopAll();
       process.exit(0);
     });
 
     process.on('SIGTERM', () => {
       console.log('Received SIGTERM, shutting down gracefully');
+      CDCService.stopAll();
       process.exit(0);
     });
 

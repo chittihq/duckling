@@ -71,6 +71,7 @@ export const config = {
     autoStart: process.env.CDC_AUTO_START === 'true', // Auto-start on server boot
     reconnectAttempts: parseInt(process.env.CDC_RECONNECT_ATTEMPTS || '10'),
     reconnectDelayMs: parseInt(process.env.CDC_RECONNECT_DELAY_MS || '5000'),
+    sslRejectUnauthorized: process.env.CDC_SSL_REJECT_UNAUTHORIZED !== 'false', // true by default for security
   },
   
   monitoring: {

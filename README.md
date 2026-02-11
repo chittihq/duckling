@@ -57,7 +57,7 @@ We evaluated MariaDB ColumnStore but chose DuckDB for these reasons:
 - **Cost effective** - $20/month droplet vs $500+/month infrastructure
 - **Better for CDC** - In-process writes with zero network latency
 
-ColumnStore makes sense for petabyte-scale (100TB+) distributed analytics. For MySQL replication under 100GB, DuckDB is optimal.
+ColumnStore makes sense for large-scale (100TB+) distributed analytics. For MySQL replication under 100GB, DuckDB is optimal.
 
 ## Why DuckDB over ClickHouse?
 
