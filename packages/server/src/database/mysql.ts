@@ -89,6 +89,16 @@ class MySQLConnection {
   }
 
   /**
+   * Get the primary key column for a table
+   * Returns undefined if no primary key exists
+   */
+  async getPrimaryKeyColumn(tableName: string): Promise<string | undefined> {
+    const schema = await this.getTableSchema(tableName);
+    const pkColumn = schema.find(col => col.Key === 'PRI');
+    return pkColumn?.Field;
+  }
+
+  /**
    * Get exact row count using COUNT(*) - SLOW for large tables
    * Use getTableRowCountFast() for progress tracking or estimates
    */
@@ -199,26 +209,60 @@ class MySQLConnection {
 
   /**
    * Stream table data in batches for sequential processing
-   * Yields batches of records to avoid loading entire table into memory
+   * Uses keyset pagination (WHERE pk > lastPk) for O(1) performance on large tables
+   * Falls back to OFFSET pagination if no primary key exists
    */
   async *streamTableData(tableName: string, batchSize: number = 10000): AsyncGenerator<any[], void, unknown> {
-    let offset = 0;
-    let batch: any[];
+    const primaryKey = await this.getPrimaryKeyColumn(tableName);
 
-    logger.info(`MySQL streamTableData for ${tableName}: batchSize=${batchSize}`);
+    if (primaryKey) {
+      // Keyset pagination - O(1) per batch regardless of table size
+      let lastId: any = null;
+      let batch: any[];
 
-    do {
-      batch = await this.getTableData(tableName, batchSize, offset);
+      logger.info(`MySQL streamTableData for ${tableName}: batchSize=${batchSize}, using keyset pagination on '${primaryKey}'`);
 
-      if (batch.length > 0) {
-        yield batch;
-        offset += batchSize;
-      }
-    } while (batch.length === batchSize);
+      do {
+        let query: string;
+        let params: any[] = [];
+
+        if (lastId === null) {
+          // First batch - no WHERE clause needed
+          query = `SELECT * FROM ${tableName} ORDER BY ${primaryKey} ASC LIMIT ${batchSize}`;
+        } else {
+          // Subsequent batches - use WHERE pk > lastPk
+          query = `SELECT * FROM ${tableName} WHERE ${primaryKey} > ? ORDER BY ${primaryKey} ASC LIMIT ${batchSize}`;
+          params = [lastId];
+        }
+
+        batch = await this.execute(query, params);
+
+        if (batch.length > 0) {
+          lastId = batch[batch.length - 1][primaryKey];
+          yield batch;
+        }
+      } while (batch.length === batchSize);
+    } else {
+      // Fallback to OFFSET pagination for tables without primary key
+      let offset = 0;
+      let batch: any[];
+
+      logger.warn(`MySQL streamTableData for ${tableName}: no primary key found, falling back to OFFSET pagination (slower for large tables)`);
+
+      do {
+        batch = await this.getTableData(tableName, batchSize, offset);
+
+        if (batch.length > 0) {
+          yield batch;
+          offset += batchSize;
+        }
+      } while (batch.length === batchSize);
+    }
   }
 
   /**
    * Stream incremental data based on watermark
+   * Uses keyset pagination for O(1) performance on large result sets
    */
   async *streamIncrementalData(
     tableName: string,
@@ -226,18 +270,56 @@ class MySQLConnection {
     watermarkValue: any,
     batchSize: number = 10000
   ): AsyncGenerator<any[], void, unknown> {
-    let offset = 0;
-    let batch: any[];
+    const primaryKey = await this.getPrimaryKeyColumn(tableName);
 
-    do {
-      const query = `SELECT * FROM ${tableName} WHERE ${watermarkColumn} >= ? ORDER BY ${watermarkColumn} ASC LIMIT ${batchSize} OFFSET ${offset}`;
-      batch = await this.execute(query, [watermarkValue]);
+    if (primaryKey) {
+      // Keyset pagination using primary key for ordering within same watermark values
+      let lastId: any = null;
+      let lastWatermark: any = watermarkValue;
+      let batch: any[];
 
-      if (batch.length > 0) {
-        yield batch;
-        offset += batchSize;
-      }
-    } while (batch.length === batchSize);
+      logger.info(`MySQL streamIncrementalData for ${tableName}: using keyset pagination on '${primaryKey}'`);
+
+      do {
+        let query: string;
+        let params: any[];
+
+        if (lastId === null) {
+          // First batch
+          query = `SELECT * FROM ${tableName} WHERE ${watermarkColumn} >= ? ORDER BY ${watermarkColumn} ASC, ${primaryKey} ASC LIMIT ${batchSize}`;
+          params = [watermarkValue];
+        } else {
+          // Subsequent batches - handle tie-breaking with primary key
+          query = `SELECT * FROM ${tableName} WHERE (${watermarkColumn} > ?) OR (${watermarkColumn} = ? AND ${primaryKey} > ?) ORDER BY ${watermarkColumn} ASC, ${primaryKey} ASC LIMIT ${batchSize}`;
+          params = [lastWatermark, lastWatermark, lastId];
+        }
+
+        batch = await this.execute(query, params);
+
+        if (batch.length > 0) {
+          const lastRecord = batch[batch.length - 1];
+          lastId = lastRecord[primaryKey];
+          lastWatermark = lastRecord[watermarkColumn];
+          yield batch;
+        }
+      } while (batch.length === batchSize);
+    } else {
+      // Fallback to OFFSET pagination
+      let offset = 0;
+      let batch: any[];
+
+      logger.warn(`MySQL streamIncrementalData for ${tableName}: no primary key, falling back to OFFSET pagination`);
+
+      do {
+        const query = `SELECT * FROM ${tableName} WHERE ${watermarkColumn} >= ? ORDER BY ${watermarkColumn} ASC LIMIT ${batchSize} OFFSET ${offset}`;
+        batch = await this.execute(query, [watermarkValue]);
+
+        if (batch.length > 0) {
+          yield batch;
+          offset += batchSize;
+        }
+      } while (batch.length === batchSize);
+    }
   }
 
   async close(): Promise<void> {
