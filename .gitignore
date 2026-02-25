@@ -47,3 +47,6 @@ deploy.tar
 caprover.sh
 
 deploy.zip
+
+# Benchmark outputs
+benchmark/benchmark-results.md
