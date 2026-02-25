@@ -45,11 +45,7 @@ cleanup() {
   echo ""
   log "Cleaning up..."
   docker compose down -v 2>/dev/null || true
-  if command -v sudo &>/dev/null; then
-    sudo rm -rf data/ 2>/dev/null || rm -rf data/ 2>/dev/null || true
-  else
-    rm -rf data/ 2>/dev/null || true
-  fi
+  rm -rf data/ 2>/dev/null || true
   log "Done."
 }
 trap cleanup EXIT
