@@ -12,6 +12,7 @@ import LogBufferService from './services/logBufferService';
 import { DatabaseConfigManager } from './database/databaseConfig';
 import { attachDatabaseContext, RequestWithDatabase } from './middleware/database';
 import { generateToken, verifyToken, extractTokenFromHeader } from './utils/jwtUtils';
+import { preAuthRateLimiter, postAuthRateLimiter, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
 import config from './config';
 import logger from './logger';
 
@@ -71,6 +72,10 @@ class DuckDBServer {
       });
       next();
     });
+
+    // Pre-auth rate limiting (IP-based for auth + monitoring endpoints)
+    this.app.use(preAuthRateLimiter);
+    startRateLimitCleanup();
   }
 
   /**
@@ -140,6 +145,9 @@ class DuckDBServer {
       // Allow all non-API routes (frontend SPA, static assets, etc.)
       next();
     });
+
+    // Post-auth rate limiting (identity-based for read/query/write endpoints)
+    this.app.use(postAuthRateLimiter);
 
     // Protected API endpoints (require authentication via JWT, API key, or session)
 
@@ -1612,6 +1620,8 @@ class DuckDBServer {
    * Stop the HTTP server gracefully
    */
   async stop(): Promise<void> {
+    stopRateLimitCleanup();
+
     return new Promise((resolve, reject) => {
       if (!this.server) {
         resolve();
