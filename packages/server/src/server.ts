@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/node';
 import express from 'express';
 import cors from 'cors';
 import * as path from 'path';
@@ -70,6 +71,15 @@ class DuckDBServer {
         ip: req.ip,
         userAgent: req.get('User-Agent')
       });
+      next();
+    });
+
+    // Sentry request context
+    this.app.use((req, res, next) => {
+      Sentry.setTag('http.method', req.method);
+      Sentry.setTag('http.path', req.path);
+      const dbId = req.query.db as string;
+      if (dbId) Sentry.setTag('database.id', dbId);
       next();
     });
 
@@ -225,6 +235,7 @@ class DuckDBServer {
       }
     });
 
+    Sentry.setupExpressErrorHandler(this.app);
     this.app.use(this.errorHandler.bind(this));
   }
 
