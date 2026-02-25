@@ -11,6 +11,9 @@ on:
     paths:
       - 'benchmark/**'
 
+permissions:
+  pull-requests: write
+
 jobs:
   benchmark:
     runs-on: ubuntu-latest
