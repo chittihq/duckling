@@ -10,6 +10,10 @@ services:
     command:
       - --default-authentication-plugin=mysql_native_password
       - --max-connections=50
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --server-id=1
     volumes:
       - ./mysql-init:/docker-entrypoint-initdb.d
       - mysql-data:/var/lib/mysql
@@ -50,6 +54,8 @@ services:
       - AUTO_BACKUP=false
       - AUTO_RESTART=false
       - ENABLE_CORS=true
+      - CDC_ENABLED=true
+      - CDC_AUTO_START=false
     volumes:
       - ./data:/app/data
     depends_on:

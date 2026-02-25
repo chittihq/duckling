@@ -202,6 +202,36 @@ mysql_scalar() {
   fi
 }
 
+# --------------- CDC helpers ---------------
+cdc_start() {
+  api_post "/cdc/start?db=${DB_ID}"
+}
+
+cdc_stop() {
+  api_post "/cdc/stop?db=${DB_ID}"
+}
+
+cdc_status() {
+  api_get "/cdc/status?db=${DB_ID}"
+}
+
+# Poll DuckDB until a condition is met or timeout
+# Usage: wait_for_cdc "SQL" "field" "expected_value" timeout_seconds
+wait_for_cdc() {
+  local sql="$1" field="$2" expected="$3" timeout="${4:-30}"
+  local elapsed=0
+  while [ "$elapsed" -lt "$timeout" ]; do
+    local actual
+    actual=$(duckdb_scalar "$sql" "$field")
+    if [ "$actual" = "$expected" ]; then
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  return 1  # timed out
+}
+
 # Normalize decimal: strip trailing zeros after decimal point
 normalize_decimal() {
   local val="$1"
@@ -309,6 +339,7 @@ EOSQL
   run_suite_3_incremental_update
   run_suite_4_single_table_sync
   run_suite_5_idempotent_resync
+  run_suite_6_cdc_realtime
 
   # ------- Summary -------
   echo ""
@@ -728,6 +759,205 @@ run_suite_5_idempotent_resync() {
   assert_eq "events no error after re-sync" "null" "$error_type"
   error_type=$(echo "$val_products" | jq -r '.errorType')
   assert_eq "products no error after re-sync" "null" "$error_type"
+
+  echo ""
+}
+
+# ===============================================================
+# SUITE 6: CDC Real-Time Replication
+# ===============================================================
+run_suite_6_cdc_realtime() {
+  echo -e "${BOLD}${YELLOW}Suite 6: CDC Real-Time Replication${NC}"
+  hr
+
+  # --- Step 1: Start CDC & verify running ---
+  log "Starting CDC..."
+  cdc_start > /dev/null 2>&1 || true
+
+  # Poll until CDC reports running (timeout 15s)
+  local cdc_running="false"
+  local cdc_wait=0
+  while [ "$cdc_wait" -lt 15 ]; do
+    local status_resp
+    status_resp=$(cdc_status 2>/dev/null || echo '{}')
+    cdc_running=$(echo "$status_resp" | jq -r '.status.isRunning // false')
+    if [ "$cdc_running" = "true" ]; then
+      break
+    fi
+    sleep 1
+    cdc_wait=$((cdc_wait + 1))
+  done
+  assert_eq "CDC is running" "true" "$cdc_running"
+
+  # --- Step 2: Record baseline counts ---
+  local products_baseline events_baseline
+  products_baseline=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
+  events_baseline=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
+  log "Baseline: products=${products_baseline}, events=${events_baseline}"
+
+  local products_expected_after_insert=$((products_baseline + 1))
+  local events_expected_after_insert=$((events_baseline + 1))
+
+  # --- Step 3: CDC INSERT test (products_simple) ---
+  log "Inserting product via MySQL (CDC)..."
+  docker compose exec -T mysql mysql -h 127.0.0.1 -uintegration -pintegrationpass integration_db << 'EOSQL'
+INSERT INTO products_simple (id, name, price, quantity, updated_at)
+VALUES (7, 'CDC Widget', 19.99, 50, NOW());
+EOSQL
+
+  if wait_for_cdc "SELECT COUNT(*) AS cnt FROM products_simple" "cnt" "$products_expected_after_insert" 30; then
+    ok "CDC INSERT detected for products_simple"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "CDC INSERT not detected for products_simple within 30s"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("CDC INSERT not detected for products_simple within 30s")
+  fi
+
+  local cdc_product_name
+  cdc_product_name=$(duckdb_scalar "SELECT name FROM products_simple WHERE id = 7" "name")
+  assert_eq "CDC Widget name in DuckDB" "CDC Widget" "$cdc_product_name"
+
+  local cdc_product_price
+  cdc_product_price=$(duckdb_scalar "SELECT CAST(price AS DOUBLE) AS p FROM products_simple WHERE id = 7" "p")
+  cdc_product_price=$(normalize_decimal "$cdc_product_price")
+  assert_eq "CDC Widget price" "19.99" "$cdc_product_price"
+
+  # --- Step 4: CDC INSERT test (events_append_only) ---
+  log "Inserting event via MySQL (CDC)..."
+  docker compose exec -T mysql mysql -h 127.0.0.1 -uintegration -pintegrationpass integration_db << 'EOSQL'
+INSERT INTO events_append_only (id, event_type, payload, amount, created_at)
+VALUES (5, 'cdc_test', '{"source":"cdc"}', 42.5000, NOW());
+EOSQL
+
+  if wait_for_cdc "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt" "$events_expected_after_insert" 30; then
+    ok "CDC INSERT detected for events_append_only"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "CDC INSERT not detected for events_append_only within 30s"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("CDC INSERT not detected for events_append_only within 30s")
+  fi
+
+  local cdc_event_type
+  cdc_event_type=$(duckdb_scalar "SELECT event_type FROM events_append_only WHERE id = 5" "event_type")
+  assert_eq "CDC event_type in DuckDB" "cdc_test" "$cdc_event_type"
+
+  # --- Step 5: CDC UPDATE test ---
+  log "Updating product via MySQL (CDC)..."
+  docker compose exec -T mysql mysql -h 127.0.0.1 -uintegration -pintegrationpass integration_db << 'EOSQL'
+UPDATE products_simple SET price = 24.99, quantity = 40 WHERE id = 7;
+EOSQL
+
+  if wait_for_cdc "SELECT CAST(price AS DOUBLE) AS p FROM products_simple WHERE id = 7" "p" "24.99" 30; then
+    ok "CDC UPDATE detected for products_simple"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "CDC UPDATE not detected for products_simple within 30s"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("CDC UPDATE not detected for products_simple within 30s")
+  fi
+
+  local cdc_updated_qty
+  cdc_updated_qty=$(duckdb_scalar "SELECT quantity FROM products_simple WHERE id = 7" "quantity")
+  assert_eq "CDC updated quantity" "40" "$cdc_updated_qty"
+
+  # Count should not change after update
+  local products_after_update
+  products_after_update=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
+  assert_eq "products count unchanged after CDC UPDATE" "$products_expected_after_insert" "$products_after_update"
+
+  # --- Step 6: CDC DELETE test ---
+  log "Deleting product via MySQL (CDC)..."
+  docker compose exec -T mysql mysql -h 127.0.0.1 -uintegration -pintegrationpass integration_db << 'EOSQL'
+DELETE FROM products_simple WHERE id = 7;
+EOSQL
+
+  if wait_for_cdc "SELECT COUNT(*) AS cnt FROM products_simple" "cnt" "$products_baseline" 30; then
+    ok "CDC DELETE detected for products_simple"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "CDC DELETE not detected for products_simple within 30s"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("CDC DELETE not detected for products_simple within 30s")
+  fi
+
+  # Verify id=7 no longer exists
+  local deleted_row
+  deleted_row=$(duckdb_scalar "SELECT name FROM products_simple WHERE id = 7" "name")
+  assert_eq "CDC deleted row not queryable" "null" "$deleted_row"
+
+  # --- Step 7: Verify CDC stats ---
+  log "Checking CDC stats..."
+  local stats_resp
+  stats_resp=$(cdc_status 2>/dev/null || echo '{}')
+
+  local events_processed
+  events_processed=$(echo "$stats_resp" | jq -r '.status.eventsProcessed // 0')
+  if [ "$events_processed" -gt 0 ] 2>/dev/null; then
+    ok "CDC eventsProcessed > 0 (got: ${events_processed})"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "CDC eventsProcessed should be > 0 (got: ${events_processed})"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("CDC eventsProcessed should be > 0 (got: ${events_processed})")
+  fi
+
+  local inserts_processed
+  inserts_processed=$(echo "$stats_resp" | jq -r '.status.insertsProcessed // 0')
+  if [ "$inserts_processed" -ge 2 ] 2>/dev/null; then
+    ok "CDC insertsProcessed >= 2 (got: ${inserts_processed})"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "CDC insertsProcessed should be >= 2 (got: ${inserts_processed})"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("CDC insertsProcessed should be >= 2 (got: ${inserts_processed})")
+  fi
+
+  local updates_processed
+  updates_processed=$(echo "$stats_resp" | jq -r '.status.updatesProcessed // 0')
+  if [ "$updates_processed" -ge 1 ] 2>/dev/null; then
+    ok "CDC updatesProcessed >= 1 (got: ${updates_processed})"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "CDC updatesProcessed should be >= 1 (got: ${updates_processed})"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("CDC updatesProcessed should be >= 1 (got: ${updates_processed})")
+  fi
+
+  local deletes_processed
+  deletes_processed=$(echo "$stats_resp" | jq -r '.status.deletesProcessed // 0')
+  if [ "$deletes_processed" -ge 1 ] 2>/dev/null; then
+    ok "CDC deletesProcessed >= 1 (got: ${deletes_processed})"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "CDC deletesProcessed should be >= 1 (got: ${deletes_processed})"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("CDC deletesProcessed should be >= 1 (got: ${deletes_processed})")
+  fi
+
+  # --- Step 8: Stop CDC & verify stopped ---
+  log "Stopping CDC..."
+  cdc_stop > /dev/null 2>&1 || true
+
+  local cdc_stopped
+  local stop_resp
+  stop_resp=$(cdc_status 2>/dev/null || echo '{}')
+  cdc_stopped=$(echo "$stop_resp" | jq -r '.status.isRunning // true')
+  assert_eq "CDC is stopped" "false" "$cdc_stopped"
+
+  # --- Step 9: No replication after stop ---
+  log "Verifying no replication after CDC stop..."
+  docker compose exec -T mysql mysql -h 127.0.0.1 -uintegration -pintegrationpass integration_db << 'EOSQL'
+INSERT INTO products_simple (id, name, price, quantity, updated_at)
+VALUES (8, 'After Stop', 5.00, 10, NOW());
+EOSQL
+
+  sleep 3
+
+  local after_stop_row
+  after_stop_row=$(duckdb_scalar "SELECT name FROM products_simple WHERE id = 8" "name")
+  assert_eq "No replication after CDC stop (id=8 absent)" "null" "$after_stop_row"
 
   echo ""
 }

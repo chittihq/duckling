@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS events_append_only (
   created_at DATETIME NOT NULL
 ) ENGINE=InnoDB;
 
+-- Grant replication privileges for CDC (binlog access via zongji)
+-- Runs as root during docker-entrypoint-initdb.d execution
+GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'integration'@'%';
+FLUSH PRIVILEGES;
+
 -- Minimal table for straightforward validation
 -- Has updated_at but no created_at
 CREATE TABLE IF NOT EXISTS products_simple (
