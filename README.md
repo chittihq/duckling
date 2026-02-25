@@ -27,6 +27,28 @@ A high-performance DuckDB server that replicates data from MySQL using **Sequent
 - **🚀 Systemd service** for production deployment
 - **🛠️ Comprehensive CLI tools** for management
 
+## Benchmark Results (20M rows)
+
+Real results from our [benchmark suite](benchmark/) running 20M order rows through the same Duckling API:
+
+| Query | MySQL | DuckDB | Speedup |
+|-------|-------|--------|---------|
+| Q1: Full table count | 4,258 ms | 4 ms | **1,064x** |
+| Q2: Filtered count | 1,475 ms | 20 ms | **73x** |
+| Q3: Group by status | 433,259 ms | 32 ms | **13,539x** |
+| Q4: Region x status breakdown | 16,685 ms | 112 ms | **148x** |
+| Q5: Monthly revenue (2023) | 7,536 ms | 30 ms | **251x** |
+| Q7: Regional analytics | 446,038 ms | 394 ms | **1,132x** |
+| **TOTAL** | **909,251 ms** | **592 ms** | **1,535x** |
+
+Run it yourself:
+
+```bash
+cd benchmark
+./run.sh                        # 20M rows
+BENCHMARK_SCALE=0.01 ./run.sh   # 200K rows (quick smoke test)
+```
+
 ## Architecture Benefits
 
 | Feature | Sequential Appender |
