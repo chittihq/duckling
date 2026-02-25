@@ -1,0 +1,66 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: integration-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: integration_db
+      MYSQL_USER: integration
+      MYSQL_PASSWORD: integrationpass
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --max-connections=50
+    volumes:
+      - ./mysql-init:/docker-entrypoint-initdb.d
+      - mysql-data:/var/lib/mysql
+    ports:
+      - "3308:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpass"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - integration-net
+
+  duckling:
+    container_name: integration-duckling
+    build:
+      context: ../..
+      dockerfile: docker/server.Dockerfile
+    ports:
+      - "3002:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DUCKDB_PATH=data/integration.db
+      - MYSQL_CONNECTION_STRING=mysql://integration:integrationpass@mysql:3306/integration_db
+      - DUCKLING_API_KEY=integration-test-key
+      - ADMIN_USERNAME=admin
+      - ADMIN_PASSWORD=integrationadmin
+      - SESSION_SECRET=integration-session-secret
+      - LOG_LEVEL=info
+      - SYNC_INTERVAL_MINUTES=0
+      - AUTO_START_SYNC=false
+      - BATCH_SIZE=1000
+      - INSERT_BATCH_SIZE=500
+      - ENABLE_INCREMENTAL_SYNC=true
+      - ENABLE_HEALTH_CHECKS=false
+      - AUTO_CLEANUP=false
+      - AUTO_BACKUP=false
+      - AUTO_RESTART=false
+      - ENABLE_CORS=true
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - integration-net
+
+networks:
+  integration-net:
+    driver: bridge
+
+volumes:
+  mysql-data:
