@@ -175,29 +175,19 @@ See [CLI.md](CLI.md) for the full list of available commands.
 
 ## How It Works
 
-### Full Sync
-1. For each table in MySQL:
-   - **BEGIN TRANSACTION** on DuckDB
-   - Create table with schema from MySQL
-   - Stream data in 10K record batches from MySQL
-   - INSERT records sequentially into DuckDB
-   - **COMMIT** transaction (or **ROLLBACK** on error)
-   - Update watermark with last processed ID/timestamp
+Duckling offers three complementary sync mechanisms:
 
-### Incremental Sync
-1. For each table:
-   - Load watermark (last processed ID/timestamp)
-   - Query MySQL for new/updated records: `WHERE id > last_id`
-   - **BEGIN TRANSACTION** on DuckDB
-   - INSERT OR REPLACE new records
-   - **COMMIT** transaction
-   - Update watermark
+| Mechanism | Trigger | Use Case |
+|-----------|---------|----------|
+| **Full Sync** | Manual / first run | Initial load, disaster recovery |
+| **Incremental Sync** | Every 15 min (automatic) | Scheduled catch-up using watermarks |
+| **CDC (Real-time)** | MySQL binlog stream | Sub-second replication (opt-in) |
 
-### Watermark Tracking
-- Stored in `appender_watermarks` table in DuckDB
-- Tracks `last_processed_id` and `last_processed_timestamp` per table
-- Automatically identifies primary key and timestamp columns
-- Enables efficient incremental updates
+**Full & Incremental** sync batch-read rows from MySQL into DuckDB using ACID transactions and `INSERT OR REPLACE` for safe upserts. Watermarks (`appender_watermarks` table) track the last processed ID/timestamp per table so incremental runs only fetch what changed.
+
+**CDC** streams MySQL binlog events directly into DuckDB via [ZongJi](https://github.com/vlasky/zongji), processing inserts, updates, and deletes in order. Binlog position is checkpointed to `cdc_binlog_position` for resume after restarts. Backpressure pauses the stream when the event queue fills up.
+
+CDC is **opt-in** (`CDC_ENABLED=true`) and can run alongside scheduled syncs.
 
 ## Configuration Options
 
