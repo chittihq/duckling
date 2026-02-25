@@ -16,8 +16,9 @@ interface TableValidation {
   syncing: boolean
   deleting: boolean
   countingMySQL: boolean // Loading state for MySQL count
-  duckdb: { exists: boolean; columnCount: number; recordCount: number }
-  mysql: { exists: boolean; columnCount: number; recordCount: number | null } // null = not counted yet
+  primaryKey: string | null
+  duckdb: { exists: boolean; columnCount: number; recordCount: number; maxId: string | null; checksum: string | null }
+  mysql: { exists: boolean; columnCount: number; recordCount: number | null; maxId: string | null; checksum: string | null } // null = not counted yet
   status: 'pending' | 'loading' | 'match' | 'mismatch' | 'missing' | 'error' | 'uncounted'
   columnsMatch?: boolean
   errorType?: string
@@ -57,8 +58,9 @@ const loadTables = async () => {
         syncing: false,
         deleting: false,
         countingMySQL: false,
-        duckdb: { exists: false, columnCount: 0, recordCount: 0 },
-        mysql: { exists: false, columnCount: 0, recordCount: null }, // null = not counted
+        primaryKey: null,
+        duckdb: { exists: false, columnCount: 0, recordCount: 0, maxId: null, checksum: null },
+        mysql: { exists: false, columnCount: 0, recordCount: null, maxId: null, checksum: null }, // null = not counted
         status: 'pending' as const
       }))
       .sort((a, b) => a.name.localeCompare(b.name))
@@ -111,6 +113,7 @@ const loadTableDetails = async (table: TableValidation, skipMySQLCount: boolean 
       { tableName: table.name, skipMySQLCount }
     )
 
+    table.primaryKey = response.primaryKey || null
     table.duckdb = response.duckdb
     table.mysql = response.mysql
     table.columnsMatch = response.columnsMatch
@@ -123,6 +126,8 @@ const loadTableDetails = async (table: TableValidation, skipMySQLCount: boolean 
 
     if (!response.duckdb.exists || !response.mysql.exists) {
       table.status = 'missing'
+    } else if (response.errorType === 'schema_mismatch' || response.errorType === 'max_id_mismatch' || response.errorType === 'checksum_mismatch') {
+      table.status = 'mismatch'
     } else if (response.mysqlCountSkipped) {
       // MySQL count was skipped - can't determine match status yet
       table.status = response.columnsMatch ? 'uncounted' : 'mismatch'
@@ -260,7 +265,7 @@ const deleteTable = async (table: TableValidation) => {
 
     if (response.success) {
       table.deleting = false
-      table.duckdb = { exists: false, columnCount: 0, recordCount: 0 }
+      table.duckdb = { exists: false, columnCount: 0, recordCount: 0, maxId: null, checksum: null }
       table.status = 'missing'
       toast({
         title: 'Success',
@@ -322,7 +327,7 @@ const bulkDeleteFiltered = async () => {
       if (promiseResult.status === 'fulfilled') {
         const { table, response } = promiseResult.value
         if (response.success) {
-          table.duckdb = { exists: false, columnCount: 0, recordCount: 0 }
+          table.duckdb = { exists: false, columnCount: 0, recordCount: 0, maxId: null, checksum: null }
           table.status = 'missing'
           table.errorType = 'missing_in_duckdb'
           table.errorMessage = 'Table exists in MySQL but not in DuckDB'
@@ -351,6 +356,8 @@ const formatNumber = (num: number) => {
 const formatErrorType = (errorType: string) => {
   const errorTypes: Record<string, string> = {
     schema_mismatch: 'Schema Mismatch',
+    max_id_mismatch: 'Max ID Mismatch',
+    checksum_mismatch: 'Checksum Mismatch',
     record_count_mismatch: 'Record Count Mismatch',
     missing_in_duckdb: 'Missing in DuckDB',
     orphaned_in_duckdb: 'Orphaned in DuckDB'
@@ -501,6 +508,8 @@ watch(selectedDatabaseId, () => {
               <SelectContent>
                 <SelectItem value="all">All Error Types</SelectItem>
                 <SelectItem value="schema_mismatch">Schema Mismatch</SelectItem>
+                <SelectItem value="max_id_mismatch">Max ID Mismatch</SelectItem>
+                <SelectItem value="checksum_mismatch">Checksum Mismatch</SelectItem>
                 <SelectItem value="record_count_mismatch">Record Count Mismatch</SelectItem>
                 <SelectItem value="missing_in_duckdb">Missing in DuckDB</SelectItem>
                 <SelectItem value="orphaned_in_duckdb">Orphaned in DuckDB</SelectItem>
@@ -527,6 +536,8 @@ watch(selectedDatabaseId, () => {
               <th class="px-4 py-3 text-right font-medium w-24">MySQL Cols</th>
               <th class="px-4 py-3 text-right font-medium w-32">DuckDB Records</th>
               <th class="px-4 py-3 text-right font-medium w-32">MySQL Records</th>
+              <th class="px-4 py-3 text-center font-medium w-40">Max ID</th>
+              <th class="px-4 py-3 text-center font-medium w-32">Checksum</th>
               <th class="px-4 py-3 text-center font-medium w-40">Error Type</th>
               <th class="px-4 py-3 text-center font-medium w-24">Status</th>
               <th class="px-4 py-3 text-center font-medium w-40">Actions</th>
@@ -592,10 +603,30 @@ watch(selectedDatabaseId, () => {
                 </span>
               </td>
               <td class="px-4 py-3 text-center">
+                <span v-if="table.loading" class="text-muted-foreground">-</span>
+                <span v-else-if="!table.primaryKey" class="text-muted-foreground text-xs">No PK</span>
+                <span v-else-if="table.duckdb.maxId != null || table.mysql.maxId != null">
+                  <span
+                    :class="table.errorType === 'max_id_mismatch' ? 'text-red-600 font-semibold' : ''"
+                    class="text-xs"
+                  >
+                    {{ table.duckdb.maxId ?? '-' }} / {{ table.mysql.maxId ?? '-' }}
+                  </span>
+                </span>
+                <span v-else class="text-muted-foreground">-</span>
+              </td>
+              <td class="px-4 py-3 text-center">
+                <span v-if="table.loading" class="text-muted-foreground">-</span>
+                <span v-else-if="!table.primaryKey" class="text-muted-foreground text-xs">-</span>
+                <span v-else-if="table.duckdb.checksum == null && table.mysql.checksum == null" class="text-muted-foreground text-xs">N/A</span>
+                <span v-else-if="table.duckdb.checksum === table.mysql.checksum" class="text-green-600 text-lg">✓</span>
+                <span v-else class="text-red-600 text-lg font-semibold">✗</span>
+              </td>
+              <td class="px-4 py-3 text-center">
                 <div v-if="!table.loading && table.errorType" class="text-xs">
                   <div
                     :class="{
-                      'text-red-600 font-semibold': table.errorType === 'schema_mismatch',
+                      'text-red-600 font-semibold': table.errorType === 'schema_mismatch' || table.errorType === 'max_id_mismatch' || table.errorType === 'checksum_mismatch',
                       'text-orange-600 font-semibold': table.errorType === 'record_count_mismatch',
                       'text-blue-600': table.errorType === 'missing_in_duckdb',
                       'text-muted-foreground': table.errorType === 'orphaned_in_duckdb'
@@ -664,7 +695,7 @@ watch(selectedDatabaseId, () => {
             </tr>
 
             <tr v-if="filteredTables.length === 0">
-              <td colspan="10" class="px-4 py-12 text-center text-muted-foreground">
+              <td colspan="12" class="px-4 py-12 text-center text-muted-foreground">
                 <svg class="mx-auto mb-4 opacity-50" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="20 6 9 17 4 12"/>
                 </svg>

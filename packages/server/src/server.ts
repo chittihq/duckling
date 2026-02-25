@@ -1288,6 +1288,7 @@ class DuckDBServer {
       let mysqlColumnCount = 0;
       let mysqlRecordCount: number | null = null; // null means "not counted yet"
       let mysqlColumns: string[] = [];
+      let mysqlSchema: any[] = [];
 
       try {
         const mysqlTables = await mysql.getAllTables();
@@ -1295,9 +1296,9 @@ class DuckDBServer {
 
         if (mysqlExists) {
           // Get column count and names (fast - uses DESCRIBE)
-          const schema = await mysql.getTableSchema(tableName);
-          mysqlColumnCount = schema.length;
-          mysqlColumns = schema.map((col: any) => col.Field);
+          mysqlSchema = await mysql.getTableSchema(tableName);
+          mysqlColumnCount = mysqlSchema.length;
+          mysqlColumns = mysqlSchema.map((col: any) => col.Field);
 
           // Only count MySQL records if not skipped (COUNT(*) is slow for large tables)
           if (!skipMySQLCount) {
@@ -1318,7 +1319,55 @@ class DuckDBServer {
       const missingColumns = mysqlColumns.filter(col => !duckdbColumns.includes(col));
       const extraColumns = duckdbColumns.filter(col => !mysqlColumns.includes(col) && col !== 'ingest_date');
 
-      // Determine error type
+      // Detect primary key from MySQL schema
+      const pkCol = mysqlSchema.find((col: any) => col.Key === 'PRI');
+      const primaryKey: string | null = pkCol ? pkCol.Field : null;
+      const numericTypes = ['INT', 'BIGINT', 'TINYINT', 'SMALLINT', 'MEDIUMINT'];
+      const pkIsNumeric = pkCol ? numericTypes.some(t => (pkCol.Type as string).toUpperCase().includes(t)) : false;
+
+      // Run max-ID and checksum queries when both tables exist and PK is detected
+      let duckdbMaxId: string | null = null;
+      let mysqlMaxId: string | null = null;
+      let duckdbChecksum: string | null = null;
+      let mysqlChecksum: string | null = null;
+
+      if (duckdbExists && mysqlExists && primaryKey) {
+        try {
+          // Build queries
+          const maxIdPromises: Promise<any>[] = [
+            mysql.execute(`SELECT MAX(\`${primaryKey}\`) as max_id FROM \`${tableName}\``),
+            duckdb.execute(`SELECT MAX("${primaryKey}") as max_id FROM ${tableName}`)
+          ];
+
+          // Add checksum queries for numeric PKs
+          if (pkIsNumeric) {
+            maxIdPromises.push(
+              mysql.execute(`SELECT SUM(CAST(\`${primaryKey}\` AS SIGNED)) as checksum FROM \`${tableName}\``),
+              duckdb.execute(`SELECT SUM(CAST("${primaryKey}" AS BIGINT)) as checksum FROM ${tableName}`)
+            );
+          }
+
+          const results = await Promise.all(maxIdPromises);
+
+          // Extract max ID results (stringify to avoid BigInt precision issues)
+          const mysqlMaxIdRow = results[0]?.[0];
+          const duckdbMaxIdRow = results[1]?.[0];
+          mysqlMaxId = mysqlMaxIdRow?.max_id != null ? String(mysqlMaxIdRow.max_id) : null;
+          duckdbMaxId = duckdbMaxIdRow?.max_id != null ? String(duckdbMaxIdRow.max_id) : null;
+
+          // Extract checksum results for numeric PKs
+          if (pkIsNumeric) {
+            const mysqlChecksumRow = results[2]?.[0];
+            const duckdbChecksumRow = results[3]?.[0];
+            mysqlChecksum = mysqlChecksumRow?.checksum != null ? String(mysqlChecksumRow.checksum) : null;
+            duckdbChecksum = duckdbChecksumRow?.checksum != null ? String(duckdbChecksumRow.checksum) : null;
+          }
+        } catch (error) {
+          logger.warn(`Failed to get max-ID/checksum for ${tableName}:`, error);
+        }
+      }
+
+      // Determine error type (priority: schema > max_id > checksum > record_count)
       let errorType = null;
       let errorMessage = null;
 
@@ -1329,6 +1378,12 @@ class DuckDBServer {
         } else if (extraColumns.length > 0) {
           errorType = 'schema_mismatch';
           errorMessage = `Extra columns in DuckDB: ${extraColumns.join(', ')}`;
+        } else if (primaryKey && duckdbMaxId !== mysqlMaxId) {
+          errorType = 'max_id_mismatch';
+          errorMessage = `Max ${primaryKey} mismatch: DuckDB (${duckdbMaxId}) vs MySQL (${mysqlMaxId})`;
+        } else if (pkIsNumeric && duckdbChecksum !== mysqlChecksum) {
+          errorType = 'checksum_mismatch';
+          errorMessage = `Checksum SUM(${primaryKey}) mismatch: DuckDB (${duckdbChecksum}) vs MySQL (${mysqlChecksum})`;
         } else if (mysqlRecordCount !== null && duckdbRecordCount !== mysqlRecordCount) {
           // Only compare record counts if MySQL count is available
           errorType = 'record_count_mismatch';
@@ -1343,17 +1398,22 @@ class DuckDBServer {
       }
 
       res.json({
+        primaryKey,
         duckdb: {
           exists: duckdbExists,
           columnCount: duckdbColumnCount,
           recordCount: duckdbRecordCount,
-          columns: duckdbColumns
+          columns: duckdbColumns,
+          maxId: duckdbMaxId,
+          checksum: duckdbChecksum
         },
         mysql: {
           exists: mysqlExists,
           columnCount: mysqlColumnCount,
           recordCount: mysqlRecordCount, // null if skipMySQLCount was true
-          columns: mysqlColumns
+          columns: mysqlColumns,
+          maxId: mysqlMaxId,
+          checksum: mysqlChecksum
         },
         columnsMatch,
         missingColumns,
