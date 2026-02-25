@@ -94,6 +94,38 @@ export const config = {
     apiKey: process.env.DUCKLING_API_KEY || '',
     jwtSecret: process.env.JWT_SECRET || process.env.SESSION_SECRET || 'default-jwt-secret-change-in-production',
     jwtExpiresIn: process.env.JWT_EXPIRES_IN || '1h', // 1 hour by default
+  },
+
+  rateLimit: {
+    enabled: process.env.RATE_LIMIT_ENABLED !== 'false',
+    categories: {
+      auth: {
+        windowMs: parseInt(process.env.RATE_LIMIT_AUTH_WINDOW_MS || '60000'),
+        maxRequests: parseInt(process.env.RATE_LIMIT_AUTH_MAX || '10'),
+      },
+      read: {
+        windowMs: parseInt(process.env.RATE_LIMIT_READ_WINDOW_MS || '60000'),
+        maxRequests: parseInt(process.env.RATE_LIMIT_READ_MAX || '60'),
+      },
+      query: {
+        windowMs: parseInt(process.env.RATE_LIMIT_QUERY_WINDOW_MS || '60000'),
+        maxRequests: parseInt(process.env.RATE_LIMIT_QUERY_MAX || '20'),
+      },
+      write: {
+        windowMs: parseInt(process.env.RATE_LIMIT_WRITE_WINDOW_MS || '60000'),
+        maxRequests: parseInt(process.env.RATE_LIMIT_WRITE_MAX || '10'),
+      },
+      monitoring: {
+        windowMs: parseInt(process.env.RATE_LIMIT_MONITORING_WINDOW_MS || '60000'),
+        maxRequests: parseInt(process.env.RATE_LIMIT_MONITORING_MAX || '120'),
+      },
+    },
+    tiers: {
+      anonymous: 1,
+      jwt: parseInt(process.env.RATE_LIMIT_JWT_MULTIPLIER || '2'),
+      apiKey: parseInt(process.env.RATE_LIMIT_APIKEY_MULTIPLIER || '5'),
+    },
+    cleanupIntervalMs: parseInt(process.env.RATE_LIMIT_CLEANUP_INTERVAL_MS || '60000'),
   }
 };
 
