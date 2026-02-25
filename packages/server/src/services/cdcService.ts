@@ -618,6 +618,12 @@ export class CDCService {
     // Ready event
     this.zongji.on('ready', () => {
       logger.info(`CDC connected to MySQL binlog for ${this.databaseId}`);
+
+      // Verify backpressure capability (pause/resume are used by ZongJi itself at index.js:258/263)
+      const conn = (this.zongji as any)?.connection;
+      if (typeof conn?.pause !== 'function' || typeof conn?.resume !== 'function') {
+        logger.warn(`CDC backpressure unavailable for ${this.databaseId}: connection.pause/resume not found. Queue will grow unbounded under high write load.`);
+      }
     });
 
     // Binlog event - queue events for serial processing to ensure correct ordering

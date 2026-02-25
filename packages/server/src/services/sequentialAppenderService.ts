@@ -971,6 +971,11 @@ class SequentialAppenderService {
 
         logger.info(`${tableName}: watermark sync - columns=${columnCount}, insertBatchSize=${insertBatchSize}, fetchBatchSize=${fetchBatchSize}`);
 
+        // Checkpoint watermark every N stream batches to limit re-work on crash
+        // With default batchSize=1000, this saves progress every ~10K records
+        const WATERMARK_CHECKPOINT_INTERVAL = 10;
+        let batchesSinceCheckpoint = 0;
+
         // Stream incremental data batch-by-batch (no full dataset in memory)
         for await (const streamBatch of this.mysql.streamIncrementalData(tableName, watermarkColumn, watermarkValue, fetchBatchSize)) {
           // Sub-batch for INSERT OR REPLACE parameter limits
@@ -997,6 +1002,27 @@ class SequentialAppenderService {
           }
 
           lastRecord = streamBatch[streamBatch.length - 1];
+          batchesSinceCheckpoint++;
+
+          // Periodic watermark checkpoint so crash recovery doesn't restart from zero.
+          // Safe because INSERT OR REPLACE handles re-processing idempotently.
+          if (batchesSinceCheckpoint >= WATERMARK_CHECKPOINT_INTERVAL && lastRecord) {
+            const checkpoint: Partial<TableWatermark> = {
+              lastProcessedTimestamp: new Date(),
+              primaryKeyColumn: watermark.primaryKeyColumn,
+              timestampColumn: watermark.timestampColumn
+            };
+            if (watermark.primaryKeyColumn && lastRecord[watermark.primaryKeyColumn]) {
+              checkpoint.lastProcessedId = lastRecord[watermark.primaryKeyColumn];
+            }
+            if (watermark.timestampColumn && lastRecord[watermark.timestampColumn]) {
+              checkpoint.lastProcessedTimestamp = new Date(lastRecord[watermark.timestampColumn]);
+            }
+            await this.updateWatermark(tableName, checkpoint);
+            batchesSinceCheckpoint = 0;
+            logger.debug(`${tableName}: watermark checkpoint at ${recordsProcessed} records`);
+          }
+
           logger.debug(`${tableName}: streamed ${recordsProcessed} incremental records so far`);
         }
 
