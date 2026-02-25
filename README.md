@@ -27,13 +27,6 @@ A high-performance DuckDB server that replicates data from MySQL using **Sequent
 - **🚀 Systemd service** for production deployment
 - **🛠️ Comprehensive CLI tools** for management
 
-## Performance Comparison
-
-| Metric | Before | After | Improvement |
-|--------|--------|-------|-------------|
-| **Query Speed** | 2-5 seconds | 200-500ms | **5-10x faster** |
-| **Sync Performance** | 30min full | 5min incremental | **6x faster** |
-
 ## Architecture Benefits
 
 | Feature | Sequential Appender |
