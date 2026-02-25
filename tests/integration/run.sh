@@ -96,6 +96,21 @@ assert_not_eq() {
   fi
 }
 
+assert_contains() {
+  local description="$1"
+  local expected_substring="$2"
+  local actual="$3"
+
+  if echo "$actual" | grep -qF "$expected_substring"; then
+    ok "$description"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "$description (expected to contain: '$expected_substring', got: '$actual')"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("$description: expected to contain '$expected_substring', got '$actual'")
+  fi
+}
+
 # --------------- API helpers ---------------
 api_post() {
   local path="$1"
@@ -309,6 +324,72 @@ INSERT INTO products_simple (id, name, price, quantity, updated_at) VALUES
   (3, 'Gadget C',  199.99,   10, '2025-01-03 12:00:00'),
   (4, 'Gadget D',    9.99, 1000, '2025-01-04 12:00:00');
 
+-- Seed type_coverage (3 rows: edge cases, zeros/empty, NULLs)
+-- Row 1: Edge cases — min/max/boundary values
+INSERT INTO type_coverage (
+  id, col_tinyint_signed, col_smallint, col_mediumint,
+  col_int_unsigned, col_bigint_unsigned,
+  col_double, col_decimal_5_0, col_decimal_20_10,
+  col_char_10, col_tinytext, col_mediumtext, col_longtext,
+  col_binary_4, col_varbinary_64, col_tinyblob, col_mediumblob, col_longblob,
+  col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
+  col_set, col_bit_1, col_bit_8,
+  created_at, updated_at
+) VALUES (
+  1, -128, -32768, -8388608,
+  4294967295, 18446744073709551615,
+  1.7976931348623157E+308, 99999, 1234567890.1234567890,
+  'ABCDEFGHIJ', 'tiny', 'medium text value', 'long text value',
+  X'DEADBEEF', X'CAFEBABE', X'FF', X'AABBCCDD', X'0102030405',
+  '23:59:59', '23:59:59.123456', '2025-06-15 12:30:45', '2025-06-15 12:30:45.654321', '2025-06-15 12:30:45.654321', 2025,
+  'a,c,d', b'1', b'11111111',
+  '2025-01-01 00:00:00', '2025-01-01 00:00:00'
+);
+
+-- Row 2: Zero/empty/min values
+INSERT INTO type_coverage (
+  id, col_tinyint_signed, col_smallint, col_mediumint,
+  col_int_unsigned, col_bigint_unsigned,
+  col_double, col_decimal_5_0, col_decimal_20_10,
+  col_char_10, col_tinytext, col_mediumtext, col_longtext,
+  col_binary_4, col_varbinary_64, col_tinyblob, col_mediumblob, col_longblob,
+  col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
+  col_set, col_bit_1, col_bit_8,
+  created_at, updated_at
+) VALUES (
+  2, 0, 0, 0,
+  0, 0,
+  -3.14159265358979, 0, 0.0000000000,
+  '', '', '', '',
+  X'00000000', X'00', X'00', X'00', X'00',
+  '00:00:00', '00:00:00.000000', '1970-01-01 00:00:01', '1970-01-01 00:00:01.000000', '1970-01-01 00:00:01.000000', 1970,
+  '', b'0', b'00000000',
+  '2025-01-01 00:00:00', '2025-01-01 00:00:00'
+);
+
+-- Row 3: All NULLs (except id and non-nullable created_at/updated_at)
+INSERT INTO type_coverage (
+  id, col_tinyint_signed, col_smallint, col_mediumint,
+  col_int_unsigned, col_bigint_unsigned,
+  col_double, col_decimal_5_0, col_decimal_20_10,
+  col_char_10, col_tinytext, col_mediumtext, col_longtext,
+  col_binary_4, col_varbinary_64, col_tinyblob, col_mediumblob, col_longblob,
+  col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
+  col_set, col_bit_1, col_bit_8,
+  created_at, updated_at
+) VALUES (
+  3, NULL, NULL, NULL,
+  NULL, NULL,
+  NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL, NULL,
+  '2025-01-01 00:00:00', '2025-01-01 00:00:00'
+);
+
+-- type_coverage_cdc: no initial rows (seeded via CDC in Suite 6)
+
 EOSQL
   ok "Seed data inserted"
 
@@ -340,6 +421,7 @@ EOSQL
   run_suite_4_single_table_sync
   run_suite_5_idempotent_resync
   run_suite_6_cdc_realtime
+  run_suite_7_type_fidelity
 
   # ------- Summary -------
   echo ""
@@ -936,7 +1018,109 @@ EOSQL
     FAIL_MESSAGES+=("CDC deletesProcessed should be >= 1 (got: ${deletes_processed})")
   fi
 
-  # --- Step 8: Stop CDC & verify stopped ---
+  # --- Step 8: CDC Type Fidelity INSERT (type_coverage_cdc) ---
+  log "Inserting diverse types via MySQL CDC (type_coverage_cdc)..."
+  docker compose exec -T mysql mysql -h 127.0.0.1 -uintegration -pintegrationpass integration_db << 'EOSQL'
+INSERT INTO type_coverage_cdc (
+  id, col_tinyint_signed, col_smallint, col_mediumint,
+  col_int_unsigned, col_bigint_unsigned,
+  col_double, col_decimal_5_0, col_decimal_20_10,
+  col_char_10, col_tinytext, col_mediumtext, col_longtext,
+  col_time, col_timestamp, col_datetime_6, col_year, col_set,
+  created_at, updated_at
+) VALUES (
+  1, -42, 1000, 500000,
+  3000000000, 9999999999,
+  2.71828, 12345, 9876543210.1234500000,
+  'CDC-TEST', 'cdc tiny', 'cdc medium text', 'cdc long text',
+  '14:30:00', '2025-06-15 12:00:00', '2025-06-15 12:00:00.123456', 2024, 'b,d',
+  NOW(), NOW()
+);
+EOSQL
+
+  if wait_for_cdc "SELECT COUNT(*) AS cnt FROM type_coverage_cdc" "cnt" "1" 30; then
+    ok "CDC INSERT detected for type_coverage_cdc"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "CDC INSERT not detected for type_coverage_cdc within 30s"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("CDC INSERT not detected for type_coverage_cdc within 30s")
+  fi
+
+  # Validate CDC-inserted column values
+  local cdc_tv
+  cdc_tv=$(duckdb_scalar "SELECT col_tinyint_signed FROM type_coverage_cdc WHERE id = 1" "col_tinyint_signed")
+  assert_eq "CDC type TINYINT" "-42" "$cdc_tv"
+
+  cdc_tv=$(duckdb_scalar "SELECT col_smallint FROM type_coverage_cdc WHERE id = 1" "col_smallint")
+  assert_eq "CDC type SMALLINT" "1000" "$cdc_tv"
+
+  cdc_tv=$(duckdb_scalar "SELECT col_mediumint FROM type_coverage_cdc WHERE id = 1" "col_mediumint")
+  assert_eq "CDC type MEDIUMINT" "500000" "$cdc_tv"
+
+  cdc_tv=$(duckdb_scalar "SELECT col_int_unsigned FROM type_coverage_cdc WHERE id = 1" "col_int_unsigned")
+  assert_eq "CDC type INT UNSIGNED" "3000000000" "$cdc_tv"
+
+  cdc_tv=$(duckdb_scalar "SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = 1" "v")
+  assert_contains "CDC type DOUBLE" "2.71828" "$cdc_tv"
+
+  cdc_tv=$(duckdb_scalar "SELECT col_decimal_5_0 FROM type_coverage_cdc WHERE id = 1" "col_decimal_5_0")
+  cdc_tv=$(normalize_decimal "$cdc_tv")
+  assert_eq "CDC type DECIMAL(5,0)" "12345" "$cdc_tv"
+
+  cdc_tv=$(duckdb_scalar "SELECT col_char_10 FROM type_coverage_cdc WHERE id = 1" "col_char_10")
+  assert_eq "CDC type CHAR(10)" "CDC-TEST" "$cdc_tv"
+
+  cdc_tv=$(duckdb_scalar "SELECT col_tinytext FROM type_coverage_cdc WHERE id = 1" "col_tinytext")
+  assert_eq "CDC type TINYTEXT" "cdc tiny" "$cdc_tv"
+
+  cdc_tv=$(duckdb_scalar "SELECT col_mediumtext FROM type_coverage_cdc WHERE id = 1" "col_mediumtext")
+  assert_eq "CDC type MEDIUMTEXT" "cdc medium text" "$cdc_tv"
+
+  cdc_tv=$(duckdb_scalar "SELECT col_longtext FROM type_coverage_cdc WHERE id = 1" "col_longtext")
+  assert_eq "CDC type LONGTEXT" "cdc long text" "$cdc_tv"
+
+  cdc_tv=$(duckdb_scalar "SELECT col_year FROM type_coverage_cdc WHERE id = 1" "col_year")
+  assert_eq "CDC type YEAR" "2024" "$cdc_tv"
+
+  cdc_tv=$(duckdb_scalar "SELECT col_set FROM type_coverage_cdc WHERE id = 1" "col_set")
+  assert_eq "CDC type SET" "b,d" "$cdc_tv"
+
+  # --- Step 9: CDC Type Fidelity UPDATE (type_coverage_cdc) ---
+  log "Updating diverse types via MySQL CDC (type_coverage_cdc)..."
+  docker compose exec -T mysql mysql -h 127.0.0.1 -uintegration -pintegrationpass integration_db << 'EOSQL'
+UPDATE type_coverage_cdc SET
+  col_tinyint_signed = 127,
+  col_smallint = 32767,
+  col_double = -1.0,
+  col_char_10 = 'UPDATED',
+  col_set = 'a,b,c',
+  updated_at = NOW()
+WHERE id = 1;
+EOSQL
+
+  if wait_for_cdc "SELECT col_tinyint_signed FROM type_coverage_cdc WHERE id = 1" "col_tinyint_signed" "127" 30; then
+    ok "CDC UPDATE detected for type_coverage_cdc"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "CDC UPDATE not detected for type_coverage_cdc within 30s"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("CDC UPDATE not detected for type_coverage_cdc within 30s")
+  fi
+
+  cdc_tv=$(duckdb_scalar "SELECT col_smallint FROM type_coverage_cdc WHERE id = 1" "col_smallint")
+  assert_eq "CDC updated SMALLINT" "32767" "$cdc_tv"
+
+  cdc_tv=$(duckdb_scalar "SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = 1" "v")
+  assert_contains "CDC updated DOUBLE" "-1.0" "$cdc_tv"
+
+  cdc_tv=$(duckdb_scalar "SELECT col_char_10 FROM type_coverage_cdc WHERE id = 1" "col_char_10")
+  assert_eq "CDC updated CHAR(10)" "UPDATED" "$cdc_tv"
+
+  cdc_tv=$(duckdb_scalar "SELECT col_set FROM type_coverage_cdc WHERE id = 1" "col_set")
+  assert_eq "CDC updated SET" "a,b,c" "$cdc_tv"
+
+  # --- Step 10: Stop CDC & verify stopped ---
   log "Stopping CDC..."
   cdc_stop > /dev/null 2>&1 || true
 
@@ -946,7 +1130,7 @@ EOSQL
   cdc_stopped=$(echo "$stop_resp" | jq '.status.isRunning')
   assert_eq "CDC is stopped" "false" "$cdc_stopped"
 
-  # --- Step 9: No replication after stop ---
+  # --- Step 11: No replication after stop ---
   log "Verifying no replication after CDC stop..."
   docker compose exec -T mysql mysql -h 127.0.0.1 -uintegration -pintegrationpass integration_db << 'EOSQL'
 INSERT INTO products_simple (id, name, price, quantity, updated_at)
@@ -958,6 +1142,238 @@ EOSQL
   local after_stop_row
   after_stop_row=$(duckdb_scalar "SELECT name FROM products_simple WHERE id = 8" "name")
   assert_eq "No replication after CDC stop (id=8 absent)" "null" "$after_stop_row"
+
+  echo ""
+}
+
+# ===============================================================
+# SUITE 7: MySQL 8 Comprehensive Type Fidelity
+# ===============================================================
+run_suite_7_type_fidelity() {
+  echo -e "${BOLD}${YELLOW}Suite 7: MySQL 8 Type Fidelity${NC}"
+  hr
+
+  log "Triggering full sync for type fidelity..."
+  trigger_full_sync > /dev/null
+
+  # --- Row counts ---
+  local duck_tc duck_tc_cdc
+  duck_tc=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM type_coverage" "cnt")
+  duck_tc_cdc=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM type_coverage_cdc" "cnt")
+
+  assert_eq "type_coverage count" "3" "$duck_tc"
+  # type_coverage_cdc has 1 row (inserted via CDC in Suite 6, synced by full sync)
+  assert_eq "type_coverage_cdc count" "1" "$duck_tc_cdc"
+
+  # ===== Row 1: Edge cases (id=1) =====
+  log "Validating Row 1 (edge cases)..."
+
+  local val
+  val=$(duckdb_scalar "SELECT col_tinyint_signed FROM type_coverage WHERE id = 1" "col_tinyint_signed")
+  assert_eq "Row1 TINYINT SIGNED min" "-128" "$val"
+
+  val=$(duckdb_scalar "SELECT col_smallint FROM type_coverage WHERE id = 1" "col_smallint")
+  assert_eq "Row1 SMALLINT min" "-32768" "$val"
+
+  val=$(duckdb_scalar "SELECT col_mediumint FROM type_coverage WHERE id = 1" "col_mediumint")
+  assert_eq "Row1 MEDIUMINT min" "-8388608" "$val"
+
+  val=$(duckdb_scalar "SELECT col_int_unsigned FROM type_coverage WHERE id = 1" "col_int_unsigned")
+  assert_eq "Row1 INT UNSIGNED max" "4294967295" "$val"
+
+  # BIGINT UNSIGNED max (2^64-1) exceeds DuckDB signed BIGINT — just verify non-null
+  val=$(duckdb_scalar "SELECT col_bigint_unsigned FROM type_coverage WHERE id = 1" "col_bigint_unsigned")
+  assert_not_eq "Row1 BIGINT UNSIGNED non-null" "null" "$val"
+
+  # DOUBLE max — cast to VARCHAR, check contains the significant portion
+  val=$(duckdb_scalar "SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
+  assert_contains "Row1 DOUBLE max" "1.79769" "$val"
+
+  # DECIMAL(5,0)
+  val=$(duckdb_scalar "SELECT col_decimal_5_0 FROM type_coverage WHERE id = 1" "col_decimal_5_0")
+  val=$(normalize_decimal "$val")
+  assert_eq "Row1 DECIMAL(5,0)" "99999" "$val"
+
+  # DECIMAL(20,10) — high precision, check integer portion
+  val=$(duckdb_scalar "SELECT CAST(col_decimal_20_10 AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
+  assert_contains "Row1 DECIMAL(20,10) contains integer part" "1234567890" "$val"
+
+  # CHAR(10)
+  val=$(duckdb_scalar "SELECT col_char_10 FROM type_coverage WHERE id = 1" "col_char_10")
+  assert_eq "Row1 CHAR(10)" "ABCDEFGHIJ" "$val"
+
+  # TINYTEXT
+  val=$(duckdb_scalar "SELECT col_tinytext FROM type_coverage WHERE id = 1" "col_tinytext")
+  assert_eq "Row1 TINYTEXT" "tiny" "$val"
+
+  # MEDIUMTEXT
+  val=$(duckdb_scalar "SELECT col_mediumtext FROM type_coverage WHERE id = 1" "col_mediumtext")
+  assert_eq "Row1 MEDIUMTEXT" "medium text value" "$val"
+
+  # LONGTEXT
+  val=$(duckdb_scalar "SELECT col_longtext FROM type_coverage WHERE id = 1" "col_longtext")
+  assert_eq "Row1 LONGTEXT" "long text value" "$val"
+
+  # BINARY(4) — just verify non-null (binary round-trip representation varies)
+  val=$(duckdb_query "SELECT col_binary_4 FROM type_coverage WHERE id = 1" | jq '.result[0].col_binary_4')
+  assert_not_eq "Row1 BINARY(4) non-null" "null" "$val"
+
+  # VARBINARY(64)
+  val=$(duckdb_query "SELECT col_varbinary_64 FROM type_coverage WHERE id = 1" | jq '.result[0].col_varbinary_64')
+  assert_not_eq "Row1 VARBINARY(64) non-null" "null" "$val"
+
+  # TINYBLOB
+  val=$(duckdb_query "SELECT col_tinyblob FROM type_coverage WHERE id = 1" | jq '.result[0].col_tinyblob')
+  assert_not_eq "Row1 TINYBLOB non-null" "null" "$val"
+
+  # MEDIUMBLOB
+  val=$(duckdb_query "SELECT col_mediumblob FROM type_coverage WHERE id = 1" | jq '.result[0].col_mediumblob')
+  assert_not_eq "Row1 MEDIUMBLOB non-null" "null" "$val"
+
+  # LONGBLOB
+  val=$(duckdb_query "SELECT col_longblob FROM type_coverage WHERE id = 1" | jq '.result[0].col_longblob')
+  assert_not_eq "Row1 LONGBLOB non-null" "null" "$val"
+
+  # TIME
+  val=$(duckdb_scalar "SELECT CAST(col_time AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
+  assert_eq "Row1 TIME" "23:59:59" "$val"
+
+  # TIME(6) — fractional seconds
+  val=$(duckdb_scalar "SELECT CAST(col_time_6 AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
+  assert_contains "Row1 TIME(6)" "23:59:59" "$val"
+
+  # TIMESTAMP
+  val=$(duckdb_scalar "SELECT CAST(col_timestamp AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
+  assert_contains "Row1 TIMESTAMP" "2025-06-15" "$val"
+
+  # TIMESTAMP(6)
+  val=$(duckdb_scalar "SELECT CAST(col_timestamp_6 AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
+  assert_contains "Row1 TIMESTAMP(6)" "2025-06-15" "$val"
+
+  # DATETIME(6)
+  val=$(duckdb_scalar "SELECT CAST(col_datetime_6 AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
+  assert_contains "Row1 DATETIME(6)" "2025-06-15" "$val"
+
+  # YEAR
+  val=$(duckdb_scalar "SELECT col_year FROM type_coverage WHERE id = 1" "col_year")
+  assert_eq "Row1 YEAR" "2025" "$val"
+
+  # SET
+  val=$(duckdb_scalar "SELECT col_set FROM type_coverage WHERE id = 1" "col_set")
+  assert_eq "Row1 SET" "a,c,d" "$val"
+
+  # ===== Row 2: Zero/empty values (id=2) =====
+  log "Validating Row 2 (zero/empty values)..."
+
+  val=$(duckdb_scalar "SELECT col_tinyint_signed FROM type_coverage WHERE id = 2" "col_tinyint_signed")
+  assert_eq "Row2 TINYINT SIGNED zero" "0" "$val"
+
+  val=$(duckdb_scalar "SELECT col_smallint FROM type_coverage WHERE id = 2" "col_smallint")
+  assert_eq "Row2 SMALLINT zero" "0" "$val"
+
+  val=$(duckdb_scalar "SELECT col_mediumint FROM type_coverage WHERE id = 2" "col_mediumint")
+  assert_eq "Row2 MEDIUMINT zero" "0" "$val"
+
+  val=$(duckdb_scalar "SELECT col_int_unsigned FROM type_coverage WHERE id = 2" "col_int_unsigned")
+  assert_eq "Row2 INT UNSIGNED zero" "0" "$val"
+
+  val=$(duckdb_scalar "SELECT col_bigint_unsigned FROM type_coverage WHERE id = 2" "col_bigint_unsigned")
+  assert_eq "Row2 BIGINT UNSIGNED zero" "0" "$val"
+
+  val=$(duckdb_scalar "SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage WHERE id = 2" "v")
+  assert_contains "Row2 DOUBLE negative pi" "-3.14159" "$val"
+
+  val=$(duckdb_scalar "SELECT col_decimal_5_0 FROM type_coverage WHERE id = 2" "col_decimal_5_0")
+  val=$(normalize_decimal "$val")
+  assert_eq "Row2 DECIMAL(5,0) zero" "0" "$val"
+
+  val=$(duckdb_scalar "SELECT col_char_10 FROM type_coverage WHERE id = 2" "col_char_10")
+  assert_eq "Row2 CHAR(10) empty" "" "$val"
+
+  val=$(duckdb_scalar "SELECT col_tinytext FROM type_coverage WHERE id = 2" "col_tinytext")
+  assert_eq "Row2 TINYTEXT empty" "" "$val"
+
+  val=$(duckdb_scalar "SELECT CAST(col_time AS VARCHAR) AS v FROM type_coverage WHERE id = 2" "v")
+  assert_eq "Row2 TIME zero" "00:00:00" "$val"
+
+  val=$(duckdb_scalar "SELECT col_year FROM type_coverage WHERE id = 2" "col_year")
+  assert_eq "Row2 YEAR 1970" "1970" "$val"
+
+  val=$(duckdb_scalar "SELECT col_set FROM type_coverage WHERE id = 2" "col_set")
+  assert_eq "Row2 SET empty" "" "$val"
+
+  # ===== Row 3: NULLs (id=3) =====
+  log "Validating Row 3 (NULLs)..."
+
+  local null_val
+  null_val=$(duckdb_query "SELECT col_tinyint_signed FROM type_coverage WHERE id = 3" | jq '.result[0].col_tinyint_signed')
+  assert_eq "Row3 TINYINT SIGNED null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_smallint FROM type_coverage WHERE id = 3" | jq '.result[0].col_smallint')
+  assert_eq "Row3 SMALLINT null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_mediumint FROM type_coverage WHERE id = 3" | jq '.result[0].col_mediumint')
+  assert_eq "Row3 MEDIUMINT null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_int_unsigned FROM type_coverage WHERE id = 3" | jq '.result[0].col_int_unsigned')
+  assert_eq "Row3 INT UNSIGNED null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_bigint_unsigned FROM type_coverage WHERE id = 3" | jq '.result[0].col_bigint_unsigned')
+  assert_eq "Row3 BIGINT UNSIGNED null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_double FROM type_coverage WHERE id = 3" | jq '.result[0].col_double')
+  assert_eq "Row3 DOUBLE null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_decimal_5_0 FROM type_coverage WHERE id = 3" | jq '.result[0].col_decimal_5_0')
+  assert_eq "Row3 DECIMAL(5,0) null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_decimal_20_10 FROM type_coverage WHERE id = 3" | jq '.result[0].col_decimal_20_10')
+  assert_eq "Row3 DECIMAL(20,10) null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_char_10 FROM type_coverage WHERE id = 3" | jq '.result[0].col_char_10')
+  assert_eq "Row3 CHAR(10) null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_tinytext FROM type_coverage WHERE id = 3" | jq '.result[0].col_tinytext')
+  assert_eq "Row3 TINYTEXT null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_mediumtext FROM type_coverage WHERE id = 3" | jq '.result[0].col_mediumtext')
+  assert_eq "Row3 MEDIUMTEXT null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_longtext FROM type_coverage WHERE id = 3" | jq '.result[0].col_longtext')
+  assert_eq "Row3 LONGTEXT null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_binary_4 FROM type_coverage WHERE id = 3" | jq '.result[0].col_binary_4')
+  assert_eq "Row3 BINARY(4) null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_time FROM type_coverage WHERE id = 3" | jq '.result[0].col_time')
+  assert_eq "Row3 TIME null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_timestamp FROM type_coverage WHERE id = 3" | jq '.result[0].col_timestamp')
+  assert_eq "Row3 TIMESTAMP null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_year FROM type_coverage WHERE id = 3" | jq '.result[0].col_year')
+  assert_eq "Row3 YEAR null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_set FROM type_coverage WHERE id = 3" | jq '.result[0].col_set')
+  assert_eq "Row3 SET null" "null" "$null_val"
+
+  null_val=$(duckdb_query "SELECT col_bit_1 FROM type_coverage WHERE id = 3" | jq '.result[0].col_bit_1')
+  assert_eq "Row3 BIT(1) null" "null" "$null_val"
+
+  # --- Validation endpoint ---
+  log "Checking type_coverage validation..."
+  local val_tc
+  val_tc=$(get_validation "type_coverage")
+
+  local duck_max_id mysql_max_id
+  duck_max_id=$(echo "$val_tc" | jq -r '.duckdb.maxId')
+  mysql_max_id=$(echo "$val_tc" | jq -r '.mysql.maxId')
+  assert_eq "type_coverage max ID match" "$mysql_max_id" "$duck_max_id"
+
+  local duck_cksum mysql_cksum
+  duck_cksum=$(echo "$val_tc" | jq -r '.duckdb.checksum')
+  mysql_cksum=$(echo "$val_tc" | jq -r '.mysql.checksum')
+  assert_eq "type_coverage checksum match" "$mysql_cksum" "$duck_cksum"
 
   echo ""
 }

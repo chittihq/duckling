@@ -173,6 +173,10 @@ See [API.md](./API.md) for complete API documentation including:
 
 See [CLI.md](CLI.md) for the full list of available commands.
 
+## Type Support
+
+Duckling supports all MySQL 8 data types with comprehensive integration testing. See [TYPES.md](TYPES.md) for the full type mapping reference, known limitations, and test coverage details.
+
 ## How It Works
 
 Duckling offers three complementary sync mechanisms:
