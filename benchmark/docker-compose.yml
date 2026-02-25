@@ -1,0 +1,71 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: benchmark-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: benchmark_db
+      MYSQL_USER: benchmark
+      MYSQL_PASSWORD: benchmarkpass
+    command:
+      - --max-allowed-packet=256M
+      - --innodb-buffer-pool-size=512M
+      - --innodb-log-file-size=256M
+      - --innodb-flush-log-at-trx-commit=2
+      - --innodb-flush-method=O_DIRECT
+      - --max-connections=100
+      - --default-authentication-plugin=mysql_native_password
+    volumes:
+      - ./mysql-init:/docker-entrypoint-initdb.d
+      - mysql-data:/var/lib/mysql
+    ports:
+      - "3307:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpass"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - benchmark-net
+
+  duckling:
+    container_name: benchmark-duckling
+    build:
+      context: ..
+      dockerfile: docker/server.Dockerfile
+    ports:
+      - "3001:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DUCKDB_PATH=data/benchmark.db
+      - MYSQL_CONNECTION_STRING=mysql://benchmark:benchmarkpass@mysql:3306/benchmark_db
+      - DUCKLING_API_KEY=benchmark-api-key
+      - ADMIN_USERNAME=admin
+      - ADMIN_PASSWORD=benchmarkadmin
+      - SESSION_SECRET=benchmark-session-secret
+      - LOG_LEVEL=info
+      - SYNC_INTERVAL_MINUTES=0
+      - AUTO_START_SYNC=false
+      - BATCH_SIZE=10000
+      - INSERT_BATCH_SIZE=5000
+      - ENABLE_INCREMENTAL_SYNC=false
+      - ENABLE_HEALTH_CHECKS=false
+      - AUTO_CLEANUP=false
+      - AUTO_BACKUP=false
+      - AUTO_RESTART=false
+      - ENABLE_CORS=true
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - benchmark-net
+
+networks:
+  benchmark-net:
+    driver: bridge
+
+volumes:
+  mysql-data:
