@@ -314,7 +314,7 @@ EOSQL
 
   # ------- Step 3: Start Duckling -------
   log "[3/4] Starting Duckling server..."
-  docker compose up -d duckling
+  docker compose up -d --build duckling
   echo -n "  Waiting for Duckling health check"
   local duckling_wait=0
   until curl -sf "${API_URL}/health?db=${DB_ID}" -H "Authorization: ${API_KEY}" > /dev/null 2>&1; do
@@ -780,7 +780,7 @@ run_suite_6_cdc_realtime() {
   while [ "$cdc_wait" -lt 15 ]; do
     local status_resp
     status_resp=$(cdc_status 2>/dev/null || echo '{}')
-    cdc_running=$(echo "$status_resp" | jq -r '.status.isRunning // false')
+    cdc_running=$(echo "$status_resp" | jq '.status.isRunning')
     if [ "$cdc_running" = "true" ]; then
       break
     fi
@@ -943,7 +943,7 @@ EOSQL
   local cdc_stopped
   local stop_resp
   stop_resp=$(cdc_status 2>/dev/null || echo '{}')
-  cdc_stopped=$(echo "$stop_resp" | jq -r '.status.isRunning // true')
+  cdc_stopped=$(echo "$stop_resp" | jq '.status.isRunning')
   assert_eq "CDC is stopped" "false" "$cdc_stopped"
 
   # --- Step 9: No replication after stop ---

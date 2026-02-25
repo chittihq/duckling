@@ -367,27 +367,18 @@ export class CDCService {
     }
 
     try {
-      // Use transaction for atomicity
-      await this.duckdb.run('BEGIN TRANSACTION');
+      for (const row of rows) {
+        const columns = Object.keys(row);
+        const quotedColumns = columns.map(col => this.quoteIdentifier(col)).join(', ');
+        const values = columns.map(col => this.sanitizeValue(row[col]));
+        const placeholders = columns.map(() => '?').join(', ');
 
-      try {
-        for (const row of rows) {
-          const columns = Object.keys(row);
-          const quotedColumns = columns.map(col => this.quoteIdentifier(col)).join(', ');
-          const values = columns.map(col => this.sanitizeValue(row[col]));
-          const placeholders = columns.map(() => '?').join(', ');
-
-          const query = `INSERT INTO ${this.quoteIdentifier(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
-          await this.duckdb.run(query, values);
-        }
-
-        await this.duckdb.run('COMMIT');
-        this.stats.insertsProcessed += rows.length;
-        logger.debug(`CDC INSERT: ${tableName} - ${rows.length} rows`);
-      } catch (error) {
-        await this.duckdb.run('ROLLBACK');
-        throw error;
+        const query = `INSERT INTO ${this.quoteIdentifier(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
+        await this.duckdb.run(query, values);
       }
+
+      this.stats.insertsProcessed += rows.length;
+      logger.debug(`CDC INSERT: ${tableName} - ${rows.length} rows`);
     } catch (error) {
       this.stats.errors++;
       logger.error(`CDC INSERT failed for ${tableName}:`, error);
@@ -409,30 +400,21 @@ export class CDCService {
     }
 
     try {
-      // Use transaction for atomicity
-      await this.duckdb.run('BEGIN TRANSACTION');
+      for (const row of rows) {
+        // row.after contains the new values
+        const afterRow = row.after || row;
+        const columns = Object.keys(afterRow);
+        const quotedColumns = columns.map(col => this.quoteIdentifier(col)).join(', ');
+        const values = columns.map(col => this.sanitizeValue(afterRow[col]));
+        const placeholders = columns.map(() => '?').join(', ');
 
-      try {
-        for (const row of rows) {
-          // row.after contains the new values
-          const afterRow = row.after || row;
-          const columns = Object.keys(afterRow);
-          const quotedColumns = columns.map(col => this.quoteIdentifier(col)).join(', ');
-          const values = columns.map(col => this.sanitizeValue(afterRow[col]));
-          const placeholders = columns.map(() => '?').join(', ');
-
-          // Use INSERT OR REPLACE for upsert behavior
-          const query = `INSERT OR REPLACE INTO ${this.quoteIdentifier(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
-          await this.duckdb.run(query, values);
-        }
-
-        await this.duckdb.run('COMMIT');
-        this.stats.updatesProcessed += rows.length;
-        logger.debug(`CDC UPDATE: ${tableName} - ${rows.length} rows`);
-      } catch (error) {
-        await this.duckdb.run('ROLLBACK');
-        throw error;
+        // Use INSERT OR REPLACE for upsert behavior
+        const query = `INSERT OR REPLACE INTO ${this.quoteIdentifier(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
+        await this.duckdb.run(query, values);
       }
+
+      this.stats.updatesProcessed += rows.length;
+      logger.debug(`CDC UPDATE: ${tableName} - ${rows.length} rows`);
     } catch (error) {
       this.stats.errors++;
       logger.error(`CDC UPDATE failed for ${tableName}:`, error);
@@ -448,35 +430,26 @@ export class CDCService {
     await this.cacheTableSchema(tableName);
 
     try {
-      // Use transaction for atomicity
-      await this.duckdb.run('BEGIN TRANSACTION');
+      for (const row of rows) {
+        // Try to find primary key column
+        const pkColumn = this.findPrimaryKeyColumn(tableName, row);
 
-      try {
-        for (const row of rows) {
-          // Try to find primary key column
-          const pkColumn = this.findPrimaryKeyColumn(tableName, row);
+        if (pkColumn && row[pkColumn] !== undefined) {
+          const query = `DELETE FROM ${this.quoteIdentifier(tableName)} WHERE ${this.quoteIdentifier(pkColumn)} = ?`;
+          await this.duckdb.run(query, [row[pkColumn]]);
+        } else {
+          // Fallback: delete by all columns (exact match)
+          const columns = Object.keys(row);
+          const conditions = columns.map(col => `${this.quoteIdentifier(col)} = ?`).join(' AND ');
+          const values = columns.map(col => this.sanitizeValue(row[col]));
 
-          if (pkColumn && row[pkColumn] !== undefined) {
-            const query = `DELETE FROM ${this.quoteIdentifier(tableName)} WHERE ${this.quoteIdentifier(pkColumn)} = ?`;
-            await this.duckdb.run(query, [row[pkColumn]]);
-          } else {
-            // Fallback: delete by all columns (exact match)
-            const columns = Object.keys(row);
-            const conditions = columns.map(col => `${this.quoteIdentifier(col)} = ?`).join(' AND ');
-            const values = columns.map(col => this.sanitizeValue(row[col]));
-
-            const query = `DELETE FROM ${this.quoteIdentifier(tableName)} WHERE ${conditions}`;
-            await this.duckdb.run(query, values);
-          }
+          const query = `DELETE FROM ${this.quoteIdentifier(tableName)} WHERE ${conditions}`;
+          await this.duckdb.run(query, values);
         }
-
-        await this.duckdb.run('COMMIT');
-        this.stats.deletesProcessed += rows.length;
-        logger.debug(`CDC DELETE: ${tableName} - ${rows.length} rows`);
-      } catch (error) {
-        await this.duckdb.run('ROLLBACK');
-        throw error;
       }
+
+      this.stats.deletesProcessed += rows.length;
+      logger.debug(`CDC DELETE: ${tableName} - ${rows.length} rows`);
     } catch (error) {
       this.stats.errors++;
       logger.error(`CDC DELETE failed for ${tableName}:`, error);
