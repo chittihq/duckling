@@ -16,7 +16,7 @@ import ZongJi from '@vlasky/zongji';
 import logger from '../logger';
 import DuckDBConnection from '../database/duckdb';
 import { DatabaseConfigManager } from '../database/databaseConfig';
-import config from '../config';
+import appConfig from '../config';
 
 interface BinlogPosition {
   filename: string;
@@ -45,6 +45,8 @@ interface CDCStats {
   deletesProcessed: number;
   errors: number;
   currentPosition: BinlogPosition | null;
+  queueSize: number;
+  queueHighWaterMark: number;
 }
 
 export class CDCService {
@@ -69,6 +71,10 @@ export class CDCService {
   private queueDrainPromise: Promise<void> | null = null;
   private queueDrainResolve: (() => void) | null = null;
 
+  // Backpressure: pause binlog stream when queue exceeds limit
+  private readonly maxQueueSize: number;
+  private isPaused: boolean = false;
+
   constructor(config: CDCConfig) {
     this.databaseId = config.databaseId;
     this.config = config;
@@ -79,6 +85,7 @@ export class CDCService {
       throw new Error(`Database config not found for: ${config.databaseId}`);
     }
     this.duckdb = DuckDBConnection.getInstance(config.databaseId, dbConfig.duckdbPath);
+    this.maxQueueSize = appConfig.cdc.maxQueueSize;
 
     this.stats = {
       isRunning: false,
@@ -89,7 +96,9 @@ export class CDCService {
       updatesProcessed: 0,
       deletesProcessed: 0,
       errors: 0,
-      currentPosition: null
+      currentPosition: null,
+      queueSize: 0,
+      queueHighWaterMark: 0
     };
   }
 
@@ -239,6 +248,28 @@ export class CDCService {
   }
 
   /**
+   * Pause the underlying binlog connection to apply backpressure
+   */
+  private pauseBinlogStream(): void {
+    try {
+      (this.zongji as any)?.connection?.pause();
+    } catch (error) {
+      logger.warn(`Failed to pause binlog stream for ${this.databaseId}:`, error);
+    }
+  }
+
+  /**
+   * Resume the underlying binlog connection after queue drains
+   */
+  private resumeBinlogStream(): void {
+    try {
+      (this.zongji as any)?.connection?.resume();
+    } catch (error) {
+      logger.warn(`Failed to resume binlog stream for ${this.databaseId}:`, error);
+    }
+  }
+
+  /**
    * Process event queue serially to ensure correct ordering
    */
   private async processEventQueue(): Promise<void> {
@@ -254,6 +285,16 @@ export class CDCService {
           this.stats.errors++;
           logger.error(`CDC event processing error:`, error);
         }
+      }
+
+      // Update queue size stat
+      this.stats.queueSize = this.eventQueue.length;
+
+      // Resume binlog stream when queue drains below half capacity
+      if (this.isPaused && this.eventQueue.length < this.maxQueueSize / 2) {
+        this.isPaused = false;
+        this.resumeBinlogStream();
+        logger.info(`CDC queue below threshold (${this.eventQueue.length}/${this.maxQueueSize}), resuming binlog stream for ${this.databaseId}`);
       }
     }
 
@@ -509,6 +550,7 @@ export class CDCService {
     }
 
     this.isStopped = false; // Reset stopped flag
+    this.isPaused = false;
     logger.info(`Starting CDC service for ${this.databaseId}...`);
 
     try {
@@ -527,7 +569,7 @@ export class CDCService {
         // SSL for DigitalOcean managed MySQL
         // rejectUnauthorized defaults to true for security, set CDC_SSL_REJECT_UNAUTHORIZED=false for self-signed certs
         ssl: {
-          rejectUnauthorized: config.cdc.sslRejectUnauthorized
+          rejectUnauthorized: appConfig.cdc.sslRejectUnauthorized
         }
       });
 
@@ -580,6 +622,18 @@ export class CDCService {
 
     // Binlog event - queue events for serial processing to ensure correct ordering
     this.zongji.on('binlog', (event: any) => {
+      // Backpressure: pause binlog stream if queue is full
+      if (!this.isPaused && this.eventQueue.length >= this.maxQueueSize) {
+        this.isPaused = true;
+        this.pauseBinlogStream();
+        logger.warn(`CDC queue full (${this.eventQueue.length}/${this.maxQueueSize}), pausing binlog stream for ${this.databaseId}`);
+      }
+
+      // Track high water mark for observability
+      if (this.eventQueue.length > this.stats.queueHighWaterMark) {
+        this.stats.queueHighWaterMark = this.eventQueue.length;
+      }
+
       // Push event processing to queue
       this.eventQueue.push(async () => {
         this.stats.eventsProcessed++;
@@ -705,6 +759,7 @@ export class CDCService {
       logger.info(`CDC queue drained for ${this.databaseId}`);
     }
 
+    this.isPaused = false;
     this.isRunning = false;
     this.stats.isRunning = false;
     logger.info(`CDC service stopped for ${this.databaseId}`);
@@ -714,7 +769,7 @@ export class CDCService {
    * Get CDC statistics
    */
   getStats(): CDCStats {
-    return { ...this.stats };
+    return { ...this.stats, queueSize: this.eventQueue.length };
   }
 
   /**
@@ -734,7 +789,8 @@ export class CDCService {
       insertsProcessed: 0,
       updatesProcessed: 0,
       deletesProcessed: 0,
-      errors: 0
+      errors: 0,
+      queueHighWaterMark: 0
     };
   }
 

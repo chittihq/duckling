@@ -742,7 +742,7 @@ class SequentialAppenderService {
 
         // Stream records from MySQL and append
         const fetchBatchSize = config.sync.batchSize; // Configurable via BATCH_SIZE env var
-        const FLUSH_INTERVAL = 20000; // Flush appender every 20K records to prevent memory exhaustion
+        const FLUSH_INTERVAL = config.sync.appenderFlushInterval; // Configurable via APPENDER_FLUSH_INTERVAL env var (default 5000)
 
         logger.info(`${tableName}: fetchBatchSize=${fetchBatchSize}, flushInterval=${FLUSH_INTERVAL}, using Appender API`);
 
@@ -935,44 +935,25 @@ class SequentialAppenderService {
       await this.ensureTableExists(tableName, schema);
 
       let recordsProcessed = 0;
-      let incrementalData: any[] = [];
+      let lastRecord: any = null;
 
-      // Get incremental data based on watermark
+      // Determine streaming parameters based on watermark type
+      let watermarkColumn: string;
+      let watermarkValue: any;
+
       if (watermark.lastProcessedTimestamp && watermark.timestampColumn) {
-        // Use timestamp-based incremental sync
-        incrementalData = await this.mysql.getIncrementalData(
-          tableName,
-          watermark.lastProcessedTimestamp,
-          50000 // Large batch for efficiency
-        );
-        logger.info(`Found ${incrementalData.length} incremental records for ${tableName} since ${watermark.lastProcessedTimestamp}`);
+        watermarkColumn = watermark.timestampColumn;
+        watermarkValue = watermark.lastProcessedTimestamp;
+        logger.info(`Streaming incremental data for ${tableName} using ${watermarkColumn} since ${watermark.lastProcessedTimestamp}`);
       } else if (watermark.lastProcessedId && watermark.primaryKeyColumn) {
-        // Use ID-based incremental sync
-        incrementalData = await this.mysql.execute(
-          `SELECT * FROM ${tableName} WHERE ${watermark.primaryKeyColumn} > ? ORDER BY ${watermark.primaryKeyColumn} ASC LIMIT 50000`,
-          [watermark.lastProcessedId]
-        );
-        logger.info(`Found ${incrementalData.length} incremental records for ${tableName} since ID ${watermark.lastProcessedId}`);
+        watermarkColumn = watermark.primaryKeyColumn;
+        watermarkValue = watermark.lastProcessedId;
+        logger.info(`Streaming incremental data for ${tableName} using ${watermarkColumn} since ID ${watermark.lastProcessedId}`);
       } else {
         // No proper watermark columns, fall back to sequential with Appender (6-10x faster)
         logger.warn(`Invalid watermark for ${tableName}, falling back to sequential sync with Appender`);
         return await this.syncTableSequentialWithAppender(tableName);
       }
-
-      if (incrementalData.length === 0) {
-        const duration = Date.now() - startTime;
-        logger.info(`No incremental data found for ${tableName}`);
-
-        return {
-          table: tableName,
-          recordsProcessed: 0,
-          duration,
-          status: 'success',
-          syncType: 'watermark'
-        };
-      }
-
-      // Start transaction for atomic operation
 
       try {
         // Get column names for INSERT OR REPLACE statement (upsert)
@@ -986,36 +967,53 @@ class SequentialAppenderService {
         const columnCount = schema.length;
         const maxSafeBatchSize = Math.floor(65000 / columnCount); // Safety margin for parameter binding
         const insertBatchSize = Math.min(config.sync.insertBatchSize, maxSafeBatchSize);
+        const fetchBatchSize = config.sync.batchSize;
 
-        logger.info(`${tableName}: watermark sync - columns=${columnCount}, insertBatchSize=${insertBatchSize} (max safe: ${maxSafeBatchSize})`);
+        logger.info(`${tableName}: watermark sync - columns=${columnCount}, insertBatchSize=${insertBatchSize}, fetchBatchSize=${fetchBatchSize}`);
 
-        // Process incremental data in batches to avoid stack overflow
-        for (let i = 0; i < incrementalData.length; i += insertBatchSize) {
-          const batch = incrementalData.slice(i, i + insertBatchSize);
+        // Stream incremental data batch-by-batch (no full dataset in memory)
+        for await (const streamBatch of this.mysql.streamIncrementalData(tableName, watermarkColumn, watermarkValue, fetchBatchSize)) {
+          // Sub-batch for INSERT OR REPLACE parameter limits
+          for (let i = 0; i < streamBatch.length; i += insertBatchSize) {
+            const batch = streamBatch.slice(i, i + insertBatchSize);
 
-          // Build bulk INSERT OR REPLACE query for incremental records
-          const rowPlaceholders = `(${columns.map(() => '?').join(', ')})`;
-          const allPlaceholders = batch.map(() => rowPlaceholders).join(', ');
-          const bulkInsertQuery = `INSERT OR REPLACE INTO ${tableName} (${columns.join(', ')}) VALUES ${allPlaceholders}`;
+            // Build bulk INSERT OR REPLACE query for incremental records
+            const rowPlaceholders = `(${columns.map(() => '?').join(', ')})`;
+            const allPlaceholders = batch.map(() => rowPlaceholders).join(', ');
+            const bulkInsertQuery = `INSERT OR REPLACE INTO ${tableName} (${columns.join(', ')}) VALUES ${allPlaceholders}`;
 
-          // Flatten all values into single array for bulk insert
-          const allValues: any[] = [];
-          for (const record of batch) {
-            for (const col of columns) {
-              allValues.push(this.sanitizeValue(record[col], columnTypes.get(col) || ''));
+            // Flatten all values into single array for bulk insert
+            const allValues: any[] = [];
+            for (const record of batch) {
+              for (const col of columns) {
+                allValues.push(this.sanitizeValue(record[col], columnTypes.get(col) || ''));
+              }
             }
+
+            // Execute bulk upsert (much faster than individual inserts)
+            await this.duckdb.run(bulkInsertQuery, allValues);
+
+            recordsProcessed += batch.length;
           }
 
-          // Execute bulk upsert (much faster than individual inserts)
-          await this.duckdb.run(bulkInsertQuery, allValues);
-
-          recordsProcessed += batch.length;
+          lastRecord = streamBatch[streamBatch.length - 1];
+          logger.debug(`${tableName}: streamed ${recordsProcessed} incremental records so far`);
         }
 
-        // Commit transaction
+        if (recordsProcessed === 0) {
+          const duration = Date.now() - startTime;
+          logger.info(`No incremental data found for ${tableName}`);
 
-        // Update watermark
-        const lastRecord = incrementalData[incrementalData.length - 1];
+          return {
+            table: tableName,
+            recordsProcessed: 0,
+            duration,
+            status: 'success',
+            syncType: 'watermark'
+          };
+        }
+
+        // Update watermark from last record seen in stream
         const newWatermark: Partial<TableWatermark> = {
           lastProcessedTimestamp: new Date(),
           primaryKeyColumn: watermark.primaryKeyColumn,
