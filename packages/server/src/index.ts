@@ -1,3 +1,5 @@
+import './instrument';
+import * as Sentry from '@sentry/node';
 import DuckDBServer from './server';
 import logger from './logger';
 import config from './config';
@@ -36,12 +38,14 @@ setInterval(logMemoryUsage, 5 * 60 * 1000);
 
 process.on('uncaughtException', (error) => {
   logger.error('Uncaught Exception:', error);
-  process.exit(1);
+  Sentry.captureException(error);
+  Sentry.close(2000).finally(() => process.exit(1));
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  process.exit(1);
+  Sentry.captureException(reason);
+  Sentry.close(2000).finally(() => process.exit(1));
 });
 
 // Track if shutdown is in progress to prevent duplicate handling
@@ -70,10 +74,14 @@ async function gracefulShutdown(signal: string, server: DuckDBServer): Promise<v
     await server.stop();
     console.log('HTTP server closed');
 
+    console.log('Flushing Sentry events...');
+    await Sentry.close(2000);
+
     console.log('Graceful shutdown complete');
     process.exit(0);
   } catch (error) {
     console.error('Error during graceful shutdown:', error);
+    await Sentry.close(2000);
     process.exit(1);
   }
 }
