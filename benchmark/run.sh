@@ -41,12 +41,18 @@ log()  { echo -e "${BLUE}[$(date +%H:%M:%S)]${NC} $*"; }
 ok()   { echo -e "${GREEN}✓${NC} $*"; }
 fail() { echo -e "${RED}✗${NC} $*"; }
 hr()   { echo -e "${DIM}$(printf '─%.0s' $(seq 1 60))${NC}"; }
+fmt_num() { echo "$1" | sed ':a;s/\B[0-9]\{3\}\>/,&/;ta'; }
 
 cleanup() {
   echo ""
   log "Cleaning up..."
   docker compose down -v 2>/dev/null || true
-  rm -rf data/
+  # Docker containers may create files as root; try sudo if available
+  if command -v sudo &>/dev/null; then
+    sudo rm -rf data/ 2>/dev/null || rm -rf data/ 2>/dev/null || true
+  else
+    rm -rf data/ 2>/dev/null || true
+  fi
   log "Done."
 }
 trap cleanup EXIT
@@ -116,8 +122,8 @@ run_query() {
     speedup=$(echo "scale=1; $mysql_ms / $duck_ms" | bc 2>/dev/null || echo "N/A")
   fi
 
-  printf "  ${RED}MySQL:  %'6d ms${NC}\n" "$mysql_ms"
-  printf "  ${GREEN}DuckDB: %'6d ms${NC}\n" "$duck_ms"
+  printf "  ${RED}MySQL:  %6d ms${NC}\n" "$mysql_ms"
+  printf "  ${GREEN}DuckDB: %6d ms${NC}\n" "$duck_ms"
   echo -e "  ${BOLD}Speedup: ${speedup}x 🚀${NC}"
 
   # Track results
@@ -175,7 +181,7 @@ print_summary() {
 main() {
   echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
   echo -e "${BOLD}${CYAN}║              Duckling Benchmark Suite                        ║${NC}"
-  echo -e "${BOLD}${CYAN}║         MySQL vs DuckDB · $(printf '%\047d' "$EXPECTED_ROWS") rows                  ║${NC}"
+  echo -e "${BOLD}${CYAN}║         MySQL vs DuckDB · $(fmt_num "$EXPECTED_ROWS") rows                  ║${NC}"
   echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
   echo ""
 
@@ -204,7 +210,7 @@ EOJSON
   log "[2/6] Starting MySQL..."
   docker compose up -d mysql
   echo -n "  Waiting for MySQL health check"
-  until docker compose exec -T mysql mysqladmin ping -ubenchmark -pbenchmarkpass --silent 2>/dev/null; do
+  until docker compose exec -T mysql mysqladmin ping -h 127.0.0.1 -uroot -prootpass --silent 2>/dev/null; do
     echo -n "."
     sleep 2
   done
@@ -212,13 +218,13 @@ EOJSON
   ok "MySQL is ready"
 
   # ------- Step 3: Seed data -------
-  log "[3/6] Seeding data (${BATCHES} batches × 10,000 = $(printf '%\047d' "$EXPECTED_ROWS") order rows)..."
+  log "[3/6] Seeding data (${BATCHES} batches × 10,000 = $(fmt_num "$EXPECTED_ROWS") order rows)..."
   local seed_start seed_end seed_duration
   seed_start=$(date +%s)
 
-  # Replace batch count placeholder and pipe to MySQL
+  # Replace batch count placeholder and pipe to MySQL (use root for CREATE PROCEDURE privilege)
   sed "s/SEED_BATCH_COUNT/${BATCHES}/g" seed.sql \
-    | docker compose exec -T mysql mysql -ubenchmark -pbenchmarkpass benchmark_db
+    | docker compose exec -T mysql mysql -h 127.0.0.1 -uroot -prootpass benchmark_db
 
   seed_end=$(date +%s)
   seed_duration=$((seed_end - seed_start))
@@ -229,7 +235,7 @@ EOJSON
   docker compose up -d duckling
   echo -n "  Waiting for Duckling health check"
   local duckling_wait=0
-  until curl -sf "${API_URL}/health" -H "Authorization: ${API_KEY}" > /dev/null 2>&1; do
+  until curl -sf "${API_URL}/health?db=${DB_ID}" -H "Authorization: ${API_KEY}" > /dev/null 2>&1; do
     echo -n "."
     sleep 3
     duckling_wait=$((duckling_wait + 3))

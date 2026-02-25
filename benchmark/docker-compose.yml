@@ -14,13 +14,14 @@ services:
       - --innodb-flush-log-at-trx-commit=2
       - --innodb-flush-method=O_DIRECT
       - --max-connections=100
+      - --default-authentication-plugin=mysql_native_password
     volumes:
       - ./mysql-init:/docker-entrypoint-initdb.d
       - mysql-data:/var/lib/mysql
     ports:
       - "3307:3306"
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ubenchmark", "-pbenchmarkpass"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpass"]
       interval: 5s
       timeout: 5s
       retries: 30
