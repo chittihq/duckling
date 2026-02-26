@@ -1266,6 +1266,145 @@ EOSQL
   after_stop_row=$(duckdb_scalar "SELECT name FROM products_simple WHERE id = 8" "name")
   assert_eq "No replication after CDC stop (id=8 absent)" "null" "$after_stop_row"
 
+  # --- Step 6c: Failed apply must not advance checkpoint ---
+  # Tests the safety property: if CDC fails to apply an event (e.g., target table
+  # missing in DuckDB), the binlog checkpoint must NOT advance past the failed event.
+  # On recovery, CDC must replay from the safe checkpoint and succeed.
+  log "Testing checkpoint safety on apply failure..."
+
+  # Record the current binlog checkpoint (CDC is stopped from Step 10)
+  local pre_fail_file pre_fail_pos
+  pre_fail_file=$(duckdb_scalar_strict "SELECT filename FROM cdc_binlog_position WHERE database_id = '${DB_ID}'" "filename")
+  pre_fail_pos=$(duckdb_scalar_strict "SELECT position FROM cdc_binlog_position WHERE database_id = '${DB_ID}'" "position")
+  assert_not_eq "Pre-fail checkpoint file exists" "null" "$pre_fail_file"
+  assert_not_eq "Pre-fail checkpoint position exists" "null" "$pre_fail_pos"
+
+  # Drop the DuckDB table to cause a real apply failure (no server-side hooks needed)
+  duckdb_query "DROP TABLE IF EXISTS products_simple" > /dev/null 2>&1 || true
+
+  # Insert a row into MySQL — CDC will try (and fail) to apply this event
+  docker compose exec -T mysql mysql -h 127.0.0.1 -uintegration -pintegrationpass integration_db <<'EOSQL'
+INSERT INTO products_simple (id, name, price, quantity, updated_at)
+VALUES (10, 'Checkpoint Test', 1.00, 1, NOW());
+EOSQL
+
+  # Start CDC — resumes from checkpoint, reads the INSERT event, fails on missing table
+  cdc_start > /dev/null 2>&1 || true
+  local fail_wait=0
+  while [ "$fail_wait" -lt "$TIMEOUT_CDC_START" ]; do
+    local fst
+    fst=$(cdc_status 2>/dev/null || echo '{}')
+    local fail_running
+    fail_running=$(echo "$fst" | jq '.status.isRunning')
+    if [ "$fail_running" = "true" ]; then break; fi
+    sleep 1
+    fail_wait=$((fail_wait + 1))
+  done
+
+  # Give CDC time to read the binlog event and hit the apply failure
+  sleep 5
+
+  # CRITICAL ASSERTION: checkpoint must NOT advance past the failed event
+  local post_fail_pos
+  post_fail_pos=$(duckdb_scalar_strict "SELECT position FROM cdc_binlog_position WHERE database_id = '${DB_ID}'" "position")
+  assert_not_eq "Post-fail checkpoint readable" "null" "$post_fail_pos"
+
+  if [ "$post_fail_pos" -le "$pre_fail_pos" ] 2>/dev/null; then
+    ok "Checkpoint safe: did not advance past failed apply (pre=${pre_fail_pos}, post=${post_fail_pos})"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "Checkpoint UNSAFE: advanced past failed apply (pre=${pre_fail_pos}, post=${post_fail_pos})"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("Checkpoint advanced past failed apply (pre=${pre_fail_pos}, post=${post_fail_pos})")
+  fi
+
+  # Check CDC registered the error (check within reconnect window)
+  local fail_status fail_errors
+  fail_status=$(cdc_status 2>/dev/null || echo '{}')
+  fail_errors=$(echo "$fail_status" | jq -r '.status.errors // 0')
+  if [ "$fail_errors" -gt 0 ] 2>/dev/null; then
+    ok "CDC error count > 0 after apply failure (errors=${fail_errors})"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "CDC error count should be > 0 after apply failure (errors=${fail_errors})"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("CDC error count should be > 0 after apply failure (errors=${fail_errors})")
+  fi
+
+  # --- Recovery: restore table, restart CDC, verify replay from safe checkpoint ---
+  log "Recovering: restoring table and restarting CDC..."
+  cdc_stop > /dev/null 2>&1 || true
+  sleep 1
+
+  # Single-table sync recreates the DuckDB table from MySQL (includes id=10)
+  trigger_table_sync "products_simple" > /dev/null 2>&1 || true
+
+  # Verify table is restored with data
+  local restored_count
+  restored_count=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
+  assert_not_eq "products_simple restored after failure" "null" "$restored_count"
+  assert_not_eq "products_simple has data after restore" "0" "$restored_count"
+
+  # Restart CDC — should replay from the safe (un-advanced) checkpoint
+  cdc_start > /dev/null 2>&1 || true
+  local rec_wait=0
+  local rec_running="false"
+  while [ "$rec_wait" -lt "$TIMEOUT_CDC_START" ]; do
+    local rst
+    rst=$(cdc_status 2>/dev/null || echo '{}')
+    rec_running=$(echo "$rst" | jq '.status.isRunning')
+    if [ "$rec_running" = "true" ]; then break; fi
+    sleep 1
+    rec_wait=$((rec_wait + 1))
+  done
+  assert_eq "CDC running after recovery" "true" "$rec_running"
+
+  # Verify the checkpoint-test row is present (via sync or CDC replay — both valid)
+  if wait_for_cdc "SELECT name FROM products_simple WHERE id = 10" "name" "Checkpoint Test" "$TIMEOUT_CDC"; then
+    ok "Checkpoint-test row present after recovery"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    local ct_name
+    ct_name=$(duckdb_scalar_strict "SELECT name FROM products_simple WHERE id = 10" "name")
+    if [ "$ct_name" = "Checkpoint Test" ]; then
+      ok "Checkpoint-test row present after recovery (via sync)"
+      PASS_COUNT=$((PASS_COUNT + 1))
+    else
+      fail "Checkpoint-test row missing after recovery"
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+      FAIL_MESSAGES+=("Checkpoint-test row missing after recovery")
+    fi
+  fi
+
+  # Verify checkpoint has now advanced past the pre-fail position (successful replay)
+  # This proves monotonic safety: held on failure, advanced on success
+  local recovered_pos
+  recovered_pos=$(duckdb_scalar_strict "SELECT position FROM cdc_binlog_position WHERE database_id = '${DB_ID}'" "position")
+  if [ "$recovered_pos" -gt "$post_fail_pos" ] 2>/dev/null; then
+    ok "Checkpoint advanced after successful recovery (failed=${post_fail_pos}, recovered=${recovered_pos})"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "Checkpoint did not advance after recovery (failed=${post_fail_pos}, recovered=${recovered_pos})"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("Checkpoint did not advance after recovery (failed=${post_fail_pos}, recovered=${recovered_pos})")
+  fi
+
+  # Monotonic checkpoint summary: post_fail_pos <= pre_fail_pos < recovered_pos
+  if [ "$post_fail_pos" -le "$pre_fail_pos" ] && [ "$recovered_pos" -gt "$pre_fail_pos" ] 2>/dev/null; then
+    ok "Checkpoint monotonicity: held on failure, advanced on success (${post_fail_pos} <= ${pre_fail_pos} < ${recovered_pos})"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "Checkpoint monotonicity violated (post_fail=${post_fail_pos}, pre_fail=${pre_fail_pos}, recovered=${recovered_pos})"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("Checkpoint monotonicity violated (post_fail=${post_fail_pos}, pre_fail=${pre_fail_pos}, recovered=${recovered_pos})")
+  fi
+
+  # Clean up
+  docker compose exec -T mysql mysql -h 127.0.0.1 -uintegration -pintegrationpass integration_db <<'EOSQL'
+DELETE FROM products_simple WHERE id = 10;
+EOSQL
+  cdc_stop > /dev/null 2>&1 || true
+
   echo ""
 }
 
