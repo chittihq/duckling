@@ -20,6 +20,11 @@ API_KEY="integration-test-key"
 API_URL="http://localhost:3002"
 DB_ID="integration"
 
+# Tunable timeouts (override via environment for slow CI)
+TIMEOUT_STARTUP="${DUCKLING_TEST_TIMEOUT_STARTUP:-180}"
+TIMEOUT_CDC="${DUCKLING_TEST_TIMEOUT_CDC:-30}"
+TIMEOUT_CDC_START="${DUCKLING_TEST_TIMEOUT_CDC_START:-15}"
+
 # --------------- Colors ---------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -215,6 +220,57 @@ duckdb_scalar() {
   fi
 }
 
+# Like duckdb_scalar but fails the test if the API call itself fails.
+# Use this for assertions where null is NOT a valid result.
+# Keep duckdb_scalar for cases where null is expected (deleted rows, stopped CDC).
+duckdb_scalar_strict() {
+  local sql="$1"
+  local field="$2"
+  local raw
+  raw=$(duckdb_query "$sql" | jq ".result[0].${field}" 2>/dev/null) || {
+    fail "duckdb_scalar_strict: API call failed for: ${sql}"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("duckdb_scalar_strict: API call failed for: ${sql}")
+    echo "__API_ERROR__"
+    return 0
+  }
+  # If jq produced empty output (malformed response), treat as API error
+  if [ -z "$raw" ]; then
+    fail "duckdb_scalar_strict: empty response for: ${sql}"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("duckdb_scalar_strict: empty response for: ${sql}")
+    echo "__API_ERROR__"
+    return 0
+  fi
+  # Check if it's a DuckDB DECIMAL object
+  if echo "$raw" | jq -e '.value and .scale' > /dev/null 2>&1; then
+    # Parse DECIMAL: value / 10^scale
+    local int_val scale
+    int_val=$(echo "$raw" | jq -r '.value')
+    scale=$(echo "$raw" | jq -r '.scale')
+    if [ "$scale" -gt 0 ]; then
+      # Insert decimal point: value with scale digits after point
+      local len=${#int_val}
+      if [ "$len" -le "$scale" ]; then
+        # Need leading zeros: e.g., value=5, scale=2 → 0.05
+        local zeros=""
+        for ((i=len; i<scale; i++)); do zeros="0${zeros}"; done
+        echo "0.${zeros}${int_val}"
+      else
+        local int_part="${int_val:0:$((len - scale))}"
+        local dec_part="${int_val:$((len - scale))}"
+        echo "${int_part}.${dec_part}"
+      fi
+    else
+      echo "$int_val"
+    fi
+  elif [ "$raw" = "null" ]; then
+    echo "null"
+  else
+    echo "$raw" | jq -r '. // empty'
+  fi
+}
+
 mysql_scalar() {
   local sql="$1"
   local field="$2"
@@ -243,7 +299,7 @@ cdc_status() {
 # Poll DuckDB until a condition is met or timeout
 # Usage: wait_for_cdc "SQL" "field" "expected_value" timeout_seconds
 wait_for_cdc() {
-  local sql="$1" field="$2" expected="$3" timeout="${4:-30}"
+  local sql="$1" field="$2" expected="$3" timeout="${4:-$TIMEOUT_CDC}"
   local elapsed=0
   while [ "$elapsed" -lt "$timeout" ]; do
     local actual
@@ -412,8 +468,8 @@ EOSQL
     echo -n "."
     sleep 3
     duckling_wait=$((duckling_wait + 3))
-    if [ "$duckling_wait" -ge 180 ]; then
-      fail "Duckling failed to start within 180s"
+    if [ "$duckling_wait" -ge "$TIMEOUT_STARTUP" ]; then
+      fail "Duckling failed to start within ${TIMEOUT_STARTUP}s"
       docker compose logs duckling | tail -50
       exit 1
     fi
@@ -475,9 +531,9 @@ run_suite_1_full_sync() {
 
   # --- Record counts ---
   local duck_users duck_events duck_products
-  duck_users=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM users_with_timestamps" "cnt")
-  duck_events=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
-  duck_products=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
+  duck_users=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM users_with_timestamps" "cnt")
+  duck_events=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
+  duck_products=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
 
   assert_eq "users_with_timestamps count" "5" "$duck_users"
   assert_eq "events_append_only count" "3" "$duck_events"
@@ -486,34 +542,34 @@ run_suite_1_full_sync() {
   # --- Specific value checks ---
   # Name survived
   local alice_name
-  alice_name=$(duckdb_scalar "SELECT name FROM users_with_timestamps WHERE id = 1" "name")
+  alice_name=$(duckdb_scalar_strict "SELECT name FROM users_with_timestamps WHERE id = 1" "name")
   assert_eq "Alice name in DuckDB" "Alice" "$alice_name"
 
   # Age (TINYINT)
   local alice_age
-  alice_age=$(duckdb_scalar "SELECT age FROM users_with_timestamps WHERE id = 1" "age")
+  alice_age=$(duckdb_scalar_strict "SELECT age FROM users_with_timestamps WHERE id = 1" "age")
   assert_eq "Alice age (TINYINT)" "30" "$alice_age"
 
   # DECIMAL precision
   local alice_balance
-  alice_balance=$(duckdb_scalar "SELECT balance FROM users_with_timestamps WHERE id = 1" "balance")
+  alice_balance=$(duckdb_scalar_strict "SELECT balance FROM users_with_timestamps WHERE id = 1" "balance")
   alice_balance=$(normalize_decimal "$alice_balance")
   assert_eq "Alice balance (DECIMAL)" "1500.5" "$alice_balance"
 
   # Also verify DECIMAL via CAST to double (cross-check)
   local alice_balance_cast
-  alice_balance_cast=$(duckdb_scalar "SELECT CAST(balance AS DOUBLE) AS bal FROM users_with_timestamps WHERE id = 1" "bal")
+  alice_balance_cast=$(duckdb_scalar_strict "SELECT CAST(balance AS DOUBLE) AS bal FROM users_with_timestamps WHERE id = 1" "bal")
   alice_balance_cast=$(normalize_decimal "$alice_balance_cast")
   assert_eq "Alice balance via CAST" "1500.5" "$alice_balance_cast"
 
   # ENUM
   local alice_role
-  alice_role=$(duckdb_scalar "SELECT role FROM users_with_timestamps WHERE id = 1" "role")
+  alice_role=$(duckdb_scalar_strict "SELECT role FROM users_with_timestamps WHERE id = 1" "role")
   assert_eq "Alice role (ENUM)" "admin" "$alice_role"
 
   # BOOLEAN
   local alice_active
-  alice_active=$(duckdb_scalar "SELECT is_active FROM users_with_timestamps WHERE id = 1" "is_active")
+  alice_active=$(duckdb_scalar_strict "SELECT is_active FROM users_with_timestamps WHERE id = 1" "is_active")
   # DuckDB may return true/false or 1/0
   if [ "$alice_active" = "true" ] || [ "$alice_active" = "1" ]; then
     alice_active="true"
@@ -522,7 +578,7 @@ run_suite_1_full_sync() {
 
   # JSON round-trip
   local alice_json
-  alice_json=$(duckdb_scalar "SELECT metadata FROM users_with_timestamps WHERE id = 1" "metadata")
+  alice_json=$(duckdb_scalar_strict "SELECT metadata FROM users_with_timestamps WHERE id = 1" "metadata")
   # Parse and re-serialize to normalize key order
   local alice_json_level
   alice_json_level=$(echo "$alice_json" | jq -r '.level // empty' 2>/dev/null || echo "")
@@ -535,13 +591,13 @@ run_suite_1_full_sync() {
 
   # FLOAT
   local alice_score
-  alice_score=$(duckdb_scalar "SELECT score FROM users_with_timestamps WHERE id = 1" "score")
+  alice_score=$(duckdb_scalar_strict "SELECT score FROM users_with_timestamps WHERE id = 1" "score")
   alice_score=$(normalize_decimal "$alice_score")
   assert_eq "Alice score (FLOAT)" "92.5" "$alice_score"
 
   # DATE
   local alice_birth
-  alice_birth=$(duckdb_scalar "SELECT CAST(birth_date AS VARCHAR) FROM users_with_timestamps WHERE id = 1" "\"CAST(birth_date AS VARCHAR)\"")
+  alice_birth=$(duckdb_scalar_strict "SELECT CAST(birth_date AS VARCHAR) FROM users_with_timestamps WHERE id = 1" "\"CAST(birth_date AS VARCHAR)\"")
   # Handle different column name formats
   if [ -z "$alice_birth" ] || [ "$alice_birth" = "null" ]; then
     alice_birth=$(duckdb_query "SELECT CAST(birth_date AS VARCHAR) AS bd FROM users_with_timestamps WHERE id = 1" | jq -r '.result[0].bd // empty')
@@ -550,18 +606,18 @@ run_suite_1_full_sync() {
 
   # BIGINT precision (events table)
   local event_id
-  event_id=$(duckdb_scalar "SELECT id FROM events_append_only WHERE event_type = 'purchase'" "id")
+  event_id=$(duckdb_scalar_strict "SELECT id FROM events_append_only WHERE event_type = 'purchase'" "id")
   assert_eq "Event BIGINT id" "2" "$event_id"
 
   # DECIMAL(10,4) precision
   local event_amount
-  event_amount=$(duckdb_scalar "SELECT amount FROM events_append_only WHERE id = 2" "amount")
+  event_amount=$(duckdb_scalar_strict "SELECT amount FROM events_append_only WHERE id = 2" "amount")
   event_amount=$(normalize_decimal "$event_amount")
   assert_eq "Event amount DECIMAL(10,4)" "149.99" "$event_amount"
 
   # Cross-check via CAST
   local event_amount_cast
-  event_amount_cast=$(duckdb_scalar "SELECT CAST(amount AS DOUBLE) AS amt FROM events_append_only WHERE id = 2" "amt")
+  event_amount_cast=$(duckdb_scalar_strict "SELECT CAST(amount AS DOUBLE) AS amt FROM events_append_only WHERE id = 2" "amt")
   event_amount_cast=$(normalize_decimal "$event_amount_cast")
   assert_eq "Event amount via CAST" "149.99" "$event_amount_cast"
 
@@ -640,9 +696,9 @@ EOSQL
 
   # Verify counts increased by 1
   local duck_users duck_events duck_products
-  duck_users=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM users_with_timestamps" "cnt")
-  duck_events=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
-  duck_products=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
+  duck_users=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM users_with_timestamps" "cnt")
+  duck_events=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
+  duck_products=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
 
   assert_eq "users count after insert" "6" "$duck_users"
   assert_eq "events count after insert" "4" "$duck_events"
@@ -650,15 +706,15 @@ EOSQL
 
   # Verify new rows are queryable
   local frank_name
-  frank_name=$(duckdb_scalar "SELECT name FROM users_with_timestamps WHERE id = 6" "name")
+  frank_name=$(duckdb_scalar_strict "SELECT name FROM users_with_timestamps WHERE id = 6" "name")
   assert_eq "Frank exists in DuckDB" "Frank" "$frank_name"
 
   local logout_type
-  logout_type=$(duckdb_scalar "SELECT event_type FROM events_append_only WHERE id = 4" "event_type")
+  logout_type=$(duckdb_scalar_strict "SELECT event_type FROM events_append_only WHERE id = 4" "event_type")
   assert_eq "Logout event exists in DuckDB" "logout" "$logout_type"
 
   local widget_e
-  widget_e=$(duckdb_scalar "SELECT name FROM products_simple WHERE id = 5" "name")
+  widget_e=$(duckdb_scalar_strict "SELECT name FROM products_simple WHERE id = 5" "name")
   assert_eq "Widget E exists in DuckDB" "Widget E" "$widget_e"
 
   # Validation still passes
@@ -710,16 +766,16 @@ EOSQL
 
   # --- products_simple: verify via incremental sync ---
   local duck_products
-  duck_products=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
+  duck_products=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
   assert_eq "products count unchanged after update" "5" "$duck_products"
 
   local widget_price
-  widget_price=$(duckdb_scalar "SELECT CAST(price AS DOUBLE) AS price FROM products_simple WHERE id = 1" "price")
+  widget_price=$(duckdb_scalar_strict "SELECT CAST(price AS DOUBLE) AS price FROM products_simple WHERE id = 1" "price")
   widget_price=$(normalize_decimal "$widget_price")
   assert_eq "Widget A price updated (incremental)" "34.99" "$widget_price"
 
   local widget_qty
-  widget_qty=$(duckdb_scalar "SELECT quantity FROM products_simple WHERE id = 1" "quantity")
+  widget_qty=$(duckdb_scalar_strict "SELECT quantity FROM products_simple WHERE id = 1" "quantity")
   assert_eq "Widget A quantity updated (incremental)" "80" "$widget_qty"
 
   local val_products
@@ -734,16 +790,16 @@ EOSQL
   trigger_full_sync > /dev/null
 
   local duck_users
-  duck_users=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM users_with_timestamps" "cnt")
+  duck_users=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM users_with_timestamps" "cnt")
   assert_eq "users count unchanged after update" "6" "$duck_users"
 
   local alice_balance
-  alice_balance=$(duckdb_scalar "SELECT CAST(balance AS DOUBLE) AS balance FROM users_with_timestamps WHERE id = 1" "balance")
+  alice_balance=$(duckdb_scalar_strict "SELECT CAST(balance AS DOUBLE) AS balance FROM users_with_timestamps WHERE id = 1" "balance")
   alice_balance=$(normalize_decimal "$alice_balance")
   assert_eq "Alice balance updated (full sync)" "2000.75" "$alice_balance"
 
   local alice_role
-  alice_role=$(duckdb_scalar "SELECT role FROM users_with_timestamps WHERE id = 1" "role")
+  alice_role=$(duckdb_scalar_strict "SELECT role FROM users_with_timestamps WHERE id = 1" "role")
   assert_eq "Alice role updated (full sync)" "editor" "$alice_role"
 
   local val_users
@@ -764,8 +820,8 @@ run_suite_4_single_table_sync() {
 
   # Record current counts for users and events (should not change)
   local users_before events_before
-  users_before=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM users_with_timestamps" "cnt")
-  events_before=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
+  users_before=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM users_with_timestamps" "cnt")
+  events_before=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
 
   # Sleep to ensure MySQL NOW() timestamps are after watermarks
   # (full sync in Suite 3 reset all watermarks to server time)
@@ -784,20 +840,20 @@ EOSQL
 
   # Products count increased
   local duck_products
-  duck_products=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
+  duck_products=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
   assert_eq "products count after single-table sync" "6" "$duck_products"
 
   # Other tables unchanged
   local users_after events_after
-  users_after=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM users_with_timestamps" "cnt")
-  events_after=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
+  users_after=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM users_with_timestamps" "cnt")
+  events_after=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
 
   assert_eq "users count unchanged by single-table sync" "$users_before" "$users_after"
   assert_eq "events count unchanged by single-table sync" "$events_before" "$events_after"
 
   # New product is queryable
   local gadget_f
-  gadget_f=$(duckdb_scalar "SELECT name FROM products_simple WHERE id = 6" "name")
+  gadget_f=$(duckdb_scalar_strict "SELECT name FROM products_simple WHERE id = 6" "name")
   assert_eq "Gadget F exists after single-table sync" "Gadget F" "$gadget_f"
 
   echo ""
@@ -812,18 +868,18 @@ run_suite_5_idempotent_resync() {
 
   # Record counts before re-sync
   local users_before events_before products_before
-  users_before=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM users_with_timestamps" "cnt")
-  events_before=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
-  products_before=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
+  users_before=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM users_with_timestamps" "cnt")
+  events_before=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
+  products_before=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
 
   log "Triggering full sync on already-synced data..."
   trigger_full_sync > /dev/null
 
   # Counts must not change (no duplicates)
   local users_after events_after products_after
-  users_after=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM users_with_timestamps" "cnt")
-  events_after=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
-  products_after=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
+  users_after=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM users_with_timestamps" "cnt")
+  events_after=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
+  products_after=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
 
   assert_eq "users no duplicates after re-sync" "$users_before" "$users_after"
   assert_eq "events no duplicates after re-sync" "$events_before" "$events_after"
@@ -869,7 +925,7 @@ run_suite_6_cdc_realtime() {
   # Poll until CDC reports running (timeout 15s)
   local cdc_running="false"
   local cdc_wait=0
-  while [ "$cdc_wait" -lt 15 ]; do
+  while [ "$cdc_wait" -lt "$TIMEOUT_CDC_START" ]; do
     local status_resp
     status_resp=$(cdc_status 2>/dev/null || echo '{}')
     cdc_running=$(echo "$status_resp" | jq '.status.isRunning')
@@ -883,8 +939,8 @@ run_suite_6_cdc_realtime() {
 
   # --- Step 2: Record baseline counts ---
   local products_baseline events_baseline
-  products_baseline=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
-  events_baseline=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
+  products_baseline=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
+  events_baseline=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt")
   log "Baseline: products=${products_baseline}, events=${events_baseline}"
 
   local products_expected_after_insert=$((products_baseline + 1))
@@ -897,21 +953,21 @@ INSERT INTO products_simple (id, name, price, quantity, updated_at)
 VALUES (7, 'CDC Widget', 19.99, 50, NOW());
 EOSQL
 
-  if wait_for_cdc "SELECT COUNT(*) AS cnt FROM products_simple" "cnt" "$products_expected_after_insert" 30; then
+  if wait_for_cdc "SELECT COUNT(*) AS cnt FROM products_simple" "cnt" "$products_expected_after_insert" "$TIMEOUT_CDC"; then
     ok "CDC INSERT detected for products_simple"
     PASS_COUNT=$((PASS_COUNT + 1))
   else
-    fail "CDC INSERT not detected for products_simple within 30s"
+    fail "CDC INSERT not detected for products_simple within ${TIMEOUT_CDC}s"
     FAIL_COUNT=$((FAIL_COUNT + 1))
-    FAIL_MESSAGES+=("CDC INSERT not detected for products_simple within 30s")
+    FAIL_MESSAGES+=("CDC INSERT not detected for products_simple within ${TIMEOUT_CDC}s")
   fi
 
   local cdc_product_name
-  cdc_product_name=$(duckdb_scalar "SELECT name FROM products_simple WHERE id = 7" "name")
+  cdc_product_name=$(duckdb_scalar_strict "SELECT name FROM products_simple WHERE id = 7" "name")
   assert_eq "CDC Widget name in DuckDB" "CDC Widget" "$cdc_product_name"
 
   local cdc_product_price
-  cdc_product_price=$(duckdb_scalar "SELECT CAST(price AS DOUBLE) AS p FROM products_simple WHERE id = 7" "p")
+  cdc_product_price=$(duckdb_scalar_strict "SELECT CAST(price AS DOUBLE) AS p FROM products_simple WHERE id = 7" "p")
   cdc_product_price=$(normalize_decimal "$cdc_product_price")
   assert_eq "CDC Widget price" "19.99" "$cdc_product_price"
 
@@ -922,17 +978,17 @@ INSERT INTO events_append_only (id, event_type, payload, amount, created_at)
 VALUES (5, 'cdc_test', '{"source":"cdc"}', 42.5000, NOW());
 EOSQL
 
-  if wait_for_cdc "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt" "$events_expected_after_insert" 30; then
+  if wait_for_cdc "SELECT COUNT(*) AS cnt FROM events_append_only" "cnt" "$events_expected_after_insert" "$TIMEOUT_CDC"; then
     ok "CDC INSERT detected for events_append_only"
     PASS_COUNT=$((PASS_COUNT + 1))
   else
-    fail "CDC INSERT not detected for events_append_only within 30s"
+    fail "CDC INSERT not detected for events_append_only within ${TIMEOUT_CDC}s"
     FAIL_COUNT=$((FAIL_COUNT + 1))
-    FAIL_MESSAGES+=("CDC INSERT not detected for events_append_only within 30s")
+    FAIL_MESSAGES+=("CDC INSERT not detected for events_append_only within ${TIMEOUT_CDC}s")
   fi
 
   local cdc_event_type
-  cdc_event_type=$(duckdb_scalar "SELECT event_type FROM events_append_only WHERE id = 5" "event_type")
+  cdc_event_type=$(duckdb_scalar_strict "SELECT event_type FROM events_append_only WHERE id = 5" "event_type")
   assert_eq "CDC event_type in DuckDB" "cdc_test" "$cdc_event_type"
 
   # --- Step 5: CDC UPDATE test ---
@@ -941,22 +997,22 @@ EOSQL
 UPDATE products_simple SET price = 24.99, quantity = 40 WHERE id = 7;
 EOSQL
 
-  if wait_for_cdc "SELECT CAST(price AS DOUBLE) AS p FROM products_simple WHERE id = 7" "p" "24.99" 30; then
+  if wait_for_cdc "SELECT CAST(price AS DOUBLE) AS p FROM products_simple WHERE id = 7" "p" "24.99" "$TIMEOUT_CDC"; then
     ok "CDC UPDATE detected for products_simple"
     PASS_COUNT=$((PASS_COUNT + 1))
   else
-    fail "CDC UPDATE not detected for products_simple within 30s"
+    fail "CDC UPDATE not detected for products_simple within ${TIMEOUT_CDC}s"
     FAIL_COUNT=$((FAIL_COUNT + 1))
-    FAIL_MESSAGES+=("CDC UPDATE not detected for products_simple within 30s")
+    FAIL_MESSAGES+=("CDC UPDATE not detected for products_simple within ${TIMEOUT_CDC}s")
   fi
 
   local cdc_updated_qty
-  cdc_updated_qty=$(duckdb_scalar "SELECT quantity FROM products_simple WHERE id = 7" "quantity")
+  cdc_updated_qty=$(duckdb_scalar_strict "SELECT quantity FROM products_simple WHERE id = 7" "quantity")
   assert_eq "CDC updated quantity" "40" "$cdc_updated_qty"
 
   # Count should not change after update
   local products_after_update
-  products_after_update=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
+  products_after_update=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
   assert_eq "products count unchanged after CDC UPDATE" "$products_expected_after_insert" "$products_after_update"
 
   # --- Step 6: CDC DELETE test ---
@@ -965,19 +1021,76 @@ EOSQL
 DELETE FROM products_simple WHERE id = 7;
 EOSQL
 
-  if wait_for_cdc "SELECT COUNT(*) AS cnt FROM products_simple" "cnt" "$products_baseline" 30; then
+  if wait_for_cdc "SELECT COUNT(*) AS cnt FROM products_simple" "cnt" "$products_baseline" "$TIMEOUT_CDC"; then
     ok "CDC DELETE detected for products_simple"
     PASS_COUNT=$((PASS_COUNT + 1))
   else
-    fail "CDC DELETE not detected for products_simple within 30s"
+    fail "CDC DELETE not detected for products_simple within ${TIMEOUT_CDC}s"
     FAIL_COUNT=$((FAIL_COUNT + 1))
-    FAIL_MESSAGES+=("CDC DELETE not detected for products_simple within 30s")
+    FAIL_MESSAGES+=("CDC DELETE not detected for products_simple within ${TIMEOUT_CDC}s")
   fi
 
   # Verify id=7 no longer exists
   local deleted_row
   deleted_row=$(duckdb_scalar "SELECT name FROM products_simple WHERE id = 7" "name")
   assert_eq "CDC deleted row not queryable" "null" "$deleted_row"
+
+  # --- Step 6b: CDC Stop/Restart durability ---
+  log "Testing CDC restart durability..."
+
+  # Record current state
+  local pre_restart_count
+  pre_restart_count=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM products_simple" "cnt")
+
+  # Verify binlog position was saved
+  local binlog_pos
+  binlog_pos=$(duckdb_scalar_strict "SELECT filename FROM cdc_binlog_position WHERE database_id = '${DB_ID}'" "filename")
+  assert_not_eq "Binlog position saved" "null" "$binlog_pos"
+
+  # Stop CDC
+  cdc_stop > /dev/null 2>&1 || true
+  sleep 1
+
+  # Insert while CDC is stopped (should NOT appear yet)
+  docker compose exec -T mysql mysql -h 127.0.0.1 -uintegration -pintegrationpass integration_db <<'EOSQL'
+INSERT INTO products_simple (id, name, price, quantity, updated_at)
+VALUES (9, 'Restart Test', 9.99, 5, NOW());
+EOSQL
+
+  # Restart CDC
+  cdc_start > /dev/null 2>&1 || true
+  local restart_running="false"
+  local restart_wait=0
+  while [ "$restart_wait" -lt "$TIMEOUT_CDC_START" ]; do
+    local rs
+    rs=$(cdc_status 2>/dev/null || echo '{}')
+    restart_running=$(echo "$rs" | jq '.status.isRunning')
+    if [ "$restart_running" = "true" ]; then break; fi
+    sleep 1
+    restart_wait=$((restart_wait + 1))
+  done
+  assert_eq "CDC restarted" "true" "$restart_running"
+
+  # The row inserted while stopped should arrive via binlog replay from checkpoint
+  local restart_expected=$((pre_restart_count + 1))
+  if wait_for_cdc "SELECT COUNT(*) AS cnt FROM products_simple" "cnt" "$restart_expected" "$TIMEOUT_CDC"; then
+    ok "CDC restart picks up row inserted while stopped"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    fail "CDC restart did not pick up row inserted while stopped within ${TIMEOUT_CDC}s"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    FAIL_MESSAGES+=("CDC restart did not pick up row inserted while stopped within ${TIMEOUT_CDC}s")
+  fi
+
+  local restart_name
+  restart_name=$(duckdb_scalar_strict "SELECT name FROM products_simple WHERE id = 9" "name")
+  assert_eq "Restart row name" "Restart Test" "$restart_name"
+
+  # Clean up for subsequent tests
+  docker compose exec -T mysql mysql -h 127.0.0.1 -uintegration -pintegrationpass integration_db <<'EOSQL'
+DELETE FROM products_simple WHERE id = 9;
+EOSQL
+  wait_for_cdc "SELECT COUNT(*) AS cnt FROM products_simple" "cnt" "$pre_restart_count" "$TIMEOUT_CDC" || true
 
   # --- Step 7: Verify CDC stats ---
   log "Checking CDC stats..."
@@ -1048,52 +1161,52 @@ INSERT INTO type_coverage_cdc (
 );
 EOSQL
 
-  if wait_for_cdc "SELECT COUNT(*) AS cnt FROM type_coverage_cdc" "cnt" "1" 30; then
+  if wait_for_cdc "SELECT COUNT(*) AS cnt FROM type_coverage_cdc" "cnt" "1" "$TIMEOUT_CDC"; then
     ok "CDC INSERT detected for type_coverage_cdc"
     PASS_COUNT=$((PASS_COUNT + 1))
   else
-    fail "CDC INSERT not detected for type_coverage_cdc within 30s"
+    fail "CDC INSERT not detected for type_coverage_cdc within ${TIMEOUT_CDC}s"
     FAIL_COUNT=$((FAIL_COUNT + 1))
-    FAIL_MESSAGES+=("CDC INSERT not detected for type_coverage_cdc within 30s")
+    FAIL_MESSAGES+=("CDC INSERT not detected for type_coverage_cdc within ${TIMEOUT_CDC}s")
   fi
 
   # Validate CDC-inserted column values
   local cdc_tv
-  cdc_tv=$(duckdb_scalar "SELECT col_tinyint_signed FROM type_coverage_cdc WHERE id = 1" "col_tinyint_signed")
+  cdc_tv=$(duckdb_scalar_strict "SELECT col_tinyint_signed FROM type_coverage_cdc WHERE id = 1" "col_tinyint_signed")
   assert_eq "CDC type TINYINT" "-42" "$cdc_tv"
 
-  cdc_tv=$(duckdb_scalar "SELECT col_smallint FROM type_coverage_cdc WHERE id = 1" "col_smallint")
+  cdc_tv=$(duckdb_scalar_strict "SELECT col_smallint FROM type_coverage_cdc WHERE id = 1" "col_smallint")
   assert_eq "CDC type SMALLINT" "1000" "$cdc_tv"
 
-  cdc_tv=$(duckdb_scalar "SELECT col_mediumint FROM type_coverage_cdc WHERE id = 1" "col_mediumint")
+  cdc_tv=$(duckdb_scalar_strict "SELECT col_mediumint FROM type_coverage_cdc WHERE id = 1" "col_mediumint")
   assert_eq "CDC type MEDIUMINT" "500000" "$cdc_tv"
 
-  cdc_tv=$(duckdb_scalar "SELECT col_int_unsigned FROM type_coverage_cdc WHERE id = 1" "col_int_unsigned")
+  cdc_tv=$(duckdb_scalar_strict "SELECT col_int_unsigned FROM type_coverage_cdc WHERE id = 1" "col_int_unsigned")
   assert_eq "CDC type INT UNSIGNED" "3000000000" "$cdc_tv"
 
-  cdc_tv=$(duckdb_scalar "SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = 1" "v")
+  cdc_tv=$(duckdb_scalar_strict "SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = 1" "v")
   assert_contains "CDC type DOUBLE" "2.71828" "$cdc_tv"
 
-  cdc_tv=$(duckdb_scalar "SELECT col_decimal_5_0 FROM type_coverage_cdc WHERE id = 1" "col_decimal_5_0")
+  cdc_tv=$(duckdb_scalar_strict "SELECT col_decimal_5_0 FROM type_coverage_cdc WHERE id = 1" "col_decimal_5_0")
   cdc_tv=$(normalize_decimal "$cdc_tv")
   assert_eq "CDC type DECIMAL(5,0)" "12345" "$cdc_tv"
 
-  cdc_tv=$(duckdb_scalar "SELECT col_char_10 FROM type_coverage_cdc WHERE id = 1" "col_char_10")
+  cdc_tv=$(duckdb_scalar_strict "SELECT col_char_10 FROM type_coverage_cdc WHERE id = 1" "col_char_10")
   assert_eq "CDC type CHAR(10)" "CDC-TEST" "$cdc_tv"
 
-  cdc_tv=$(duckdb_scalar "SELECT col_tinytext FROM type_coverage_cdc WHERE id = 1" "col_tinytext")
+  cdc_tv=$(duckdb_scalar_strict "SELECT col_tinytext FROM type_coverage_cdc WHERE id = 1" "col_tinytext")
   assert_eq "CDC type TINYTEXT" "cdc tiny" "$cdc_tv"
 
-  cdc_tv=$(duckdb_scalar "SELECT col_mediumtext FROM type_coverage_cdc WHERE id = 1" "col_mediumtext")
+  cdc_tv=$(duckdb_scalar_strict "SELECT col_mediumtext FROM type_coverage_cdc WHERE id = 1" "col_mediumtext")
   assert_eq "CDC type MEDIUMTEXT" "cdc medium text" "$cdc_tv"
 
-  cdc_tv=$(duckdb_scalar "SELECT col_longtext FROM type_coverage_cdc WHERE id = 1" "col_longtext")
+  cdc_tv=$(duckdb_scalar_strict "SELECT col_longtext FROM type_coverage_cdc WHERE id = 1" "col_longtext")
   assert_eq "CDC type LONGTEXT" "cdc long text" "$cdc_tv"
 
-  cdc_tv=$(duckdb_scalar "SELECT col_year FROM type_coverage_cdc WHERE id = 1" "col_year")
+  cdc_tv=$(duckdb_scalar_strict "SELECT col_year FROM type_coverage_cdc WHERE id = 1" "col_year")
   assert_eq "CDC type YEAR" "2024" "$cdc_tv"
 
-  cdc_tv=$(duckdb_scalar "SELECT col_set FROM type_coverage_cdc WHERE id = 1" "col_set")
+  cdc_tv=$(duckdb_scalar_strict "SELECT col_set FROM type_coverage_cdc WHERE id = 1" "col_set")
   assert_eq "CDC type SET" "b,d" "$cdc_tv"
 
   # --- Step 9: CDC Type Fidelity UPDATE (type_coverage_cdc) ---
@@ -1109,25 +1222,25 @@ UPDATE type_coverage_cdc SET
 WHERE id = 1;
 EOSQL
 
-  if wait_for_cdc "SELECT col_tinyint_signed FROM type_coverage_cdc WHERE id = 1" "col_tinyint_signed" "127" 30; then
+  if wait_for_cdc "SELECT col_tinyint_signed FROM type_coverage_cdc WHERE id = 1" "col_tinyint_signed" "127" "$TIMEOUT_CDC"; then
     ok "CDC UPDATE detected for type_coverage_cdc"
     PASS_COUNT=$((PASS_COUNT + 1))
   else
-    fail "CDC UPDATE not detected for type_coverage_cdc within 30s"
+    fail "CDC UPDATE not detected for type_coverage_cdc within ${TIMEOUT_CDC}s"
     FAIL_COUNT=$((FAIL_COUNT + 1))
-    FAIL_MESSAGES+=("CDC UPDATE not detected for type_coverage_cdc within 30s")
+    FAIL_MESSAGES+=("CDC UPDATE not detected for type_coverage_cdc within ${TIMEOUT_CDC}s")
   fi
 
-  cdc_tv=$(duckdb_scalar "SELECT col_smallint FROM type_coverage_cdc WHERE id = 1" "col_smallint")
+  cdc_tv=$(duckdb_scalar_strict "SELECT col_smallint FROM type_coverage_cdc WHERE id = 1" "col_smallint")
   assert_eq "CDC updated SMALLINT" "32767" "$cdc_tv"
 
-  cdc_tv=$(duckdb_scalar "SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = 1" "v")
+  cdc_tv=$(duckdb_scalar_strict "SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = 1" "v")
   assert_contains "CDC updated DOUBLE" "-1.0" "$cdc_tv"
 
-  cdc_tv=$(duckdb_scalar "SELECT col_char_10 FROM type_coverage_cdc WHERE id = 1" "col_char_10")
+  cdc_tv=$(duckdb_scalar_strict "SELECT col_char_10 FROM type_coverage_cdc WHERE id = 1" "col_char_10")
   assert_eq "CDC updated CHAR(10)" "UPDATED" "$cdc_tv"
 
-  cdc_tv=$(duckdb_scalar "SELECT col_set FROM type_coverage_cdc WHERE id = 1" "col_set")
+  cdc_tv=$(duckdb_scalar_strict "SELECT col_set FROM type_coverage_cdc WHERE id = 1" "col_set")
   assert_eq "CDC updated SET" "a,b,c" "$cdc_tv"
 
   # --- Step 10: Stop CDC & verify stopped ---
@@ -1168,8 +1281,8 @@ run_suite_7_type_fidelity() {
 
   # --- Row counts ---
   local duck_tc duck_tc_cdc
-  duck_tc=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM type_coverage" "cnt")
-  duck_tc_cdc=$(duckdb_scalar "SELECT COUNT(*) AS cnt FROM type_coverage_cdc" "cnt")
+  duck_tc=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM type_coverage" "cnt")
+  duck_tc_cdc=$(duckdb_scalar_strict "SELECT COUNT(*) AS cnt FROM type_coverage_cdc" "cnt")
 
   assert_eq "type_coverage count" "3" "$duck_tc"
   # type_coverage_cdc has 1 row (inserted via CDC in Suite 6, synced by full sync)
@@ -1179,213 +1292,213 @@ run_suite_7_type_fidelity() {
   log "Validating Row 1 (edge cases)..."
 
   local val
-  val=$(duckdb_scalar "SELECT col_tinyint_signed FROM type_coverage WHERE id = 1" "col_tinyint_signed")
+  val=$(duckdb_scalar_strict "SELECT col_tinyint_signed FROM type_coverage WHERE id = 1" "col_tinyint_signed")
   assert_eq "Row1 TINYINT SIGNED min" "-128" "$val"
 
-  val=$(duckdb_scalar "SELECT col_smallint FROM type_coverage WHERE id = 1" "col_smallint")
+  val=$(duckdb_scalar_strict "SELECT col_smallint FROM type_coverage WHERE id = 1" "col_smallint")
   assert_eq "Row1 SMALLINT min" "-32768" "$val"
 
-  val=$(duckdb_scalar "SELECT col_mediumint FROM type_coverage WHERE id = 1" "col_mediumint")
+  val=$(duckdb_scalar_strict "SELECT col_mediumint FROM type_coverage WHERE id = 1" "col_mediumint")
   assert_eq "Row1 MEDIUMINT min" "-8388608" "$val"
 
   # INT UNSIGNED max (4294967295) — fits in DuckDB BIGINT via appendBigInt
-  val=$(duckdb_scalar "SELECT col_int_unsigned FROM type_coverage WHERE id = 1" "col_int_unsigned")
+  val=$(duckdb_scalar_strict "SELECT col_int_unsigned FROM type_coverage WHERE id = 1" "col_int_unsigned")
   assert_eq "Row1 INT UNSIGNED max" "4294967295" "$val"
 
   # BIGINT UNSIGNED: 2^64-1 exceeds DuckDB signed BIGINT max — verify stored non-null
-  val=$(duckdb_scalar "SELECT col_bigint_unsigned FROM type_coverage WHERE id = 1" "col_bigint_unsigned")
+  val=$(duckdb_scalar_strict "SELECT col_bigint_unsigned FROM type_coverage WHERE id = 1" "col_bigint_unsigned")
   assert_not_eq "Row1 BIGINT UNSIGNED non-null" "null" "$val"
 
   # DOUBLE max — cast to VARCHAR, check contains the significant portion
-  val=$(duckdb_scalar "SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
+  val=$(duckdb_scalar_strict "SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
   assert_contains "Row1 DOUBLE max" "1.79769" "$val"
 
   # DECIMAL(5,0)
-  val=$(duckdb_scalar "SELECT col_decimal_5_0 FROM type_coverage WHERE id = 1" "col_decimal_5_0")
+  val=$(duckdb_scalar_strict "SELECT col_decimal_5_0 FROM type_coverage WHERE id = 1" "col_decimal_5_0")
   val=$(normalize_decimal "$val")
   assert_eq "Row1 DECIMAL(5,0)" "99999" "$val"
 
   # DECIMAL(20,10) — high precision, check integer portion
-  val=$(duckdb_scalar "SELECT CAST(col_decimal_20_10 AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
+  val=$(duckdb_scalar_strict "SELECT CAST(col_decimal_20_10 AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
   assert_contains "Row1 DECIMAL(20,10) contains integer part" "1234567890" "$val"
 
   # CHAR(10)
-  val=$(duckdb_scalar "SELECT col_char_10 FROM type_coverage WHERE id = 1" "col_char_10")
+  val=$(duckdb_scalar_strict "SELECT col_char_10 FROM type_coverage WHERE id = 1" "col_char_10")
   assert_eq "Row1 CHAR(10)" "ABCDEFGHIJ" "$val"
 
   # TINYTEXT
-  val=$(duckdb_scalar "SELECT col_tinytext FROM type_coverage WHERE id = 1" "col_tinytext")
+  val=$(duckdb_scalar_strict "SELECT col_tinytext FROM type_coverage WHERE id = 1" "col_tinytext")
   assert_eq "Row1 TINYTEXT" "tiny" "$val"
 
   # MEDIUMTEXT
-  val=$(duckdb_scalar "SELECT col_mediumtext FROM type_coverage WHERE id = 1" "col_mediumtext")
+  val=$(duckdb_scalar_strict "SELECT col_mediumtext FROM type_coverage WHERE id = 1" "col_mediumtext")
   assert_eq "Row1 MEDIUMTEXT" "medium text value" "$val"
 
   # LONGTEXT
-  val=$(duckdb_scalar "SELECT col_longtext FROM type_coverage WHERE id = 1" "col_longtext")
+  val=$(duckdb_scalar_strict "SELECT col_longtext FROM type_coverage WHERE id = 1" "col_longtext")
   assert_eq "Row1 LONGTEXT" "long text value" "$val"
 
   # BINARY(4) — just verify non-null (binary round-trip representation varies)
-  val=$(duckdb_scalar "SELECT col_binary_4 FROM type_coverage WHERE id = 1" "col_binary_4")
+  val=$(duckdb_scalar_strict "SELECT col_binary_4 FROM type_coverage WHERE id = 1" "col_binary_4")
   assert_not_eq "Row1 BINARY(4) non-null" "null" "$val"
 
   # VARBINARY(64)
-  val=$(duckdb_scalar "SELECT col_varbinary_64 FROM type_coverage WHERE id = 1" "col_varbinary_64")
+  val=$(duckdb_scalar_strict "SELECT col_varbinary_64 FROM type_coverage WHERE id = 1" "col_varbinary_64")
   assert_not_eq "Row1 VARBINARY(64) non-null" "null" "$val"
 
   # TINYBLOB
-  val=$(duckdb_scalar "SELECT col_tinyblob FROM type_coverage WHERE id = 1" "col_tinyblob")
+  val=$(duckdb_scalar_strict "SELECT col_tinyblob FROM type_coverage WHERE id = 1" "col_tinyblob")
   assert_not_eq "Row1 TINYBLOB non-null" "null" "$val"
 
   # MEDIUMBLOB
-  val=$(duckdb_scalar "SELECT col_mediumblob FROM type_coverage WHERE id = 1" "col_mediumblob")
+  val=$(duckdb_scalar_strict "SELECT col_mediumblob FROM type_coverage WHERE id = 1" "col_mediumblob")
   assert_not_eq "Row1 MEDIUMBLOB non-null" "null" "$val"
 
   # LONGBLOB
-  val=$(duckdb_scalar "SELECT col_longblob FROM type_coverage WHERE id = 1" "col_longblob")
+  val=$(duckdb_scalar_strict "SELECT col_longblob FROM type_coverage WHERE id = 1" "col_longblob")
   assert_not_eq "Row1 LONGBLOB non-null" "null" "$val"
 
   # TIME
-  val=$(duckdb_scalar "SELECT CAST(col_time AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
+  val=$(duckdb_scalar_strict "SELECT CAST(col_time AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
   assert_eq "Row1 TIME" "23:59:59" "$val"
 
   # TIME(6) — fractional seconds
-  val=$(duckdb_scalar "SELECT CAST(col_time_6 AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
+  val=$(duckdb_scalar_strict "SELECT CAST(col_time_6 AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
   assert_contains "Row1 TIME(6)" "23:59:59" "$val"
 
   # TIMESTAMP
-  val=$(duckdb_scalar "SELECT CAST(col_timestamp AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
+  val=$(duckdb_scalar_strict "SELECT CAST(col_timestamp AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
   assert_contains "Row1 TIMESTAMP" "2025-06-15" "$val"
 
   # TIMESTAMP(6)
-  val=$(duckdb_scalar "SELECT CAST(col_timestamp_6 AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
+  val=$(duckdb_scalar_strict "SELECT CAST(col_timestamp_6 AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
   assert_contains "Row1 TIMESTAMP(6)" "2025-06-15" "$val"
 
   # DATETIME(6)
-  val=$(duckdb_scalar "SELECT CAST(col_datetime_6 AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
+  val=$(duckdb_scalar_strict "SELECT CAST(col_datetime_6 AS VARCHAR) AS v FROM type_coverage WHERE id = 1" "v")
   assert_contains "Row1 DATETIME(6)" "2025-06-15" "$val"
 
   # YEAR
-  val=$(duckdb_scalar "SELECT col_year FROM type_coverage WHERE id = 1" "col_year")
+  val=$(duckdb_scalar_strict "SELECT col_year FROM type_coverage WHERE id = 1" "col_year")
   assert_eq "Row1 YEAR" "2025" "$val"
 
   # SET
-  val=$(duckdb_scalar "SELECT col_set FROM type_coverage WHERE id = 1" "col_set")
+  val=$(duckdb_scalar_strict "SELECT col_set FROM type_coverage WHERE id = 1" "col_set")
   assert_eq "Row1 SET" "a,c,d" "$val"
 
   # BIT(1)
-  val=$(duckdb_scalar "SELECT col_bit_1 FROM type_coverage WHERE id = 1" "col_bit_1")
+  val=$(duckdb_scalar_strict "SELECT col_bit_1 FROM type_coverage WHERE id = 1" "col_bit_1")
   assert_eq "Row1 BIT(1)" "1" "$val"
 
   # BIT(8)
-  val=$(duckdb_scalar "SELECT col_bit_8 FROM type_coverage WHERE id = 1" "col_bit_8")
+  val=$(duckdb_scalar_strict "SELECT col_bit_8 FROM type_coverage WHERE id = 1" "col_bit_8")
   assert_eq "Row1 BIT(8) = 255" "255" "$val"
 
   # ===== Row 2: Zero/empty values (id=2) =====
   log "Validating Row 2 (zero/empty values)..."
 
-  val=$(duckdb_scalar "SELECT col_tinyint_signed FROM type_coverage WHERE id = 2" "col_tinyint_signed")
+  val=$(duckdb_scalar_strict "SELECT col_tinyint_signed FROM type_coverage WHERE id = 2" "col_tinyint_signed")
   assert_eq "Row2 TINYINT SIGNED zero" "0" "$val"
 
-  val=$(duckdb_scalar "SELECT col_smallint FROM type_coverage WHERE id = 2" "col_smallint")
+  val=$(duckdb_scalar_strict "SELECT col_smallint FROM type_coverage WHERE id = 2" "col_smallint")
   assert_eq "Row2 SMALLINT zero" "0" "$val"
 
-  val=$(duckdb_scalar "SELECT col_mediumint FROM type_coverage WHERE id = 2" "col_mediumint")
+  val=$(duckdb_scalar_strict "SELECT col_mediumint FROM type_coverage WHERE id = 2" "col_mediumint")
   assert_eq "Row2 MEDIUMINT zero" "0" "$val"
 
-  val=$(duckdb_scalar "SELECT col_int_unsigned FROM type_coverage WHERE id = 2" "col_int_unsigned")
+  val=$(duckdb_scalar_strict "SELECT col_int_unsigned FROM type_coverage WHERE id = 2" "col_int_unsigned")
   assert_eq "Row2 INT UNSIGNED zero" "0" "$val"
 
-  val=$(duckdb_scalar "SELECT col_bigint_unsigned FROM type_coverage WHERE id = 2" "col_bigint_unsigned")
+  val=$(duckdb_scalar_strict "SELECT col_bigint_unsigned FROM type_coverage WHERE id = 2" "col_bigint_unsigned")
   assert_eq "Row2 BIGINT UNSIGNED zero" "0" "$val"
 
-  val=$(duckdb_scalar "SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage WHERE id = 2" "v")
+  val=$(duckdb_scalar_strict "SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage WHERE id = 2" "v")
   assert_contains "Row2 DOUBLE negative pi" "-3.14159" "$val"
 
-  val=$(duckdb_scalar "SELECT col_decimal_5_0 FROM type_coverage WHERE id = 2" "col_decimal_5_0")
+  val=$(duckdb_scalar_strict "SELECT col_decimal_5_0 FROM type_coverage WHERE id = 2" "col_decimal_5_0")
   val=$(normalize_decimal "$val")
   assert_eq "Row2 DECIMAL(5,0) zero" "0" "$val"
 
-  val=$(duckdb_scalar "SELECT col_char_10 FROM type_coverage WHERE id = 2" "col_char_10")
+  val=$(duckdb_scalar_strict "SELECT col_char_10 FROM type_coverage WHERE id = 2" "col_char_10")
   assert_eq "Row2 CHAR(10) empty" "" "$val"
 
-  val=$(duckdb_scalar "SELECT col_tinytext FROM type_coverage WHERE id = 2" "col_tinytext")
+  val=$(duckdb_scalar_strict "SELECT col_tinytext FROM type_coverage WHERE id = 2" "col_tinytext")
   assert_eq "Row2 TINYTEXT empty" "" "$val"
 
-  val=$(duckdb_scalar "SELECT CAST(col_time AS VARCHAR) AS v FROM type_coverage WHERE id = 2" "v")
+  val=$(duckdb_scalar_strict "SELECT CAST(col_time AS VARCHAR) AS v FROM type_coverage WHERE id = 2" "v")
   assert_eq "Row2 TIME zero" "00:00:00" "$val"
 
-  val=$(duckdb_scalar "SELECT col_year FROM type_coverage WHERE id = 2" "col_year")
+  val=$(duckdb_scalar_strict "SELECT col_year FROM type_coverage WHERE id = 2" "col_year")
   assert_eq "Row2 YEAR 1970" "1970" "$val"
 
-  val=$(duckdb_scalar "SELECT col_set FROM type_coverage WHERE id = 2" "col_set")
+  val=$(duckdb_scalar_strict "SELECT col_set FROM type_coverage WHERE id = 2" "col_set")
   assert_eq "Row2 SET empty" "" "$val"
 
-  val=$(duckdb_scalar "SELECT col_bit_1 FROM type_coverage WHERE id = 2" "col_bit_1")
+  val=$(duckdb_scalar_strict "SELECT col_bit_1 FROM type_coverage WHERE id = 2" "col_bit_1")
   assert_eq "Row2 BIT(1) zero" "0" "$val"
 
-  val=$(duckdb_scalar "SELECT col_bit_8 FROM type_coverage WHERE id = 2" "col_bit_8")
+  val=$(duckdb_scalar_strict "SELECT col_bit_8 FROM type_coverage WHERE id = 2" "col_bit_8")
   assert_eq "Row2 BIT(8) zero" "0" "$val"
 
   # ===== Row 3: NULLs (id=3) =====
   log "Validating Row 3 (NULLs)..."
 
   local null_val
-  null_val=$(duckdb_scalar "SELECT col_tinyint_signed FROM type_coverage WHERE id = 3" "col_tinyint_signed")
+  null_val=$(duckdb_scalar_strict "SELECT col_tinyint_signed FROM type_coverage WHERE id = 3" "col_tinyint_signed")
   assert_eq "Row3 TINYINT SIGNED null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_smallint FROM type_coverage WHERE id = 3" "col_smallint")
+  null_val=$(duckdb_scalar_strict "SELECT col_smallint FROM type_coverage WHERE id = 3" "col_smallint")
   assert_eq "Row3 SMALLINT null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_mediumint FROM type_coverage WHERE id = 3" "col_mediumint")
+  null_val=$(duckdb_scalar_strict "SELECT col_mediumint FROM type_coverage WHERE id = 3" "col_mediumint")
   assert_eq "Row3 MEDIUMINT null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_int_unsigned FROM type_coverage WHERE id = 3" "col_int_unsigned")
+  null_val=$(duckdb_scalar_strict "SELECT col_int_unsigned FROM type_coverage WHERE id = 3" "col_int_unsigned")
   assert_eq "Row3 INT UNSIGNED null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_bigint_unsigned FROM type_coverage WHERE id = 3" "col_bigint_unsigned")
+  null_val=$(duckdb_scalar_strict "SELECT col_bigint_unsigned FROM type_coverage WHERE id = 3" "col_bigint_unsigned")
   assert_eq "Row3 BIGINT UNSIGNED null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_double FROM type_coverage WHERE id = 3" "col_double")
+  null_val=$(duckdb_scalar_strict "SELECT col_double FROM type_coverage WHERE id = 3" "col_double")
   assert_eq "Row3 DOUBLE null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_decimal_5_0 FROM type_coverage WHERE id = 3" "col_decimal_5_0")
+  null_val=$(duckdb_scalar_strict "SELECT col_decimal_5_0 FROM type_coverage WHERE id = 3" "col_decimal_5_0")
   assert_eq "Row3 DECIMAL(5,0) null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_decimal_20_10 FROM type_coverage WHERE id = 3" "col_decimal_20_10")
+  null_val=$(duckdb_scalar_strict "SELECT col_decimal_20_10 FROM type_coverage WHERE id = 3" "col_decimal_20_10")
   assert_eq "Row3 DECIMAL(20,10) null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_char_10 FROM type_coverage WHERE id = 3" "col_char_10")
+  null_val=$(duckdb_scalar_strict "SELECT col_char_10 FROM type_coverage WHERE id = 3" "col_char_10")
   assert_eq "Row3 CHAR(10) null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_tinytext FROM type_coverage WHERE id = 3" "col_tinytext")
+  null_val=$(duckdb_scalar_strict "SELECT col_tinytext FROM type_coverage WHERE id = 3" "col_tinytext")
   assert_eq "Row3 TINYTEXT null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_mediumtext FROM type_coverage WHERE id = 3" "col_mediumtext")
+  null_val=$(duckdb_scalar_strict "SELECT col_mediumtext FROM type_coverage WHERE id = 3" "col_mediumtext")
   assert_eq "Row3 MEDIUMTEXT null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_longtext FROM type_coverage WHERE id = 3" "col_longtext")
+  null_val=$(duckdb_scalar_strict "SELECT col_longtext FROM type_coverage WHERE id = 3" "col_longtext")
   assert_eq "Row3 LONGTEXT null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_binary_4 FROM type_coverage WHERE id = 3" "col_binary_4")
+  null_val=$(duckdb_scalar_strict "SELECT col_binary_4 FROM type_coverage WHERE id = 3" "col_binary_4")
   assert_eq "Row3 BINARY(4) null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_time FROM type_coverage WHERE id = 3" "col_time")
+  null_val=$(duckdb_scalar_strict "SELECT col_time FROM type_coverage WHERE id = 3" "col_time")
   assert_eq "Row3 TIME null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_timestamp FROM type_coverage WHERE id = 3" "col_timestamp")
+  null_val=$(duckdb_scalar_strict "SELECT col_timestamp FROM type_coverage WHERE id = 3" "col_timestamp")
   assert_eq "Row3 TIMESTAMP null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_year FROM type_coverage WHERE id = 3" "col_year")
+  null_val=$(duckdb_scalar_strict "SELECT col_year FROM type_coverage WHERE id = 3" "col_year")
   assert_eq "Row3 YEAR null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_set FROM type_coverage WHERE id = 3" "col_set")
+  null_val=$(duckdb_scalar_strict "SELECT col_set FROM type_coverage WHERE id = 3" "col_set")
   assert_eq "Row3 SET null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_bit_1 FROM type_coverage WHERE id = 3" "col_bit_1")
+  null_val=$(duckdb_scalar_strict "SELECT col_bit_1 FROM type_coverage WHERE id = 3" "col_bit_1")
   assert_eq "Row3 BIT(1) null" "null" "$null_val"
 
-  null_val=$(duckdb_scalar "SELECT col_bit_8 FROM type_coverage WHERE id = 3" "col_bit_8")
+  null_val=$(duckdb_scalar_strict "SELECT col_bit_8 FROM type_coverage WHERE id = 3" "col_bit_8")
   assert_eq "Row3 BIT(8) null" "null" "$null_val"
 
   # --- Validation endpoint ---
