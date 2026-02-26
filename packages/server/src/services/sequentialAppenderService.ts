@@ -2,6 +2,7 @@ import DuckDBConnection from '../database/duckdb';
 import MySQLConnection from '../database/mysql';
 import config from '../config';
 import logger from '../logger';
+import { DuckDBTimestampValue, DuckDBTimeValue } from '@duckdb/node-api';
 // Appender functionality now provided by unified DuckDBConnection class
 
 export interface AppenderSyncResult {
@@ -377,13 +378,19 @@ class SequentialAppenderService {
     } else if (lowerType.includes('bigint')) {
       appender.appendBigInt(BigInt(value));
     } else if (lowerType.includes('int')) {
-      appender.appendInteger(Number(value));
+      // All remaining INT types (int, mediumint, int unsigned) map to DuckDB BIGINT,
+      // so we must use appendBigInt to match the column type exactly.
+      appender.appendBigInt(BigInt(value));
     }
     // Float types
     else if (lowerType.includes('float')) {
       appender.appendFloat(Number(value));
-    } else if (lowerType.includes('double') || lowerType.includes('decimal') || lowerType.includes('numeric')) {
+    } else if (lowerType.includes('double')) {
       appender.appendDouble(Number(value));
+    } else if (lowerType.includes('decimal') || lowerType.includes('numeric')) {
+      // DuckDB DECIMAL columns require appendVarchar, not appendDouble.
+      // mysql2 (with dateStrings:true) returns decimal values as strings already.
+      appender.appendVarchar(String(value));
     }
     // String types (VARCHAR, TEXT, CHAR, JSON, ENUM, SET)
     else if (lowerType.includes('varchar') || lowerType.includes('text') || lowerType.includes('char') ||
@@ -396,17 +403,41 @@ class SequentialAppenderService {
       const buffer = value instanceof Buffer ? value : Buffer.from(String(value));
       appender.appendBlob(buffer);
     }
-    // Date/Time types
-    else if (lowerType.includes('date')) {
-      // For DATE type, convert to DuckDB date format
-      // MySQL dates come as strings like '2024-01-15'
-      appender.appendVarchar(String(value)); // DuckDB will auto-convert
-    } else if (lowerType.includes('timestamp') || lowerType.includes('datetime')) {
-      // For TIMESTAMP/DATETIME, convert to DuckDB timestamp format
-      appender.appendVarchar(String(value)); // DuckDB will auto-convert
+    // Date/Time types — order matters: check timestamp/datetime BEFORE time BEFORE date,
+    // because "datetime" contains both "date" and "time" as substrings.
+    else if (lowerType.includes('timestamp') || lowerType.includes('datetime')) {
+      // appendVarchar on TIMESTAMP columns corrupts the Appender for fractional-second values.
+      // Use the typed appendTimestamp method with parsed parts instead.
+      const tsStr = value instanceof Date
+        ? value.toISOString().replace('T', ' ').replace('Z', '')
+        : String(value);
+      const m = tsStr.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?/);
+      if (m) {
+        const micros = m[7] ? parseInt(m[7].padEnd(6, '0').slice(0, 6), 10) : 0;
+        appender.appendTimestamp(DuckDBTimestampValue.fromParts({
+          date: { year: parseInt(m[1], 10), month: parseInt(m[2], 10), day: parseInt(m[3], 10) },
+          time: { hour: parseInt(m[4], 10), min: parseInt(m[5], 10), sec: parseInt(m[6], 10), micros },
+        }));
+      } else {
+        appender.appendNull();
+      }
     } else if (lowerType.includes('time')) {
-      // For TIME type
-      appender.appendVarchar(String(value)); // DuckDB will auto-convert
+      // appendVarchar with fractional seconds ('HH:MM:SS.ffffff') silently corrupts the Appender.
+      // Use the typed appendTime method with parsed parts instead.
+      const timeStr = String(value);
+      const m = timeStr.match(/^(\d+):(\d+):(\d+)(?:\.(\d+))?$/);
+      if (m) {
+        const micros = m[4] ? parseInt(m[4].padEnd(6, '0').slice(0, 6), 10) : 0;
+        appender.appendTime(DuckDBTimeValue.fromParts({
+          hour: parseInt(m[1], 10), min: parseInt(m[2], 10), sec: parseInt(m[3], 10), micros,
+        }));
+      } else {
+        appender.appendNull();
+      }
+    } else if (lowerType.includes('date')) {
+      // For DATE type (not datetime/timestamp), MySQL returns 'YYYY-MM-DD' string;
+      // DuckDB auto-converts varchar.
+      appender.appendVarchar(String(value));
     }
     // Boolean
     else if (lowerType.includes('boolean') || lowerType.includes('bool')) {
@@ -730,10 +761,15 @@ class SequentialAppenderService {
 
       logger.info(`${tableName}: Table cleared, starting Appender-based insert`);
 
+      let _appender: any = null;
+      let _conn: any = null;
+
       try {
         // Create Appender instance for this table using unified DuckDB connection
         logger.debug(`${tableName}: Creating Appender instance...`);
         const { appender, connection: conn } = await this.duckdb.createAppender(tableName);
+        _appender = appender;
+        _conn = conn;
         logger.info(`${tableName}: Appender created successfully`);
 
         // Get column names and types
@@ -755,7 +791,12 @@ class SequentialAppenderService {
               const mysqlType = columnTypes.get(col) || '';
 
               // Append value based on MySQL type
-              this.appendValueByType(appender, value, mysqlType);
+              try {
+                this.appendValueByType(appender, value, mysqlType);
+              } catch (appendErr: any) {
+                logger.error(`Appender column error: table=${tableName} col=${col} mysqlType=${mysqlType} value=${JSON.stringify(value)}: ${appendErr.message}`);
+                throw appendErr;
+              }
             }
 
             // End row after all columns appended
@@ -806,12 +847,15 @@ class SequentialAppenderService {
         appender.flushSync();
         appender.closeSync();
         conn.closeSync();
+        _appender = null;
+        _conn = null;
         logger.info(`${tableName}: Appender flushed and closed successfully`);
 
         // IMPORTANT: Force CHECKPOINT to flush WAL and ensure data durability
         // Ensures all changes are persisted to the database file immediately
+        // Use checkpoint() which swallows errors, preventing invalidation from propagating
         logger.debug(`${tableName}: Running CHECKPOINT to flush WAL...`);
-        await this.duckdb.run('CHECKPOINT');
+        await this.duckdb.checkpoint();
         logger.info(`${tableName}: CHECKPOINT completed, data persisted successfully`);
 
         // Get max ID for watermark (supports both numeric and string IDs)
@@ -849,6 +893,8 @@ class SequentialAppenderService {
         logger.info(`Appender-based sync completed for ${tableName}: ${recordsProcessed} records`);
 
       } catch (error) {
+        if (_appender) { try { _appender.closeSync(); } catch {} }
+        if (_conn) { try { _conn.closeSync(); } catch {} }
         logger.error(`Appender sync failed for ${tableName}, error:`, error);
         throw error;
       }

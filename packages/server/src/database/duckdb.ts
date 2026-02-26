@@ -6,11 +6,15 @@ import logger from '../logger';
 
 class DuckDBConnection {
   private dbInstance: DuckDBInstance | null = null;
+  private wasInvalidated: boolean = false;
   private static instances: Map<string, DuckDBConnection> = new Map();
   private static initializedInstances: Set<string> = new Set();
   private dbPath: string;
   private initializationPromise: Promise<void> | null = null;
   private isInitializing: boolean = false;
+  // Persistent connection for queries — avoids creating/closing hundreds of connections
+  // which exhausts DuckDB's internal connection resources
+  private persistentConn: any = null;
 
   private constructor(dbPath: string) {
     this.dbPath = dbPath;
@@ -36,11 +40,15 @@ class DuckDBConnection {
           // Check if database file exists - if not, use create() to avoid cache issues
           const dbExists = fs.existsSync(this.dbPath);
 
-          if (!dbExists) {
-            logger.info('Database file does not exist, using DuckDBInstance.create()...');
-            // For new databases, use create() to avoid cache issues
+          if (!dbExists || this.wasInvalidated) {
+            if (this.wasInvalidated) {
+              logger.info('Previous instance was invalidated, creating fresh DuckDBInstance...');
+              this.wasInvalidated = false;
+            } else {
+              logger.info('Database file does not exist, using DuckDBInstance.create()...');
+            }
             this.dbInstance = await DuckDBInstance.create(this.dbPath);
-            logger.info('New DuckDBInstance created successfully');
+            logger.info('Fresh DuckDBInstance created successfully');
           } else {
             // For existing databases, try fromCache first, then fall back to create() if invalidated
             try {
@@ -65,6 +73,29 @@ class DuckDBConnection {
       }
     }
     return this.dbInstance;
+  }
+
+  /**
+   * Get or create a persistent connection for queries.
+   * Reusing a single connection avoids exhausting DuckDB's internal resources
+   * when hundreds of connections are rapidly created/closed.
+   */
+  private async getPersistentConnection(): Promise<any> {
+    if (!this.persistentConn) {
+      const instance = await this.getDbInstance();
+      this.persistentConn = await instance.connect();
+    }
+    return this.persistentConn;
+  }
+
+  /**
+   * Invalidate the persistent connection (e.g., after error or instance reset).
+   */
+  private closePersistentConnection(): void {
+    if (this.persistentConn) {
+      try { this.persistentConn.closeSync(); } catch {}
+      this.persistentConn = null;
+    }
   }
 
   /**
@@ -278,8 +309,9 @@ class DuckDBConnection {
    * @param skipConversion Skip array-to-object conversion for performance (internal operations)
    */
   private async executeRaw(query: string, params?: any[], skipConversion: boolean = false): Promise<any[]> {
-    const dbInstance = await this.getDbInstance();
-    const connection = await dbInstance.connect();
+    // Use persistent connection to avoid exhausting DuckDB resources
+    // by creating/closing hundreds of connections during rapid sequential queries
+    const connection = await this.getPersistentConnection();
 
     try {
       let result: any[];
@@ -326,9 +358,7 @@ class DuckDBConnection {
         columnNames = reader.columnNames();
       }
 
-      // Connection cleanup happens automatically when reference is dropped
-      // But we can explicitly close for better resource management
-      connection.closeSync();
+      // Don't close the persistent connection — it's reused across queries
 
       // Skip conversion for internal operations (sync, etc.) to save memory
       if (skipConversion) {
@@ -342,19 +372,12 @@ class DuckDBConnection {
           columnNames.forEach((colName, index) => {
             const value = row[index];
 
-            // Convert DuckDB timestamp objects to JavaScript Date
-            // DuckDB returns timestamps as {micros: "1763212777581000"} or {micros: 1763212777581000n}
+            // Convert DuckDB value objects to JSON-serializable types
             if (value && typeof value === 'object' && value.micros !== undefined) {
-              let microsNumber: number;
-              if (typeof value.micros === 'bigint') {
-                microsNumber = Number(value.micros);
-              } else if (typeof value.micros === 'string') {
-                microsNumber = parseInt(value.micros);
-              } else {
-                microsNumber = value.micros;
-              }
-              // Convert microseconds to milliseconds and create Date
-              obj[colName] = new Date(microsNumber / 1000);
+              // Use toString() for proper formatting of both TIME and TIMESTAMP values.
+              // DuckDB TIME values have micros (time-of-day) while TIMESTAMP values have
+              // micros (epoch). Both provide a toString() that returns the correct string.
+              obj[colName] = value.toString();
             } else {
               obj[colName] = value;
             }
@@ -365,12 +388,8 @@ class DuckDBConnection {
 
       return result || [];
     } catch (error: any) {
-      // Ensure connection is closed on error
-      try {
-        connection.closeSync();
-      } catch (closeError) {
-        // Ignore close errors
-      }
+      // Close the persistent connection on error to force reconnection next time
+      this.closePersistentConnection();
 
       const errorMessage = error.message || error.toString();
 
@@ -378,6 +397,7 @@ class DuckDBConnection {
       if (errorMessage.includes('invalidated')) {
         logger.warn('Database instance invalidated during query, clearing instance for retry...');
         this.dbInstance = null;
+        this.wasInvalidated = true;
       }
 
       logger.error('DuckDB query error:', { query, params, error: errorMessage });
@@ -404,8 +424,8 @@ class DuckDBConnection {
    * For queries that don't return results (INSERT, UPDATE, DELETE, CREATE, etc.)
    */
   private async runRaw(query: string, params?: any[]): Promise<void> {
-    const dbInstance = await this.getDbInstance();
-    const connection = await dbInstance.connect();
+    // Use persistent connection to avoid exhausting DuckDB resources
+    const connection = await this.getPersistentConnection();
 
     try {
       if (params && params.length > 0) {
@@ -440,13 +460,10 @@ class DuckDBConnection {
         await connection.run(query);
       }
 
-      connection.closeSync();
+      // Don't close the persistent connection
     } catch (error: any) {
-      try {
-        connection.closeSync();
-      } catch (closeError) {
-        // Ignore close errors
-      }
+      // Close the persistent connection on error to force reconnection
+      this.closePersistentConnection();
 
       const errorMessage = error.message || error.toString();
 
@@ -454,6 +471,7 @@ class DuckDBConnection {
       if (errorMessage.includes('invalidated')) {
         logger.warn('Database instance invalidated during run, clearing instance for retry...');
         this.dbInstance = null;
+        this.wasInvalidated = true;
       }
 
       logger.error('DuckDB run error:', { query, params, error: errorMessage });
@@ -582,6 +600,7 @@ class DuckDBConnection {
   }
 
   async close(): Promise<void> {
+    this.closePersistentConnection();
     if (this.dbInstance) {
       try {
         // DuckDBInstance doesn't have a close method in the API

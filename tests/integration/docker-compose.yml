@@ -37,7 +37,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
-      - DUCKDB_PATH=data/integration.db
+      - DUCKDB_PATH=data/default.db
       - MYSQL_CONNECTION_STRING=mysql://integration:integrationpass@mysql:3306/integration_db
       - DUCKLING_API_KEY=integration-test-key
       - ADMIN_USERNAME=admin
@@ -57,6 +57,7 @@ services:
       - CDC_ENABLED=true
       - CDC_AUTO_START=false
       - CDC_SSL_REJECT_UNAUTHORIZED=false
+      - RATE_LIMIT_ENABLED=false
     volumes:
       - ./data:/app/data
     depends_on:

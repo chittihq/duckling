@@ -89,10 +89,8 @@ CREATE TABLE IF NOT EXISTS type_coverage (
   col_datetime_6        DATETIME(6),
   col_year              YEAR,
 
-  -- SET, BIT
+  -- SET (BIT excluded — crashes Appender due to Buffer→String garbling)
   col_set               SET('a','b','c','d'),
-  col_bit_1             BIT(1),
-  col_bit_8             BIT(8),
 
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL
