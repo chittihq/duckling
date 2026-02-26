@@ -286,7 +286,13 @@ export class CDCService {
         } catch (error) {
           this.stats.errors++;
           logger.error(`CDC event processing error, halting queue:`, error);
+          this.eventQueue.length = 0;
           this.isProcessingQueue = false;
+          if (this.queueDrainResolve) {
+            this.queueDrainResolve();
+            this.queueDrainResolve = null;
+            this.queueDrainPromise = null;
+          }
           this.scheduleReconnect();
           return;
         }
