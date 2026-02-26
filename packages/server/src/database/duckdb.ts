@@ -321,40 +321,39 @@ class DuckDBConnection {
         // Use prepared statement for parameterized queries
         const prepared = await connection.prepare(query);
 
-        // Bind parameters (simple binding for now, can be enhanced with type detection)
+        // Bind parameters
         for (let i = 0; i < params.length; i++) {
           const value = params[i];
           if (value === null || value === undefined) {
             prepared.bindNull(i + 1);
+          } else if (typeof value === 'bigint') {
+            prepared.bindBigInt(i + 1, value);
           } else if (typeof value === 'string') {
             prepared.bindVarchar(i + 1, value);
           } else if (typeof value === 'number') {
-            if (Number.isInteger(value)) {
+            if (Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) {
               prepared.bindInteger(i + 1, value);
+            } else if (Number.isInteger(value)) {
+              // Values outside INT32 range — use BigInt binding to avoid overflow
+              prepared.bindBigInt(i + 1, BigInt(value));
             } else {
               prepared.bindDouble(i + 1, value);
             }
           } else if (typeof value === 'boolean') {
             prepared.bindBoolean(i + 1, value);
           } else if (value instanceof Date) {
-            // Convert Date to string in ISO format for timestamp binding
             prepared.bindVarchar(i + 1, value.toISOString());
           } else {
-            // Fallback to string representation
             prepared.bindVarchar(i + 1, String(value));
           }
         }
 
         const reader = await prepared.runAndReadAll();
         result = reader.getRows();
-        // Get column names from reader
         columnNames = reader.columnNames();
-        // Prepared statement cleanup is automatic, no need to finalize
       } else {
-        // Simple query without parameters
         const reader = await connection.runAndReadAll(query);
         result = reader.getRows();
-        // Get column names from reader
         columnNames = reader.columnNames();
       }
 
@@ -436,18 +435,21 @@ class DuckDBConnection {
           const value = params[i];
           if (value === null || value === undefined) {
             prepared.bindNull(i + 1);
+          } else if (typeof value === 'bigint') {
+            prepared.bindBigInt(i + 1, value);
           } else if (typeof value === 'string') {
             prepared.bindVarchar(i + 1, value);
           } else if (typeof value === 'number') {
-            if (Number.isInteger(value)) {
+            if (Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) {
               prepared.bindInteger(i + 1, value);
+            } else if (Number.isInteger(value)) {
+              prepared.bindBigInt(i + 1, BigInt(value));
             } else {
               prepared.bindDouble(i + 1, value);
             }
           } else if (typeof value === 'boolean') {
             prepared.bindBoolean(i + 1, value);
           } else if (value instanceof Date) {
-            // Convert Date to string in ISO format for timestamp binding
             prepared.bindVarchar(i + 1, value.toISOString());
           } else {
             prepared.bindVarchar(i + 1, String(value));
@@ -455,12 +457,9 @@ class DuckDBConnection {
         }
 
         await prepared.run();
-        // Prepared statement cleanup is automatic, no need to finalize
       } else {
         await connection.run(query);
       }
-
-      // Don't close the persistent connection
     } catch (error: any) {
       // Close the persistent connection on error to force reconnection
       this.closePersistentConnection();

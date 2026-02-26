@@ -439,6 +439,18 @@ class SequentialAppenderService {
       // DuckDB auto-converts varchar.
       appender.appendVarchar(String(value));
     }
+    // BIT — MySQL returns Buffer; convert bytes to integer string for VARCHAR storage
+    else if (lowerType.includes('bit')) {
+      if (Buffer.isBuffer(value)) {
+        let intVal = BigInt(0);
+        for (let i = 0; i < value.length; i++) {
+          intVal = (intVal << BigInt(8)) | BigInt(value[i]);
+        }
+        appender.appendVarchar(intVal.toString());
+      } else {
+        appender.appendVarchar(String(value));
+      }
+    }
     // Boolean
     else if (lowerType.includes('boolean') || lowerType.includes('bool')) {
       appender.appendBoolean(Boolean(value));
@@ -1357,6 +1369,7 @@ class SequentialAppenderService {
     if (type.includes('float')) return 'FLOAT';
     if (type.includes('double')) return 'DOUBLE';
     if (type.includes('boolean') || type.includes('bool')) return 'BOOLEAN';
+    if (type.includes('bit')) return 'VARCHAR';
 
     return 'VARCHAR';
   }

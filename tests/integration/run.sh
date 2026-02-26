@@ -335,7 +335,6 @@ INSERT INTO products_simple (id, name, price, quantity, updated_at) VALUES
   (4, 'Gadget D',    9.99, 1000, '2025-01-04 12:00:00');
 
 -- Seed type_coverage (3 rows: edge cases, zeros/empty, NULLs)
--- Note: BIT columns excluded — they crash the Appender (Buffer→String garbling)
 -- Row 1: Edge cases — min/max/boundary values
 INSERT INTO type_coverage (
   id, col_tinyint_signed, col_smallint, col_mediumint,
@@ -344,16 +343,16 @@ INSERT INTO type_coverage (
   col_char_10, col_tinytext, col_mediumtext, col_longtext,
   col_binary_4, col_varbinary_64, col_tinyblob, col_mediumblob, col_longblob,
   col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
-  col_set,
+  col_set, col_bit_1, col_bit_8,
   created_at, updated_at
 ) VALUES (
   1, -128, -32768, -8388608,
-  2000000000, 9000000000000000000,
+  4294967295, 9000000000000000000,
   1.7976931348623157E+308, 99999, 1234567890.1234567890,
   'ABCDEFGHIJ', 'tiny', 'medium text value', 'long text value',
   X'DEADBEEF', X'CAFEBABE', X'FF', X'AABBCCDD', X'0102030405',
   '23:59:59', '23:59:59.123456', '2025-06-15 12:30:45', '2025-06-15 12:30:45.654321', '2025-06-15 12:30:45.654321', 2025,
-  'a,c,d',
+  'a,c,d', b'1', b'11111111',
   '2025-01-01 00:00:00', '2025-01-01 00:00:00'
 );
 
@@ -365,7 +364,7 @@ INSERT INTO type_coverage (
   col_char_10, col_tinytext, col_mediumtext, col_longtext,
   col_binary_4, col_varbinary_64, col_tinyblob, col_mediumblob, col_longblob,
   col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
-  col_set,
+  col_set, col_bit_1, col_bit_8,
   created_at, updated_at
 ) VALUES (
   2, 0, 0, 0,
@@ -374,7 +373,7 @@ INSERT INTO type_coverage (
   '', '', '', '',
   X'00000000', X'00', X'00', X'00', X'00',
   '00:00:00', '00:00:00.000000', '1970-01-01 00:00:01', '1970-01-01 00:00:01.000000', '1970-01-01 00:00:01.000000', 1970,
-  '',
+  '', b'0', b'00000000',
   '2025-01-01 00:00:00', '2025-01-01 00:00:00'
 );
 
@@ -386,7 +385,7 @@ INSERT INTO type_coverage (
   col_char_10, col_tinytext, col_mediumtext, col_longtext,
   col_binary_4, col_varbinary_64, col_tinyblob, col_mediumblob, col_longblob,
   col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
-  col_set,
+  col_set, col_bit_1, col_bit_8,
   created_at, updated_at
 ) VALUES (
   3, NULL, NULL, NULL,
@@ -395,7 +394,7 @@ INSERT INTO type_coverage (
   NULL, NULL, NULL, NULL,
   NULL, NULL, NULL, NULL, NULL,
   NULL, NULL, NULL, NULL, NULL, NULL,
-  NULL,
+  NULL, NULL, NULL,
   '2025-01-01 00:00:00', '2025-01-01 00:00:00'
 );
 
@@ -1041,7 +1040,7 @@ INSERT INTO type_coverage_cdc (
   created_at, updated_at
 ) VALUES (
   1, -42, 1000, 500000,
-  2000000000, 9999999999,
+  3000000000, 9999999999,
   2.71828, 12345, 9876543210.1234500000,
   'CDC-TEST', 'cdc tiny', 'cdc medium text', 'cdc long text',
   '14:30:00', '2025-06-15 12:00:00', '2025-06-15 12:00:00.123456', 2024, 'b,d',
@@ -1070,7 +1069,7 @@ EOSQL
   assert_eq "CDC type MEDIUMINT" "500000" "$cdc_tv"
 
   cdc_tv=$(duckdb_scalar "SELECT col_int_unsigned FROM type_coverage_cdc WHERE id = 1" "col_int_unsigned")
-  assert_eq "CDC type INT UNSIGNED" "2000000000" "$cdc_tv"
+  assert_eq "CDC type INT UNSIGNED" "3000000000" "$cdc_tv"
 
   cdc_tv=$(duckdb_scalar "SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = 1" "v")
   assert_contains "CDC type DOUBLE" "2.71828" "$cdc_tv"
@@ -1189,12 +1188,11 @@ run_suite_7_type_fidelity() {
   val=$(duckdb_scalar "SELECT col_mediumint FROM type_coverage WHERE id = 1" "col_mediumint")
   assert_eq "Row1 MEDIUMINT min" "-8388608" "$val"
 
-  # INT UNSIGNED: appendInteger() can't handle values > INT32_MAX (2147483647),
-  # so we test with 2000000000 which is within signed INT32 range
+  # INT UNSIGNED max (4294967295) — fits in DuckDB BIGINT via appendBigInt
   val=$(duckdb_scalar "SELECT col_int_unsigned FROM type_coverage WHERE id = 1" "col_int_unsigned")
-  assert_eq "Row1 INT UNSIGNED" "2000000000" "$val"
+  assert_eq "Row1 INT UNSIGNED max" "4294967295" "$val"
 
-  # BIGINT UNSIGNED max (2^64-1) exceeds DuckDB signed BIGINT — just verify non-null
+  # BIGINT UNSIGNED: 2^64-1 exceeds DuckDB signed BIGINT max — verify stored non-null
   val=$(duckdb_scalar "SELECT col_bigint_unsigned FROM type_coverage WHERE id = 1" "col_bigint_unsigned")
   assert_not_eq "Row1 BIGINT UNSIGNED non-null" "null" "$val"
 
@@ -1275,6 +1273,14 @@ run_suite_7_type_fidelity() {
   val=$(duckdb_scalar "SELECT col_set FROM type_coverage WHERE id = 1" "col_set")
   assert_eq "Row1 SET" "a,c,d" "$val"
 
+  # BIT(1)
+  val=$(duckdb_scalar "SELECT col_bit_1 FROM type_coverage WHERE id = 1" "col_bit_1")
+  assert_eq "Row1 BIT(1)" "1" "$val"
+
+  # BIT(8)
+  val=$(duckdb_scalar "SELECT col_bit_8 FROM type_coverage WHERE id = 1" "col_bit_8")
+  assert_eq "Row1 BIT(8) = 255" "255" "$val"
+
   # ===== Row 2: Zero/empty values (id=2) =====
   log "Validating Row 2 (zero/empty values)..."
 
@@ -1314,6 +1320,12 @@ run_suite_7_type_fidelity() {
 
   val=$(duckdb_scalar "SELECT col_set FROM type_coverage WHERE id = 2" "col_set")
   assert_eq "Row2 SET empty" "" "$val"
+
+  val=$(duckdb_scalar "SELECT col_bit_1 FROM type_coverage WHERE id = 2" "col_bit_1")
+  assert_eq "Row2 BIT(1) zero" "0" "$val"
+
+  val=$(duckdb_scalar "SELECT col_bit_8 FROM type_coverage WHERE id = 2" "col_bit_8")
+  assert_eq "Row2 BIT(8) zero" "0" "$val"
 
   # ===== Row 3: NULLs (id=3) =====
   log "Validating Row 3 (NULLs)..."
@@ -1370,7 +1382,11 @@ run_suite_7_type_fidelity() {
   null_val=$(duckdb_scalar "SELECT col_set FROM type_coverage WHERE id = 3" "col_set")
   assert_eq "Row3 SET null" "null" "$null_val"
 
-  # BIT columns excluded — crash the Appender (Buffer→String garbling)
+  null_val=$(duckdb_scalar "SELECT col_bit_1 FROM type_coverage WHERE id = 3" "col_bit_1")
+  assert_eq "Row3 BIT(1) null" "null" "$null_val"
+
+  null_val=$(duckdb_scalar "SELECT col_bit_8 FROM type_coverage WHERE id = 3" "col_bit_8")
+  assert_eq "Row3 BIT(8) null" "null" "$null_val"
 
   # --- Validation endpoint ---
   log "Checking type_coverage validation..."
