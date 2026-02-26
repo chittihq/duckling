@@ -64,6 +64,7 @@ export class CDCService {
   private reconnectTimeoutId: NodeJS.Timeout | null = null; // Track pending reconnect
   private stats: CDCStats;
   private tableSchemas: Map<string, Map<string, string>> = new Map(); // tableName -> columnName -> type
+  private currentBinlogFilename: string | null = null;
 
   // Event queue for serialized processing (EventEmitter doesn't await async handlers)
   private eventQueue: Array<() => Promise<void>> = [];
@@ -202,6 +203,7 @@ export class CDCService {
         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
       `, [this.databaseId, filename, position]);
 
+      this.currentBinlogFilename = filename;
       this.stats.currentPosition = {
         filename,
         position,
@@ -526,6 +528,31 @@ export class CDCService {
   }
 
   /**
+   * Resolve current binlog filename for checkpoint persistence.
+   * Row events do not carry binlogName, so this falls back to tracked state.
+   */
+  private resolveBinlogFilename(event: any): string | null {
+    if (event?.binlogName && typeof event.binlogName === 'string') {
+      return event.binlogName;
+    }
+
+    const zongjiFilename = (this.zongji as any)?.options?.filename;
+    if (zongjiFilename && typeof zongjiFilename === 'string') {
+      return zongjiFilename;
+    }
+
+    if (this.currentBinlogFilename) {
+      return this.currentBinlogFilename;
+    }
+
+    if (this.stats.currentPosition?.filename) {
+      return this.stats.currentPosition.filename;
+    }
+
+    return null;
+  }
+
+  /**
    * Start CDC streaming
    */
   async start(): Promise<void> {
@@ -563,7 +590,7 @@ export class CDCService {
 
       // Start options
       const startOptions: any = {
-        includeEvents: ['tablemap', 'writerows', 'updaterows', 'deleterows'],
+        includeEvents: ['tablemap', 'writerows', 'updaterows', 'deleterows', 'rotate'],
         includeSchema: {
           [this.config.mysqlDatabase]: true
         }
@@ -573,9 +600,12 @@ export class CDCService {
       if (lastPosition) {
         startOptions.filename = lastPosition.filename;
         startOptions.position = lastPosition.position;
+        this.currentBinlogFilename = lastPosition.filename;
+        this.stats.currentPosition = lastPosition;
         logger.info(`Resuming CDC from position: ${lastPosition.filename}:${lastPosition.position}`);
       } else {
         startOptions.startAtEnd = true;
+        this.currentBinlogFilename = null;
         logger.info(`Starting CDC from current binlog position`);
       }
 
@@ -631,6 +661,9 @@ export class CDCService {
         this.stats.lastEventAt = new Date();
 
         const eventName = event.getTypeName();
+        if (eventName === 'Rotate' && event.binlogName) {
+          this.currentBinlogFilename = event.binlogName;
+        }
         const shouldSavePosition = Boolean(
           event.nextPosition && (this.stats.eventsProcessed % 100 === 0 ||
           ['WriteRows', 'UpdateRows', 'DeleteRows'].includes(eventName))
@@ -662,10 +695,11 @@ export class CDCService {
 
         // Save position only after event processing completes successfully
         if (shouldSavePosition) {
-          await this.savePosition(
-            event.binlogName || 'mysql-bin.000001',
-            event.nextPosition
-          );
+          const filename = this.resolveBinlogFilename(event);
+          if (!filename) {
+            throw new Error(`Unable to resolve binlog filename for checkpoint at position ${event.nextPosition}`);
+          }
+          await this.savePosition(filename, event.nextPosition);
         }
       });
 
