@@ -209,6 +209,7 @@ export class CDCService {
       };
     } catch (error) {
       logger.error(`Failed to save binlog position for ${this.databaseId}:`, error);
+      throw error;
     }
   }
 
@@ -236,7 +237,8 @@ export class CDCService {
 
       logger.debug(`Cached schema for table ${tableName}: ${columns.length} columns`);
     } catch (error) {
-      logger.warn(`Failed to cache schema for ${tableName}:`, error);
+      logger.error(`Failed to cache schema for ${tableName}:`, error);
+      throw error;
     }
   }
 
@@ -283,7 +285,10 @@ export class CDCService {
           await task();
         } catch (error) {
           this.stats.errors++;
-          logger.error(`CDC event processing error:`, error);
+          logger.error(`CDC event processing error, halting queue:`, error);
+          this.isProcessingQueue = false;
+          this.scheduleReconnect();
+          return;
         }
       }
 
@@ -362,8 +367,7 @@ export class CDCService {
     const schema = this.tableSchemas.get(tableName);
 
     if (!schema || schema.size === 0) {
-      logger.warn(`No schema found for table ${tableName}, skipping INSERT`);
-      return;
+      throw new Error(`No schema found for table ${tableName}, cannot apply INSERT`);
     }
 
     try {
@@ -373,7 +377,7 @@ export class CDCService {
         const values = columns.map(col => this.sanitizeValue(row[col]));
         const placeholders = columns.map(() => '?').join(', ');
 
-        const query = `INSERT INTO ${this.quoteIdentifier(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
+        const query = `INSERT OR REPLACE INTO ${this.quoteIdentifier(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
         await this.duckdb.run(query, values);
       }
 
@@ -396,8 +400,7 @@ export class CDCService {
     const schema = this.tableSchemas.get(tableName);
 
     if (!schema || schema.size === 0) {
-      logger.warn(`No schema found for table ${tableName}, skipping UPDATE`);
-      return;
+      throw new Error(`No schema found for table ${tableName}, cannot apply UPDATE`);
     }
 
     try {
