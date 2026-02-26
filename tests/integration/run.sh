@@ -55,6 +55,12 @@ check_deps() {
   fi
 }
 
+pre_cleanup() {
+  log "Cleaning up previous run..."
+  docker compose down -v 2>/dev/null || true
+  rm -rf data/ 2>/dev/null || true
+}
+
 # ===============================================================
 # MAIN
 # ===============================================================
@@ -66,10 +72,10 @@ echo -e "\033[1m\033[0;36m╚═════════════════
 echo ""
 
 check_deps
+pre_cleanup
 
 # ------- Step 1: Prepare environment -------
 log "[1/5] Preparing environment..."
-rm -rf data/
 mkdir -p data
 cat > data/databases.json << EOJSON
 [

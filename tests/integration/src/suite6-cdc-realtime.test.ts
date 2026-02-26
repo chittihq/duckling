@@ -154,10 +154,11 @@ describe('Suite 6: CDC Real-Time Replication', () => {
 
     test('cleanup restart test row', async () => {
       mysqlExec(`DELETE FROM products_simple WHERE id = 9;`);
+      // Best-effort wait — bash used || true
       await waitForCdc(
         'SELECT COUNT(*) AS cnt FROM products_simple',
         'cnt',
-        await duckdbScalarStrict('SELECT COUNT(*) AS cnt FROM products_simple', 'cnt').then(c => String(Number(c) - 1)),
+        String(productsBaseline),
       );
     });
   });
