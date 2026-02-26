@@ -382,6 +382,7 @@ export class CDCService {
     } catch (error) {
       this.stats.errors++;
       logger.error(`CDC INSERT failed for ${tableName}:`, error);
+      throw error;
     }
   }
 
@@ -418,6 +419,7 @@ export class CDCService {
     } catch (error) {
       this.stats.errors++;
       logger.error(`CDC UPDATE failed for ${tableName}:`, error);
+      throw error;
     }
   }
 
@@ -453,6 +455,7 @@ export class CDCService {
     } catch (error) {
       this.stats.errors++;
       logger.error(`CDC DELETE failed for ${tableName}:`, error);
+      throw error;
     }
   }
 
@@ -619,15 +622,10 @@ export class CDCService {
         this.stats.lastEventAt = new Date();
 
         const eventName = event.getTypeName();
-
-        // Save position periodically (every 100 events or on important events)
-        if (event.nextPosition && (this.stats.eventsProcessed % 100 === 0 ||
-            ['WriteRows', 'UpdateRows', 'DeleteRows'].includes(eventName))) {
-          await this.savePosition(
-            event.binlogName || 'mysql-bin.000001',
-            event.nextPosition
-          );
-        }
+        const shouldSavePosition = Boolean(
+          event.nextPosition && (this.stats.eventsProcessed % 100 === 0 ||
+          ['WriteRows', 'UpdateRows', 'DeleteRows'].includes(eventName))
+        );
 
         // Handle row events
         if (event.tableMap && event.tableMap[event.tableId]) {
@@ -651,6 +649,14 @@ export class CDCService {
               await this.handleDelete(tableName, event.rows);
               break;
           }
+        }
+
+        // Save position only after event processing completes successfully
+        if (shouldSavePosition) {
+          await this.savePosition(
+            event.binlogName || 'mysql-bin.000001',
+            event.nextPosition
+          );
         }
       });
 
