@@ -2,6 +2,7 @@ import * as Sentry from '@sentry/node';
 import express from 'express';
 import cors from 'cors';
 import * as path from 'path';
+import * as fs from 'fs';
 import * as http from 'http';
 import DuckDBConnection from './database/duckdb';
 import MySQLConnection from './database/mysql';
@@ -11,7 +12,9 @@ import CDCService from './services/cdcService';
 import WebSocketService from './services/websocketService';
 import LogBufferService from './services/logBufferService';
 import { DatabaseConfigManager } from './database/databaseConfig';
+import type { S3Config } from './database/databaseConfig';
 import { attachDatabaseContext, RequestWithDatabase } from './middleware/database';
+import s3BackupService from './services/s3BackupService';
 import { generateToken, verifyToken, extractTokenFromHeader } from './utils/jwtUtils';
 import { preAuthRateLimiter, postAuthRateLimiter, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
 import config from './config';
@@ -171,6 +174,17 @@ class DuckDBServer {
     this.app.put('/api/databases/:id', this.updateDatabase.bind(this));
     this.app.delete('/api/databases/:id', this.deleteDatabase.bind(this));
     this.app.post('/api/databases/:id/test', this.testDatabaseConnection.bind(this));
+
+    // S3 config endpoints (per database by :id, no ?db= needed)
+    this.app.get('/api/databases/:id/s3', this.getS3Config.bind(this));
+    this.app.put('/api/databases/:id/s3', this.saveS3Config.bind(this));
+    this.app.delete('/api/databases/:id/s3', this.deleteS3Config.bind(this));
+    this.app.post('/api/databases/:id/s3/test', this.testS3Connection.bind(this));
+
+    // Backup endpoints (use ?db= for database context)
+    this.app.get('/api/backups', attachDatabaseContext, this.listBackups.bind(this));
+    this.app.post('/api/backups/s3', attachDatabaseContext, this.triggerS3Backup.bind(this));
+    this.app.post('/api/backups/s3/restore', attachDatabaseContext, this.restoreFromS3.bind(this));
 
     // Serve static files from Nuxt build output (production)
     const publicPath = path.join(__dirname, '..', 'public');
@@ -1104,8 +1118,15 @@ class DuckDBServer {
   /**
    * Helper function to sanitize database config by removing sensitive fields
    */
-  private sanitizeDatabaseConfig(config: any): any {
-    const { mysqlConnectionString, ...sanitized } = config;
+  private sanitizeDatabaseConfig(dbConfig: any): any {
+    const { mysqlConnectionString, s3, ...sanitized } = dbConfig;
+    if (s3) {
+      sanitized.s3 = {
+        ...s3,
+        secretAccessKey: s3.secretAccessKey ? '***' : undefined,
+        encryptionKey: s3.encryptionKey ? '***' : undefined,
+      };
+    }
     return sanitized;
   }
 
@@ -1242,6 +1263,220 @@ class DuckDBServer {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'
       });
+    }
+  }
+
+  // S3 config handlers
+  private async getS3Config(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(id);
+      if (!dbConfig) {
+        res.status(404).json({ success: false, error: 'Database not found' });
+        return;
+      }
+      if (!dbConfig.s3) {
+        res.json({ success: true, s3: null });
+        return;
+      }
+      // Return config with credentials masked
+      res.json({
+        success: true,
+        s3: {
+          ...dbConfig.s3,
+          secretAccessKey: '***',
+          ...(dbConfig.s3.encryptionKey ? { encryptionKey: '***' } : {}),
+        },
+      });
+    } catch (error) {
+      logger.error('Get S3 config failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async saveS3Config(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const dbManager = DatabaseConfigManager.getInstance();
+      const dbConfig = dbManager.getDatabase(id);
+      if (!dbConfig) {
+        res.status(404).json({ success: false, error: 'Database not found' });
+        return;
+      }
+
+      const {
+        enabled, bucket, region, accessKeyId, secretAccessKey,
+        endpoint, forcePathStyle, pathPrefix,
+        encryption, kmsKeyId, encryptionKey,
+        s3BackupIntervalHours, s3BackupRetentionDays,
+      } = req.body;
+
+      if (!bucket || !region || !accessKeyId) {
+        res.status(400).json({ success: false, error: 'bucket, region, and accessKeyId are required' });
+        return;
+      }
+
+      const newS3: S3Config = {
+        enabled: enabled !== false,
+        bucket,
+        region,
+        accessKeyId,
+        secretAccessKey: secretAccessKey || dbConfig.s3?.secretAccessKey || '',
+        ...(endpoint ? { endpoint } : {}),
+        ...(forcePathStyle ? { forcePathStyle: true } : {}),
+        ...(pathPrefix ? { pathPrefix } : {}),
+        ...(encryption ? { encryption } : {}),
+        ...(kmsKeyId ? { kmsKeyId } : {}),
+        // Preserve existing encryptionKey if not sending a new one (same pattern as secretAccessKey)
+        ...(encryptionKey
+          ? { encryptionKey }
+          : dbConfig.s3?.encryptionKey
+          ? { encryptionKey: dbConfig.s3.encryptionKey }
+          : {}),
+        ...(s3BackupIntervalHours > 0 ? { s3BackupIntervalHours: Number(s3BackupIntervalHours) } : {}),
+        ...(s3BackupRetentionDays > 0 ? { s3BackupRetentionDays: Number(s3BackupRetentionDays) } : {}),
+      };
+
+      dbManager.updateDatabase(id, { s3: newS3 });
+
+      // Restart the S3 backup schedule on the running automation instance if present
+      await AutomationService.restartS3ScheduleIfRunning(id);
+
+      res.json({ success: true, s3: { ...newS3, secretAccessKey: '***' } });
+    } catch (error) {
+      logger.error('Save S3 config failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async deleteS3Config(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const dbManager = DatabaseConfigManager.getInstance();
+      const dbConfig = dbManager.getDatabase(id);
+      if (!dbConfig) {
+        res.status(404).json({ success: false, error: 'Database not found' });
+        return;
+      }
+      dbManager.updateDatabase(id, { s3: undefined });
+      res.json({ success: true, message: 'S3 configuration removed' });
+    } catch (error) {
+      logger.error('Delete S3 config failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async testS3Connection(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(id);
+      if (!dbConfig?.s3) {
+        res.status(400).json({ success: false, error: 'S3 not configured for this database' });
+        return;
+      }
+      await s3BackupService.testConnection(dbConfig.s3);
+      res.json({ success: true, message: 'S3 connection successful' });
+    } catch (error) {
+      logger.error('Test S3 connection failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  // Backup list / trigger / restore handlers
+  private async listBackups(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { databaseId } = req as RequestWithDatabase;
+      const backups: any[] = [];
+
+      // List local backups
+      const backupDir = config.paths.backups;
+      if (fs.existsSync(backupDir)) {
+        const entries = fs.readdirSync(backupDir);
+        for (const entry of entries) {
+          const entryPath = path.join(backupDir, entry);
+          const stat = fs.statSync(entryPath);
+          if (stat.isDirectory() && entry.startsWith('backup-')) {
+            const dbFile = path.join(entryPath, 'duckling.db');
+            const size = fs.existsSync(dbFile) ? fs.statSync(dbFile).size : 0;
+            backups.push({
+              name: entry,
+              location: 'local',
+              size,
+              lastModified: stat.mtime.toISOString(),
+              key: entry,
+            });
+          }
+        }
+      }
+
+      // List S3 backups if configured
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(databaseId);
+      if (dbConfig?.s3?.enabled) {
+        const s3Backups = await s3BackupService.listBackups(databaseId, dbConfig.s3);
+        for (const b of s3Backups) {
+          backups.push({
+            name: path.basename(b.key),
+            location: 's3',
+            size: b.size,
+            lastModified: b.lastModified.toISOString(),
+            key: b.key,
+          });
+        }
+      }
+
+      backups.sort(
+        (a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime()
+      );
+
+      res.json({ success: true, backups });
+    } catch (error) {
+      logger.error('List backups failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async triggerS3Backup(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { databaseId } = req as RequestWithDatabase;
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(databaseId);
+      if (!dbConfig?.s3?.enabled) {
+        res.status(400).json({ success: false, error: 'S3 not configured or not enabled for this database' });
+        return;
+      }
+
+      const resolvedDuckdbPath = dbConfig.duckdbPath.startsWith('data/')
+        ? `/app/${dbConfig.duckdbPath}`
+        : dbConfig.duckdbPath;
+
+      if (!fs.existsSync(resolvedDuckdbPath)) {
+        res.status(400).json({ success: false, error: 'DuckDB file not found' });
+        return;
+      }
+
+      const key = await s3BackupService.uploadBackup(databaseId, resolvedDuckdbPath, dbConfig.s3);
+      res.json({ success: true, key, message: `Backup uploaded to S3: ${key}` });
+    } catch (error) {
+      logger.error('Trigger S3 backup failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async restoreFromS3(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const { key } = req.body;
+      if (!key) {
+        res.status(400).json({ success: false, error: 'Backup key is required' });
+        return;
+      }
+
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      await automationService.restoreFromS3Backup(key);
+      res.json({ success: true, message: 'Database restored from S3 backup successfully' });
+    } catch (error) {
+      logger.error('Restore from S3 failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
     }
   }
 

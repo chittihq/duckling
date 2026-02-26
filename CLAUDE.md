@@ -649,6 +649,10 @@ All data endpoints (health, sync, tables, query) accept the `?db={database_id}` 
 - `PUT /api/databases/:id` - Update database configuration
 - `DELETE /api/databases/:id` - Remove database configuration
 - `POST /api/databases/:id/test` - Test database connection
+- `GET /api/databases/:id/s3` - Get S3 config for a database (secret key masked)
+- `PUT /api/databases/:id/s3` - Save/update S3 config
+- `DELETE /api/databases/:id/s3` - Remove S3 config
+- `POST /api/databases/:id/s3/test` - Test S3 connection (HeadBucket)
 
 ### Health & Monitoring
 - `GET /health` - Database connectivity and system health
@@ -662,13 +666,18 @@ All data endpoints (health, sync, tables, query) accept the `?db={database_id}` 
 - `GET /sync/status` - Current sync state and recent logs
 - `GET /sync/validate` - Compare record counts between databases
 
-### Automation & Recovery (New)
+### Automation & Recovery
 - `GET /automation/status` - Get automation service status (cleanup, backup, health)
 - `POST /automation/start` - Start automation service
 - `POST /automation/stop` - Stop automation service
-- `POST /automation/backup` - Trigger manual backup
-- `POST /automation/restore` - Restore from latest backup
+- `POST /automation/backup` - Trigger manual local backup (also uploads to S3 if configured)
+- `POST /automation/restore` - Restore from latest local backup
 - `POST /automation/cleanup` - Trigger manual partition cleanup
+
+### S3 Cloud Backups
+- `GET /api/backups?db={id}` - List all backups (local + S3) for a database
+- `POST /api/backups/s3?db={id}` - Trigger immediate S3 backup
+- `POST /api/backups/s3/restore?db={id}` - Restore from a specific S3 backup, body: `{ "key": "..." }`
 
 ### Data Access
 - `GET /tables` - List all replicated tables
@@ -796,4 +805,126 @@ The automation is powered by `AutomationService` (`src/services/automationServic
 - Integrates with `SequentialAppenderService` for health tracking
 - Provides manual override endpoints for emergency operations
 - Respects `?db={database_id}` parameter for multi-database support
+- When `s3.enabled` is true for a database, the scheduled local backup also triggers an S3 upload automatically
 - Always build inside container: `docker exec duckling-server pnpm run build:server`
+
+## S3 Cloud Backups
+
+Production DuckDB replicas can reach 200 GB+ (or 500 GB+), making a full resync from MySQL take hours. S3 backups allow fast disaster recovery by downloading a pre-built `.db` file instead of re-streaming from MySQL. S3 config is **per-database** and stored inside `databases.json` alongside the connection string.
+
+### S3Config Schema
+
+```typescript
+interface S3Config {
+  enabled: boolean;
+  bucket: string;
+  region: string;           // e.g. "us-east-1"
+  accessKeyId: string;
+  secretAccessKey: string;  // stored in databases.json, masked in API responses
+  endpoint?: string;        // custom URL for S3-compatible providers (MinIO, R2, B2, Spaces)
+  forcePathStyle?: boolean; // set true for MinIO and most self-hosted providers
+  pathPrefix?: string;      // defaults to "{database_id}/" if omitted
+  encryption?: 'none' | 'sse-s3' | 'sse-kms' | 'client-aes256';
+  kmsKeyId?: string;        // optional KMS key ARN for sse-kms mode
+  encryptionKey?: string;   // 64-char hex (32-byte) key for client-aes256; stored in databases.json, masked in API responses
+}
+```
+
+The `databases.json` schema with S3 config:
+
+```json
+[
+  {
+    "id": "lms",
+    "name": "LMS",
+    "mysqlConnectionString": "mysql://user:pass@host:port/chitti_lms",
+    "duckdbPath": "data/lms.db",
+    "createdAt": "2025-11-06T18:58:36.480Z",
+    "updatedAt": "2025-11-06T18:58:36.480Z",
+    "s3": {
+      "enabled": true,
+      "bucket": "my-duckling-backups",
+      "region": "us-east-1",
+      "accessKeyId": "AKIAIOSFODNN7EXAMPLE",
+      "secretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "pathPrefix": "lms/",
+      "encryption": "client-aes256",
+      "encryptionKey": "a3f1c2d4e5b6a7f8..."
+    }
+  }
+]
+```
+
+### Encryption Options
+
+Choosing the right encryption mode depends on your threat model:
+
+| Mode | Who holds the key | Protects against | Overhead |
+|------|-------------------|-----------------|---------|
+| `none` | — | Nothing | Zero |
+| `sse-s3` | AWS (managed) | Physical media theft | Zero |
+| `sse-kms` | AWS KMS | Physical media theft + audit trail | ~1 ms/request |
+| `client-aes256` | You (in `databases.json`) | Compromised AWS credentials, bucket misconfiguration | Streaming, no memory spike |
+
+**Recommended:** `client-aes256` for production databases with sensitive data. The encryption key never leaves your server.
+
+**Generate an encryption key:**
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+**S3-compatible providers** (MinIO, Cloudflare R2, Backblaze B2, DigitalOcean Spaces) are supported via `endpoint` + optionally `forcePathStyle`. Quick reference:
+
+| Provider | `endpoint` | `forcePathStyle` |
+|----------|-----------|-----------------|
+| AWS S3 | _(leave blank)_ | false |
+| Cloudflare R2 | `https://<account_id>.r2.cloudflarestorage.com` | false |
+| Backblaze B2 | `https://s3.<region>.backblazeb2.com` | false |
+| DigitalOcean Spaces | `https://<region>.digitaloceanspaces.com` | false |
+| MinIO (self-hosted) | `https://minio.internal:9000` | **true** |
+
+### Backup File Format (client-aes256)
+
+On-disk format stored in S3:
+
+```
+[16 bytes AES-256-CTR IV][AES-256-CTR ciphertext]
+```
+
+A companion object at `<key>.mac` stores `HMAC-SHA256(encryptionKey || IV || ciphertext)` as a hex string for integrity verification on restore. The `.mac` objects are automatically filtered out of the backup list UI and deleted when the parent backup is deleted.
+
+### Backup & Restore Data Flow
+
+**Upload (daily automation or manual trigger):**
+```
+DuckDB .db file → AES-256-CTR cipher (streaming) → S3 multipart (100 MB parts)
+```
+No temp file required. Memory usage is flat regardless of file size.
+
+**Restore:**
+```
+S3 → encrypted temp file → verify HMAC → stream-decrypt → replace DuckDB file
+```
+Requires one temporary copy of the encrypted file on disk (~same size as the backup).
+**For a 500 GB database: ~500 GB extra disk needed during restore only.**
+
+### Implementation Files
+
+- **`packages/server/src/services/s3BackupService.ts`** — all S3 operations (upload, download, list, delete, test connection, encrypt, decrypt)
+- **`packages/server/src/database/databaseConfig.ts`** — `S3Config` interface, `DatabaseConfig.s3` field
+- **`packages/server/src/services/automationService.ts`** — calls `s3BackupService.uploadBackup()` after each local backup when `s3.enabled`; exposes `restoreFromS3Backup(key)`
+- **`packages/server/src/server.ts`** — route handlers for all S3/backup endpoints
+- **`packages/frontend/app/pages/backups.vue`** — Backups dashboard page (S3 config, actions, history table)
+- **`packages/frontend/app/layouts/default.vue`** — sidebar link to `/backups`
+
+### Backups Dashboard
+
+Navigate to `/backups` in the dashboard to:
+- Configure S3 credentials per database (stored in `databases.json`)
+- Test the S3 connection before saving
+- Choose encryption mode (None / SSE-S3 / SSE-KMS / Client-side AES-256)
+- Trigger an immediate S3 or local backup
+- Browse backup history (S3 and local in a unified list)
+- Restore from any S3 backup with a confirmation dialog
+
+The page reacts to the database selector — switching databases loads that database's S3 config and backup history.
