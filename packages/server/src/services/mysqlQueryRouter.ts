@@ -70,6 +70,17 @@ function unquoteIdent(id: string): string {
   return id.replace(/^[`"']|[`"']$/g, '');
 }
 
+/**
+ * Sanitise an identifier for safe interpolation into SQL strings.
+ * Only allows alphanumeric characters and underscores.
+ * Returns null if the input contains unsafe characters.
+ */
+function sanitiseIdent(id: string): string | null {
+  const clean = unquoteIdent(id);
+  if (!clean || !/^[A-Za-z_]\w{0,127}$/.test(clean)) return null;
+  return clean;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Router                                                             */
 /* ------------------------------------------------------------------ */
@@ -228,14 +239,15 @@ export function routeQuery(
 
   // DESCRIBE / DESC / EXPLAIN <table> / SHOW COLUMNS FROM <table> / SHOW FIELDS FROM <table>
   if (upper.startsWith('DESCRIBE ') || upper.startsWith('DESC ') || upper.startsWith('SHOW COLUMNS FROM') || upper.startsWith('SHOW FIELDS FROM') || upper.startsWith('SHOW FULL COLUMNS FROM') || upper.startsWith('SHOW FULL FIELDS FROM')) {
-    let tableName: string | null = null;
+    let rawName: string | null = null;
     if (upper.startsWith('DESCRIBE ') || upper.startsWith('DESC ')) {
-      tableName = unquoteIdent(norm.split(/\s+/)[1]);
+      rawName = norm.split(/\s+/)[1] || null;
     } else {
-      tableName = extractFrom(norm);
+      rawName = extractFrom(norm);
     }
+    const tableName = rawName ? sanitiseIdent(rawName) : null;
     if (!tableName) {
-      return { type: 'error', code: 1064, message: 'Could not parse table name' };
+      return { type: 'error', code: 1064, message: 'Invalid or missing table name' };
     }
     return {
       type: 'forward',
@@ -245,9 +257,10 @@ export function routeQuery(
 
   // SHOW CREATE TABLE
   if (upper.startsWith('SHOW CREATE TABLE')) {
-    const tableName = extractFrom(norm) || unquoteIdent(norm.split(/\s+/).pop() || '');
+    const rawName = extractFrom(norm) || (norm.split(/\s+/).pop() || '');
+    const tableName = sanitiseIdent(rawName);
     if (!tableName) {
-      return { type: 'error', code: 1064, message: 'Could not parse table name' };
+      return { type: 'error', code: 1064, message: 'Invalid or missing table name' };
     }
     // We'll forward a query that returns column info; the protocol server will assemble the CREATE TABLE
     return {
@@ -301,9 +314,14 @@ function tryInterceptSelect(
 
   // Multi-expression SELECT with only @@vars (e.g. mysql client init)
   // Example: SELECT @@version_comment, @@max_allowed_packet
-  // Must be checked BEFORE single @@variable to handle comma-separated lists
+  // Must be checked BEFORE single @@variable to handle comma-separated lists.
+  // Only trigger when ALL comma-separated parts start with @@ (avoids false positives).
   if (expr.includes('@@') && expr.includes(',') && !expr.includes('FROM')) {
-    return interceptMultiVariable(norm, connectionId, currentDatabase, currentUser);
+    const body = expr.replace(/\s+LIMIT\s+\d+$/i, '').trim();
+    const allParts = body.split(',').map(p => p.trim());
+    if (allParts.every(p => p.startsWith('@@') || /^@@/i.test(p.replace(/^.*\s+AS\s+/i, '')))) {
+      return interceptMultiVariable(norm, connectionId, currentDatabase, currentUser);
+    }
   }
 
   // @@variable patterns (single variable)

@@ -160,12 +160,13 @@ export class MySQLProtocolServer {
       this.connections.clear();
 
       this.server.close(() => {
+        clearTimeout(forceTimer);
         logger.info('MySQL protocol server stopped');
         resolve();
       });
 
       // Force close after 5 seconds
-      setTimeout(() => {
+      const forceTimer = setTimeout(() => {
         logger.warn('Forcing MySQL protocol server close after timeout');
         resolve();
       }, 5000);
