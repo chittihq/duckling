@@ -12,7 +12,10 @@ const createEncryptedPayload = (plaintext: Buffer, keyHex: string) => {
   const cipher = crypto.createCipheriv('aes-256-ctr', key, iv);
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const payload = Buffer.concat([iv, ciphertext]);
-  const mac = crypto.createHmac('sha256', key).update(payload).digest('hex');
+  const hmac = crypto.createHmac('sha256', key);
+  hmac.update(iv);
+  hmac.update(ciphertext);
+  const mac = hmac.digest('hex');
   return { payload, mac };
 };
 
@@ -43,9 +46,12 @@ describe('s3BackupService downloadAndDecrypt', () => {
     const backupKey = 'db/backup.db';
 
     const fakeClient = {
-      send: vi.fn(async (command: any) => ({
-        Body: Readable.from([command.input.Key === `${backupKey}.mac` ? 'bad-mac' : '']),
-      })),
+      send: vi.fn(async (command: any) => {
+        if (command.input.Key !== `${backupKey}.mac`) {
+          throw new Error(`Unexpected key: ${command.input.Key}`);
+        }
+        return { Body: Readable.from(['bad-mac']) };
+      }),
     };
     await expect(
       (s3BackupService as any).downloadAndDecrypt(
@@ -67,9 +73,12 @@ describe('s3BackupService downloadAndDecrypt', () => {
     const backupKey = 'db/backup.db';
 
     const fakeClient = {
-      send: vi.fn(async (command: any) => ({
-        Body: Readable.from([command.input.Key === `${backupKey}.mac` ? mac : '']),
-      })),
+      send: vi.fn(async (command: any) => {
+        if (command.input.Key !== `${backupKey}.mac`) {
+          throw new Error(`Unexpected key: ${command.input.Key}`);
+        }
+        return { Body: Readable.from([mac]) };
+      }),
     };
 
     await (s3BackupService as any).downloadAndDecrypt(
