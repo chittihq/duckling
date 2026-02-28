@@ -208,26 +208,15 @@ class S3BackupService {
         await fd.close();
       }
 
-      // Step 3: stream-decrypt (skip first 16 bytes) while accumulating HMAC for verification
+      // Step 3: verify HMAC against companion .mac object before any decryption
       const hmac = crypto.createHmac('sha256', encKey);
       hmac.update(iv);
-      let hmacResult = '';
+      for await (const chunk of fs.createReadStream(encTempPath, { start: 16 })) {
+        hmac.update(chunk as Buffer);
+      }
+      const hmacResult = hmac.digest('hex');
 
-      const hmacAccumulator = new Transform({
-        transform(chunk: Buffer, _enc, cb) { hmac.update(chunk); cb(null, chunk); },
-        flush(cb) { hmacResult = hmac.digest('hex'); cb(); },
-      });
-
-      const decipher = crypto.createDecipheriv('aes-256-ctr', encKey, iv);
-
-      await pipeline(
-        fs.createReadStream(encTempPath, { start: 16 }),
-        hmacAccumulator,
-        decipher,
-        fs.createWriteStream(targetPath)
-      );
-
-      // Step 4: verify HMAC against companion .mac object
+      // Step 4: fetch and compare .mac companion
       try {
         const macResponse = await client.send(
           new GetObjectCommand({ Bucket: s3Config.bucket, Key: `${backupKey}.mac` })
@@ -237,7 +226,6 @@ class S3BackupService {
         const expectedHmac = Buffer.concat(chunks).toString('utf8').trim();
 
         if (hmacResult !== expectedHmac) {
-          fs.unlinkSync(targetPath);
           throw new Error('HMAC verification failed: backup is corrupted or has been tampered with');
         }
         logger.info('HMAC verified: backup integrity confirmed');
@@ -249,6 +237,14 @@ class S3BackupService {
           throw macErr;
         }
       }
+
+      // Step 5: stream-decrypt (skip first 16 bytes) only after integrity check passes
+      const decipher = crypto.createDecipheriv('aes-256-ctr', encKey, iv);
+      await pipeline(
+        fs.createReadStream(encTempPath, { start: 16 }),
+        decipher,
+        fs.createWriteStream(targetPath)
+      );
     } finally {
       if (fs.existsSync(encTempPath)) {
         try { fs.unlinkSync(encTempPath); } catch {}
