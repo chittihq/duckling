@@ -482,8 +482,7 @@ class SequentialAppenderService {
     // Handle JSON columns - stringify objects/arrays to JSON strings
     if (lowerType.includes('json')) {
       if (value === null || value === undefined) {
-        // If column is NOT NULL in MySQL but has NULL value, use empty object
-        return '{}';
+        return null;
       }
       // If it's already a string, return as-is, otherwise stringify
       if (typeof value === 'string') {

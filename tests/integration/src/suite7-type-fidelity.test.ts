@@ -184,6 +184,22 @@ describe('Suite 7: MySQL 8 Type Fidelity', () => {
         await duckdbScalarStrict('SELECT col_bit_8 FROM type_coverage WHERE id = 1', 'col_bit_8'),
       ).toBe('255');
     });
+
+    test('JSON deep object', async () => {
+      const raw = await duckdbScalarStrict('SELECT col_json FROM type_coverage WHERE id = 1', 'col_json');
+      const parsed = JSON.parse(raw);
+      expect(parsed.name).toBe('test');
+      expect(parsed.tags).toEqual(['a', 'b']);
+      expect(parsed.nested).toEqual({ key: 1 });
+      expect(parsed.flag).toBe(true);
+      expect(parsed.nothing).toBeNull();
+    });
+
+    test('ENUM string value', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_enum FROM type_coverage WHERE id = 1', 'col_enum'),
+      ).toBe('gamma');
+    });
   });
 
   // ===== Row 2: Zero/empty values (id=2) =====
@@ -274,6 +290,18 @@ describe('Suite 7: MySQL 8 Type Fidelity', () => {
       expect(
         await duckdbScalarStrict('SELECT col_bit_8 FROM type_coverage WHERE id = 2', 'col_bit_8'),
       ).toBe('0');
+    });
+
+    test('JSON empty array', async () => {
+      const raw = await duckdbScalarStrict('SELECT col_json FROM type_coverage WHERE id = 2', 'col_json');
+      const parsed = JSON.parse(raw);
+      expect(parsed).toEqual([]);
+    });
+
+    test('ENUM string value', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_enum FROM type_coverage WHERE id = 2', 'col_enum'),
+      ).toBe('alpha');
     });
   });
 
@@ -390,6 +418,18 @@ describe('Suite 7: MySQL 8 Type Fidelity', () => {
     test('BIT(8) null', async () => {
       expect(
         await duckdbScalarStrict('SELECT col_bit_8 FROM type_coverage WHERE id = 3', 'col_bit_8'),
+      ).toBe('null');
+    });
+
+    test('JSON null', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_json FROM type_coverage WHERE id = 3', 'col_json'),
+      ).toBe('null');
+    });
+
+    test('ENUM null', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_enum FROM type_coverage WHERE id = 3', 'col_enum'),
       ).toBe('null');
     });
   });

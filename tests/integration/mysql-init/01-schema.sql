@@ -94,6 +94,10 @@ CREATE TABLE IF NOT EXISTS type_coverage (
   col_bit_1             BIT(1),
   col_bit_8             BIT(8),
 
+  -- JSON & ENUM
+  col_json              JSON,
+  col_enum              ENUM('alpha','beta','gamma','delta'),
+
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL
 ) ENGINE=InnoDB;
@@ -119,6 +123,8 @@ CREATE TABLE IF NOT EXISTS type_coverage_cdc (
   col_datetime_6        DATETIME(6),
   col_year              YEAR,
   col_set               SET('a','b','c','d'),
+  col_json              JSON,
+  col_enum              ENUM('alpha','beta','gamma','delta'),
 
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL
