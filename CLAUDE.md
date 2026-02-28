@@ -171,7 +171,7 @@ docker-compose restart duckdb-frontend
 
 ## Architecture Overview
 
-```
+```text
 MySQL (Source) → Sequential Appender → DuckDB Native Storage → API Clients
                         ↓                      ↓
                   BEGIN TRANSACTION      Columnar Format
