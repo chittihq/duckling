@@ -279,6 +279,8 @@ class AutomationService {
       // Backup DuckDB database file
       const duckdbPath = config.duckdb.path;
       if (fs.existsSync(duckdbPath)) {
+        // Force WAL checkpoint to create a consistent on-disk snapshot before copying
+        await this.duckdb.checkpoint();
         const duckdbBackup = path.join(backupPath, 'duckling.db');
         fs.copyFileSync(duckdbPath, duckdbBackup);
         logger.info(`Backed up DuckDB database to ${duckdbBackup}`);
