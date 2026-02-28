@@ -15,6 +15,7 @@ import { DatabaseConfigManager } from './database/databaseConfig';
 import type { S3Config } from './database/databaseConfig';
 import { attachDatabaseContext, RequestWithDatabase } from './middleware/database';
 import s3BackupService from './services/s3BackupService';
+import { diagnoseDatabase } from './services/diagnoseService';
 import { generateToken, verifyToken, extractTokenFromHeader } from './utils/jwtUtils';
 import { preAuthRateLimiter, postAuthRateLimiter, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
 import config from './config';
@@ -215,6 +216,7 @@ class DuckDBServer {
     this.app.put('/api/databases/:id', this.updateDatabase.bind(this));
     this.app.delete('/api/databases/:id', this.deleteDatabase.bind(this));
     this.app.post('/api/databases/:id/test', this.testDatabaseConnection.bind(this));
+    this.app.post('/api/databases/:id/diagnose', this.diagnoseDatabaseConnection.bind(this));
 
     // S3 config endpoints (per database by :id, no ?db= needed)
     this.app.get('/api/databases/:id/s3', this.getS3Config.bind(this));
@@ -1292,6 +1294,29 @@ class DuckDBServer {
       });
     } catch (error) {
       logger.error('Test database connection failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  private async diagnoseDatabaseConnection(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const dbManager = DatabaseConfigManager.getInstance();
+      const dbConfig = dbManager.getDatabase(id);
+
+      if (!dbConfig) {
+        res.status(404).json({ success: false, error: 'Database not found' });
+        return;
+      }
+
+      const mysql = MySQLConnection.getInstance(id, dbConfig.mysqlConnectionString);
+      const result = await diagnoseDatabase(mysql);
+      res.json({ success: true, diagnosis: result });
+    } catch (error) {
+      logger.error('Diagnose database failed:', error);
       res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'

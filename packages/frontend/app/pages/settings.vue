@@ -35,6 +35,9 @@
                 <Button @click="editDatabase(db)" variant="outline" size="sm">
                   Edit
                 </Button>
+                <Button @click="runDiagnose(db)" :disabled="diagnosing === db.id" variant="outline" size="sm">
+                  {{ diagnosing === db.id ? 'Diagnosing...' : 'Diagnose' }}
+                </Button>
                 <Button @click="openBackupDialog(db)" variant="outline" size="sm">
                   Backups
                 </Button>
@@ -363,11 +366,127 @@
 
       </div>
     </DialogScrollContent>
+
+    <!-- Diagnose Results Dialog -->
+    <DialogScrollContent v-model:open="showDiagnoseDialog" class="max-w-3xl">
+      <DialogHeader>
+        <DialogTitle>Diagnose — {{ selectedDiagnoseDb?.name }}</DialogTitle>
+      </DialogHeader>
+
+      <div v-if="diagnoseResult" class="space-y-6 mt-2">
+
+        <!-- Server Checks -->
+        <div>
+          <h3 class="text-sm font-semibold mb-3">Server Checks</h3>
+          <div class="space-y-1.5">
+            <div v-for="check in diagnoseResult.server" :key="check.name" class="flex items-center gap-2 text-sm">
+              <span
+                :class="{
+                  'text-green-600': check.status === 'pass',
+                  'text-yellow-600': check.status === 'warn',
+                  'text-red-600': check.status === 'fail',
+                }"
+                class="w-4 text-center font-bold"
+              >
+                {{ check.status === 'pass' ? '\u2713' : check.status === 'warn' ? '!' : '\u2717' }}
+              </span>
+              <span class="w-40 text-muted-foreground">{{ check.name }}</span>
+              <span :class="{ 'text-yellow-600': check.status === 'warn', 'text-red-600': check.status === 'fail' }">
+                {{ check.detail }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="border-t border-border" />
+
+        <!-- Summary -->
+        <div>
+          <h3 class="text-sm font-semibold mb-3">Summary</h3>
+          <div class="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+            <span>Tables: <strong>{{ diagnoseResult.summary.totalTables }}</strong></span>
+            <span>With PK: <strong :class="diagnoseResult.summary.tablesWithPrimaryKey < diagnoseResult.summary.totalTables ? 'text-yellow-600' : ''">{{ diagnoseResult.summary.tablesWithPrimaryKey }}</strong></span>
+            <span>With timestamp: <strong :class="diagnoseResult.summary.tablesWithTimestamp < diagnoseResult.summary.totalTables ? 'text-yellow-600' : ''">{{ diagnoseResult.summary.tablesWithTimestamp }}</strong></span>
+            <span>Columns: <strong>{{ diagnoseResult.summary.totalColumns }}</strong></span>
+            <span>Unsupported types: <strong :class="diagnoseResult.summary.unsupportedColumns > 0 ? 'text-yellow-600' : ''">{{ diagnoseResult.summary.unsupportedColumns }}</strong></span>
+          </div>
+        </div>
+
+        <div class="border-t border-border" />
+
+        <!-- Per-table results -->
+        <div>
+          <h3 class="text-sm font-semibold mb-3">Tables</h3>
+          <div class="space-y-2">
+            <div
+              v-for="tbl in sortedDiagnoseTables"
+              :key="tbl.table"
+              class="border border-border rounded-lg"
+            >
+              <button
+                @click="toggleTableExpand(tbl.table)"
+                class="w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-muted/50 rounded-lg"
+              >
+                <div class="flex items-center gap-2">
+                  <span class="font-mono font-medium">{{ tbl.table }}</span>
+                  <span
+                    v-if="tableHasWarning(tbl)"
+                    class="px-1.5 py-0.5 rounded text-xs bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+                  >!</span>
+                </div>
+                <div class="flex items-center gap-3 text-xs text-muted-foreground">
+                  <span>~{{ formatNumber(tbl.estimatedRows) }} rows</span>
+                  <span>{{ expandedTables.has(tbl.table) ? '\u25B2' : '\u25BC' }}</span>
+                </div>
+              </button>
+              <div v-if="expandedTables.has(tbl.table)" class="px-3 pb-3 text-sm space-y-1.5">
+                <div class="flex gap-4 text-xs">
+                  <span>
+                    PK:
+                    <strong :class="tbl.primaryKey ? '' : 'text-yellow-600'">
+                      {{ tbl.primaryKey || 'none' }}
+                    </strong>
+                  </span>
+                  <span>
+                    Timestamp:
+                    <strong :class="tbl.timestampColumn ? (tbl.timestampQuality === 'append-only' ? 'text-yellow-600' : '') : 'text-yellow-600'">
+                      {{ tbl.timestampColumn || 'none' }}
+                    </strong>
+                  </span>
+                  <span>Charset: <span class="font-mono">{{ tbl.charset }}</span></span>
+                </div>
+                <!-- Warnings -->
+                <div v-if="!tbl.primaryKey" class="text-xs text-yellow-600">
+                  No primary key — slow sync, no CDC deletes
+                </div>
+                <div v-if="!tbl.timestampColumn" class="text-xs text-yellow-600">
+                  No timestamp column — no incremental sync possible
+                </div>
+                <div v-else-if="tbl.timestampQuality === 'append-only'" class="text-xs text-yellow-600">
+                  Only {{ tbl.timestampColumn }} — updates not tracked
+                </div>
+                <!-- Unsupported columns -->
+                <div v-if="tbl.unsupportedColumns.length > 0" class="text-xs text-yellow-600">
+                  Unsupported types (mapped to VARCHAR):
+                  <span v-for="(col, i) in tbl.unsupportedColumns" :key="col.column">
+                    {{ col.column }} ({{ col.type }}){{ i < tbl.unsupportedColumns.length - 1 ? ', ' : '' }}
+                  </span>
+                </div>
+                <div v-if="!tableHasWarning(tbl)" class="text-xs text-green-600">
+                  All checks passed
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </DialogScrollContent>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { toast } from '@/components/ui/toast';
 
 interface S3Config {
@@ -402,6 +521,34 @@ interface Backup {
   key: string;
 }
 
+interface DiagnoseCheck {
+  name: string;
+  status: 'pass' | 'warn' | 'fail';
+  detail: string;
+}
+
+interface TableDiagnosis {
+  table: string;
+  estimatedRows: number;
+  primaryKey: string | null;
+  timestampColumn: string | null;
+  timestampQuality: 'best' | 'append-only' | 'none';
+  unsupportedColumns: Array<{ column: string; type: string; mapping: string }>;
+  charset: string;
+}
+
+interface DiagnoseResult {
+  server: DiagnoseCheck[];
+  tables: TableDiagnosis[];
+  summary: {
+    totalTables: number;
+    tablesWithPrimaryKey: number;
+    tablesWithTimestamp: number;
+    totalColumns: number;
+    unsupportedColumns: number;
+  };
+}
+
 const { get, post, put, delete: del } = useApi();
 
 // --- Database list state ---
@@ -415,6 +562,13 @@ const saving = ref(false);
 const testing = ref('');
 const deleting = ref('');
 const connectionStatus = ref<Record<string, { mysql: string; duckdb: string }>>({});
+
+// --- Diagnose dialog state ---
+const diagnosing = ref('');
+const showDiagnoseDialog = ref(false);
+const selectedDiagnoseDb = ref<Database | null>(null);
+const diagnoseResult = ref<DiagnoseResult | null>(null);
+const expandedTables = ref<Set<string>>(new Set());
 
 // --- Backup dialog state ---
 const showBackupDialog = ref(false);
@@ -534,6 +688,58 @@ async function testConnection(id: string) {
   } finally {
     testing.value = '';
   }
+}
+
+// --- Diagnose ---
+
+async function runDiagnose(db: Database) {
+  try {
+    diagnosing.value = db.id;
+    selectedDiagnoseDb.value = db;
+    diagnoseResult.value = null;
+    expandedTables.value = new Set();
+    const data = await post<{ success: boolean; diagnosis?: DiagnoseResult; error?: string }>(
+      `/api/databases/${db.id}/diagnose`
+    );
+    if (data.success && data.diagnosis) {
+      diagnoseResult.value = data.diagnosis;
+      showDiagnoseDialog.value = true;
+    } else {
+      toast({ title: 'Error', description: data.error || 'Diagnose failed', variant: 'destructive' });
+    }
+  } catch {
+    toast({ title: 'Error', description: 'Diagnose failed', variant: 'destructive' });
+  } finally {
+    diagnosing.value = '';
+  }
+}
+
+function tableHasWarning(tbl: TableDiagnosis): boolean {
+  return !tbl.primaryKey || !tbl.timestampColumn || tbl.timestampQuality === 'append-only' || tbl.unsupportedColumns.length > 0;
+}
+
+const sortedDiagnoseTables = computed(() => {
+  if (!diagnoseResult.value) return [];
+  return [...diagnoseResult.value.tables].sort((a, b) => {
+    const aWarn = tableHasWarning(a) ? 0 : 1;
+    const bWarn = tableHasWarning(b) ? 0 : 1;
+    if (aWarn !== bWarn) return aWarn - bWarn;
+    return a.table.localeCompare(b.table);
+  });
+});
+
+function toggleTableExpand(table: string) {
+  if (expandedTables.value.has(table)) {
+    expandedTables.value.delete(table);
+  } else {
+    expandedTables.value.add(table);
+  }
+}
+
+function formatNumber(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
 }
 
 // --- Backup dialog ---
