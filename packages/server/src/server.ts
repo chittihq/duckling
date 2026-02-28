@@ -16,6 +16,9 @@ import type { S3Config } from './database/databaseConfig';
 import { attachDatabaseContext, RequestWithDatabase } from './middleware/database';
 import s3BackupService from './services/s3BackupService';
 import { diagnoseDatabase } from './services/diagnoseService';
+import { getQueryGovernor, QueryGovernorError } from './services/queryGovernor';
+import { WorkerPool } from './workers/workerPool';
+import { ReadReplicaService } from './services/readReplicaService';
 import { generateToken, verifyToken, extractTokenFromHeader } from './utils/jwtUtils';
 import { preAuthRateLimiter, postAuthRateLimiter, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
 import config from './config';
@@ -269,6 +272,15 @@ class DuckDBServer {
 
     // Enhanced metrics endpoint
     this.app.get('/metrics', this.getMetrics.bind(this));
+
+    // Query governor endpoint
+    this.app.get('/api/governor/stats', this.getGovernorStats.bind(this));
+
+    // Worker pool endpoint
+    this.app.get('/api/workers/stats', this.getWorkerPoolStats.bind(this));
+
+    // Read replica endpoint
+    this.app.get('/api/replica/status', attachDatabaseContext, this.getReplicaStatus.bind(this));
 
     // Validation endpoints
     this.app.get('/api/validation/mysql-tables', attachDatabaseContext, this.getMySQLTables.bind(this));
@@ -582,7 +594,8 @@ class DuckDBServer {
       });
     } catch (error) {
       logger.error('Query execution failed:', error);
-      res.status(500).json({
+      const statusCode = error instanceof QueryGovernorError ? error.statusCode : 500;
+      res.status(statusCode).json({
         error: error instanceof Error ? error.message : 'Unknown error'
       });
     }
@@ -743,6 +756,8 @@ class DuckDBServer {
       res.json(this.serializeBigInt({
         databases: databaseMetrics,
         architecture: 'sequential-appender',
+        governor: getQueryGovernor().getStats(),
+        workerPool: WorkerPool.getInstance().getStats(),
         timestamp: new Date().toISOString()
       }));
     } catch (error) {
@@ -761,6 +776,43 @@ class DuckDBServer {
     const i = Math.floor(Math.log(bytes) / Math.log(k));
 
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+
+  private async getGovernorStats(_req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const governor = getQueryGovernor();
+      res.json(governor.getStats());
+    } catch (error) {
+      logger.error('Get governor stats failed:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  private async getWorkerPoolStats(_req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const pool = WorkerPool.getInstance();
+      res.json(pool.getStats());
+    } catch (error) {
+      logger.error('Get worker pool stats failed:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  private async getReplicaStatus(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { duckdb, databaseId } = req as RequestWithDatabase;
+      const replica = ReadReplicaService.getInstance(databaseId, duckdb.getDbPath());
+      res.json(replica.getStatus());
+    } catch (error) {
+      logger.error('Get replica status failed:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
   }
 
   private serializeBigInt(obj: any): any {

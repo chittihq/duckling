@@ -16,6 +16,7 @@ import ZongJi from '@vlasky/zongji';
 import logger from '../logger';
 import DuckDBConnection from '../database/duckdb';
 import { DatabaseConfigManager } from '../database/databaseConfig';
+import { WorkerPool } from '../workers/workerPool';
 import appConfig from '../config';
 
 interface BinlogPosition {
