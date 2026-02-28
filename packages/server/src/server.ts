@@ -17,6 +17,7 @@ import { attachDatabaseContext, RequestWithDatabase } from './middleware/databas
 import s3BackupService from './services/s3BackupService';
 import { diagnoseDatabase } from './services/diagnoseService';
 import { generateToken, verifyToken, extractTokenFromHeader } from './utils/jwtUtils';
+import { isReadOnlyMySQLQuery } from './utils/sqlSafety';
 import { preAuthRateLimiter, postAuthRateLimiter, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
 import config from './config';
 import logger from './logger';
@@ -556,6 +557,10 @@ class DuckDBServer {
       // Execute query on selected database
       // lgtm[js/sql-injection] - intentional query execution endpoint, protected by authentication
       if (database === 'mysql') {
+        if (!isReadOnlyMySQLQuery(sql)) {
+          res.status(400).json({ error: 'Only read-only queries are allowed for MySQL' });
+          return;
+        }
         result = await mysql.execute(sql, params);
       } else {
         result = await duckdb.query(sql, params);
