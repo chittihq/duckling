@@ -552,38 +552,7 @@ class DumpService {
   }
 
   private mapMySQLTypeToDuckDB(mysqlType: string): string {
-    const type = mysqlType.toLowerCase();
-
-    // Check string/text types FIRST (before numeric checks) to avoid false matches
-    // e.g., enum('Internship') contains 'int' but should map to VARCHAR
-    if (type.includes('enum')) return 'VARCHAR';
-    if (type.includes('set')) return 'VARCHAR';
-    if (type.includes('json')) return 'JSON';
-    if (type.includes('text')) return 'TEXT';
-    if (type.includes('varchar') || type.includes('char')) return 'VARCHAR';
-    if (type.includes('blob') || type.includes('binary')) return 'BLOB';
-
-    // Timestamp and date types
-    if (type.includes('timestamp')) return 'TIMESTAMP';
-    if (type.includes('datetime')) return 'TIMESTAMP';
-    if (type.includes('date')) return 'DATE';
-    if (type.includes('time')) return 'TIME';
-
-    // Numeric types (check these AFTER string types)
-    // Use BIGINT for all integer types to prevent overflow errors
-    // MySQL often has values that exceed INT32 range even in INT columns
-    if (type.includes('bigint')) return 'BIGINT';
-    if (type.includes('tinyint')) return 'TINYINT';
-    if (type.includes('smallint')) return 'SMALLINT';
-    if (type.includes('mediumint')) return 'BIGINT';
-    if (type.includes('int')) return 'BIGINT';
-    if (type.includes('decimal') || type.includes('numeric')) return 'DECIMAL';
-    if (type.includes('float')) return 'FLOAT';
-    if (type.includes('double')) return 'DOUBLE';
-    if (type.includes('boolean') || type.includes('bool')) return 'BOOLEAN';
-    if (type.includes('bit')) return 'VARCHAR';
-
-    return 'VARCHAR';
+    return mapMySQLTypeToDuckDB(mysqlType);
   }
 
   async listDumps(): Promise<string[]> {
@@ -665,3 +634,42 @@ class DumpService {
 }
 
 export default DumpService;
+
+/**
+ * Map a MySQL column type string to the corresponding DuckDB type.
+ * Exported for unit testing. The DumpService class delegates to this.
+ */
+export function mapMySQLTypeToDuckDB(mysqlType: string): string {
+  const type = mysqlType.toLowerCase();
+
+  // Check string/text types FIRST (before numeric checks) to avoid false matches
+  // e.g., enum('Internship') contains 'int' but should map to VARCHAR
+  if (type.includes('enum')) return 'VARCHAR';
+  if (type.includes('set')) return 'VARCHAR';
+  if (type.includes('json')) return 'JSON';
+  if (type.includes('text')) return 'TEXT';
+  if (type.includes('varchar') || type.includes('char')) return 'VARCHAR';
+  if (type.includes('blob') || type.includes('binary')) return 'BLOB';
+
+  // Timestamp and date types
+  if (type.includes('timestamp')) return 'TIMESTAMP';
+  if (type.includes('datetime')) return 'TIMESTAMP';
+  if (type.includes('date')) return 'DATE';
+  if (type.includes('time')) return 'TIME';
+
+  // Numeric types (check these AFTER string types)
+  // Use BIGINT for all integer types to prevent overflow errors
+  // MySQL often has values that exceed INT32 range even in INT columns
+  if (type.includes('bigint')) return 'BIGINT';
+  if (type.includes('tinyint')) return 'TINYINT';
+  if (type.includes('smallint')) return 'SMALLINT';
+  if (type.includes('mediumint')) return 'BIGINT';
+  if (type.includes('int')) return 'BIGINT';
+  if (type.includes('decimal') || type.includes('numeric')) return 'DECIMAL';
+  if (type.includes('float')) return 'FLOAT';
+  if (type.includes('double')) return 'DOUBLE';
+  if (type.includes('boolean') || type.includes('bool')) return 'BOOLEAN';
+  if (type.includes('bit')) return 'VARCHAR';
+
+  return 'VARCHAR';
+}
