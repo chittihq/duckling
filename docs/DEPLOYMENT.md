@@ -13,6 +13,8 @@ The project uses multi-stage Docker builds for optimal image sizes:
 
 ### docker-compose.yml
 
+Create a `.env` file in the project root with real values for `MYSQL_CONNECTION_STRING` and `MYSQL_ROOT_PASSWORD` before running this compose setup.
+
 ```yaml
 version: '3.8'
 
@@ -24,7 +26,7 @@ services:
     ports:
       - "3001:3000"
     environment:
-      - MYSQL_CONNECTION_STRING=mysql://root:password@mysql:3306/myapp
+      - MYSQL_CONNECTION_STRING=${MYSQL_CONNECTION_STRING}
       - BATCH_SIZE=10000
       - SYNC_INTERVAL_MINUTES=15
     volumes:
@@ -56,7 +58,7 @@ services:
   mysql:
     image: mysql:8.0
     environment:
-      MYSQL_ROOT_PASSWORD: password
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: myapp
     volumes:
       - mysql_data:/var/lib/mysql
