@@ -82,6 +82,7 @@ export function classifyEndpoint(method: string, path: string): RateLimitCategor
       path === '/api/databases' ||
       path === '/api/logs' ||
       path.startsWith('/api/sync-logs') ||
+      path.startsWith('/api/backups') ||
       path.startsWith('/sync/') ||
       path.startsWith('/automation/') ||
       path.startsWith('/cdc/') ||
@@ -98,6 +99,7 @@ export function classifyEndpoint(method: string, path: string): RateLimitCategor
       path.startsWith('/automation/') ||
       path.startsWith('/cdc/') ||
       path.startsWith('/api/databases') ||
+      path.startsWith('/api/backups') ||
       path.startsWith('/api/validation/')
     ) {
       return 'write';
