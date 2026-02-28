@@ -9,6 +9,8 @@ services:
       MYSQL_PASSWORD: integrationpass
     command:
       - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
       - --max-connections=50
       - --log-bin=mysql-bin
       - --binlog-format=ROW
@@ -38,7 +40,7 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - DUCKDB_PATH=data/default.db
-      - MYSQL_CONNECTION_STRING=mysql://integration:integrationpass@mysql:3306/integration_db
+      - MYSQL_CONNECTION_STRING=mysql://integration:integrationpass@mysql:3306/integration_db?charset=utf8mb4
       - DUCKLING_API_KEY=integration-test-key
       - ADMIN_USERNAME=admin
       - ADMIN_PASSWORD=integrationadmin

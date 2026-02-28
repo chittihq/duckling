@@ -17,7 +17,7 @@ class MySQLConnection {
       timezone: 'Z',
       multipleStatements: true,
       dateStrings: true,
-      charset: 'utf8mb4'
+      charset: 'UTF8MB4_GENERAL_CI'
     });
   }
 

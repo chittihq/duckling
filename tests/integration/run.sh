@@ -82,7 +82,7 @@ cat > data/databases.json << EOJSON
   {
     "id": "${DB_ID}",
     "name": "Integration",
-    "mysqlConnectionString": "mysql://integration:integrationpass@mysql:3306/integration_db",
+    "mysqlConnectionString": "mysql://integration:integrationpass@mysql:3306/integration_db?charset=utf8mb4",
     "duckdbPath": "data/integration.db",
     "createdAt": "2025-01-01T00:00:00.000Z",
     "updatedAt": "2025-01-01T00:00:00.000Z"
@@ -103,7 +103,7 @@ echo ""
 ok "MySQL is ready"
 
 log "Seeding test data..."
-docker compose exec -T mysql mysql -h 127.0.0.1 -uroot -prootpass integration_db << 'EOSQL'
+docker compose exec -T mysql mysql -h 127.0.0.1 -uroot -prootpass --default-character-set=utf8mb4 integration_db << 'EOSQL'
 
 -- Grant all privileges to the integration user
 GRANT ALL PRIVILEGES ON integration_db.* TO 'integration'@'%';
