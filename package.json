@@ -21,7 +21,8 @@
     "status": "pnpm --filter @chittihq/duckling-server status",
     "validate": "pnpm --filter @chittihq/duckling-server validate",
     "clean": "pnpm --parallel --filter \"./packages/**\" exec rm -rf dist .nuxt .output node_modules",
-    "typecheck": "pnpm --filter \"./packages/**\" exec tsc --noEmit"
+    "typecheck": "pnpm --filter \"./packages/**\" exec tsc --noEmit",
+    "test:integration": "pnpm --filter integration-tests test"
   },
   "devDependencies": {
     "@types/node": "^20.10.5",

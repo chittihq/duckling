@@ -328,6 +328,8 @@ class DuckDBConnection {
             prepared.bindNull(i + 1);
           } else if (typeof value === 'bigint') {
             prepared.bindBigInt(i + 1, value);
+          } else if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+            prepared.bindBlob(i + 1, value);
           } else if (typeof value === 'string') {
             prepared.bindVarchar(i + 1, value);
           } else if (typeof value === 'number') {
@@ -437,6 +439,8 @@ class DuckDBConnection {
             prepared.bindNull(i + 1);
           } else if (typeof value === 'bigint') {
             prepared.bindBigInt(i + 1, value);
+          } else if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+            prepared.bindBlob(i + 1, value);
           } else if (typeof value === 'string') {
             prepared.bindVarchar(i + 1, value);
           } else if (typeof value === 'number') {

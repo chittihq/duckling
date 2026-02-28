@@ -1,0 +1,54 @@
+import { describe, test, expect } from 'vitest';
+import { duckdbScalarStrict } from './helpers/duckdb.js';
+import { mysqlExec } from './helpers/mysql.js';
+import { triggerIncrementalSync } from './helpers/sync.js';
+import { getValidation } from './helpers/validation.js';
+import { sleep } from './helpers/cdc.js';
+
+describe('Suite 2: Incremental Insert', () => {
+  test('insert new rows and sync', async () => {
+    // Sleep to ensure MySQL NOW() timestamps are after the watermark
+    await sleep(2000);
+
+    mysqlExec(`
+      INSERT INTO users_with_timestamps (id, name, age, email, bio, balance, is_active, metadata, avatar, birth_date, role, score, created_at, updated_at) VALUES
+        (6, 'Frank', 33, 'frank@test.com', 'New hire', 800.00, TRUE, '{"level":1,"tags":["new"]}', NULL, '1991-07-20', 'viewer', 70.0, NOW(), NOW());
+
+      INSERT INTO events_append_only (id, event_type, payload, amount, created_at) VALUES
+        (4, 'logout', '{"reason":"timeout"}', 0.0000, NOW());
+
+      INSERT INTO products_simple (id, name, price, quantity, updated_at) VALUES
+        (5, 'Widget E', 14.99, 200, NOW());
+    `);
+
+    await triggerIncrementalSync();
+  });
+
+  test('counts increased by 1', async () => {
+    expect(await duckdbScalarStrict('SELECT COUNT(*) AS cnt FROM users_with_timestamps', 'cnt')).toBe('6');
+    expect(await duckdbScalarStrict('SELECT COUNT(*) AS cnt FROM events_append_only', 'cnt')).toBe('4');
+    expect(await duckdbScalarStrict('SELECT COUNT(*) AS cnt FROM products_simple', 'cnt')).toBe('5');
+  });
+
+  test('Frank exists in DuckDB', async () => {
+    expect(await duckdbScalarStrict('SELECT name FROM users_with_timestamps WHERE id = 6', 'name')).toBe('Frank');
+  });
+
+  test('Logout event exists in DuckDB', async () => {
+    expect(await duckdbScalarStrict('SELECT event_type FROM events_append_only WHERE id = 4', 'event_type')).toBe('logout');
+  });
+
+  test('Widget E exists in DuckDB', async () => {
+    expect(await duckdbScalarStrict('SELECT name FROM products_simple WHERE id = 5', 'name')).toBe('Widget E');
+  });
+
+  test('users validation: max ID after insert', async () => {
+    const val = await getValidation('users_with_timestamps');
+    expect(val.duckdb.maxId).toBe(val.mysql.maxId);
+  });
+
+  test('users validation: checksum after insert', async () => {
+    const val = await getValidation('users_with_timestamps');
+    expect(val.duckdb.checksum).toBe(val.mysql.checksum);
+  });
+});
