@@ -16,6 +16,8 @@
     "validate": "node dist/cli.js validate"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.0.0",
+    "@aws-sdk/lib-storage": "^3.0.0",
     "@chittihq/duckling-shared": "workspace:*",
     "@duckdb/node-api": "^1.4.2-r.1",
     "@sentry/node": "^10.40.0",

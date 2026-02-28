@@ -3,6 +3,8 @@ import logger from '../logger';
 import SequentialAppenderService from './sequentialAppenderService';
 import DuckDBConnection from '../database/duckdb';
 import MySQLConnection from '../database/mysql';
+import { DatabaseConfigManager, S3Config } from '../database/databaseConfig';
+import s3BackupService from './s3BackupService';
 import * as fs from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
@@ -14,8 +16,10 @@ class AutomationService {
   private static instances: Map<string, AutomationService> = new Map();
   private cleanupInterval?: NodeJS.Timeout;
   private backupInterval?: NodeJS.Timeout;
+  private s3BackupInterval?: NodeJS.Timeout;
   private healthCheckInterval?: NodeJS.Timeout;
   private syncInterval?: NodeJS.Timeout;
+  private databaseId: string;
   private syncService: SequentialAppenderService;
   private duckdb: DuckDBConnection;
   private mysql: MySQLConnection;
@@ -24,10 +28,12 @@ class AutomationService {
   private isRunning: boolean = false;
 
   private constructor(
+    databaseId: string,
     syncService: SequentialAppenderService,
     duckdb: DuckDBConnection,
     mysql: MySQLConnection
   ) {
+    this.databaseId = databaseId;
     this.syncService = syncService;
     this.duckdb = duckdb;
     this.mysql = mysql;
@@ -40,7 +46,7 @@ class AutomationService {
     mysql: MySQLConnection
   ): AutomationService {
     if (!AutomationService.instances.has(databaseId)) {
-      AutomationService.instances.set(databaseId, new AutomationService(syncService, duckdb, mysql));
+      AutomationService.instances.set(databaseId, new AutomationService(databaseId, syncService, duckdb, mysql));
     }
     return AutomationService.instances.get(databaseId)!;
   }
@@ -81,6 +87,9 @@ class AutomationService {
       await this.startAutoBackup();
     }
 
+    // Start independent S3 backup schedule (if configured per-database)
+    await this.startAutoS3Backup();
+
     // Start health monitoring with auto-restart
     if (config.automation.autoRestart) {
       await this.startHealthMonitoring();
@@ -108,6 +117,11 @@ class AutomationService {
     if (this.backupInterval) {
       clearInterval(this.backupInterval);
       this.backupInterval = undefined;
+    }
+
+    if (this.s3BackupInterval) {
+      clearInterval(this.s3BackupInterval);
+      this.s3BackupInterval = undefined;
     }
 
     if (this.healthCheckInterval) {
@@ -281,8 +295,53 @@ class AutomationService {
       await this.cleanupOldBackups(backupDir);
 
       logger.info(`✅ Backup completed: ${backupPath}`);
+
+      // Upload to S3 if configured for this database
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
+      if (dbConfig?.s3?.enabled) {
+        try {
+          const resolvedDuckdbPath = dbConfig.duckdbPath.startsWith('data/')
+            ? `/app/${dbConfig.duckdbPath}`
+            : dbConfig.duckdbPath;
+          if (fs.existsSync(resolvedDuckdbPath)) {
+            const s3Key = await s3BackupService.uploadBackup(this.databaseId, resolvedDuckdbPath, dbConfig.s3);
+            logger.info(`✅ S3 backup uploaded: ${s3Key}`);
+          }
+        } catch (s3Error) {
+          logger.error('S3 upload failed (local backup still succeeded):', s3Error);
+        }
+      }
     } catch (error) {
       logger.error('Automatic backup failed:', error);
+    }
+  }
+
+  /**
+   * Restore a specific backup from S3
+   */
+  public async restoreFromS3Backup(backupKey: string): Promise<void> {
+    const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
+    if (!dbConfig?.s3?.enabled) {
+      throw new Error('S3 not configured or not enabled for this database');
+    }
+
+    const resolvedDuckdbPath = dbConfig.duckdbPath.startsWith('data/')
+      ? `/app/${dbConfig.duckdbPath}`
+      : dbConfig.duckdbPath;
+
+    const tempPath = `${resolvedDuckdbPath}.restore-tmp`;
+
+    try {
+      logger.info(`Downloading S3 backup: ${backupKey}`);
+      await s3BackupService.downloadBackup(backupKey, tempPath, dbConfig.s3);
+      fs.copyFileSync(tempPath, resolvedDuckdbPath);
+      fs.unlinkSync(tempPath);
+      logger.info('✅ S3 restore completed successfully');
+    } catch (error) {
+      if (fs.existsSync(tempPath)) {
+        try { fs.unlinkSync(tempPath); } catch {}
+      }
+      throw error;
     }
   }
 
@@ -307,6 +366,100 @@ class AutomationService {
       }
     } catch (error) {
       logger.error('Failed to cleanup old backups:', error);
+    }
+  }
+
+  /**
+   * Start independent S3 backup schedule (configured per-database via s3BackupIntervalHours)
+   */
+  private async startAutoS3Backup(): Promise<void> {
+    if (this.s3BackupInterval) {
+      clearInterval(this.s3BackupInterval);
+      this.s3BackupInterval = undefined;
+    }
+
+    const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
+    if (!dbConfig?.s3?.enabled || !dbConfig.s3.s3BackupIntervalHours) return;
+
+    const intervalHours = dbConfig.s3.s3BackupIntervalHours;
+    const retentionDays = dbConfig.s3.s3BackupRetentionDays ?? 0;
+    logger.info(`☁️  S3 auto-backup enabled: Every ${intervalHours}h${retentionDays ? `, ${retentionDays}-day retention` : ''}`);
+
+    this.s3BackupInterval = setInterval(async () => {
+      await this.performS3OnlyBackup();
+    }, intervalHours * 60 * 60 * 1000);
+  }
+
+  /**
+   * Upload the current DuckDB file to S3 and clean up old S3 backups.
+   * Called on the independent S3 backup schedule (separate from local backup schedule).
+   */
+  private async performS3OnlyBackup(): Promise<void> {
+    try {
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
+      if (!dbConfig?.s3?.enabled) return;
+
+      const resolvedDuckdbPath = dbConfig.duckdbPath.startsWith('data/')
+        ? `/app/${dbConfig.duckdbPath}`
+        : dbConfig.duckdbPath;
+
+      if (!fs.existsSync(resolvedDuckdbPath)) {
+        logger.warn(`S3 auto-backup: DuckDB file not found at ${resolvedDuckdbPath}`);
+        return;
+      }
+
+      logger.info(`☁️  Running scheduled S3 backup for database: ${this.databaseId}`);
+      const s3Key = await s3BackupService.uploadBackup(this.databaseId, resolvedDuckdbPath, dbConfig.s3);
+      logger.info(`✅ Scheduled S3 backup uploaded: ${s3Key}`);
+
+      if (dbConfig.s3.s3BackupRetentionDays) {
+        await this.cleanupOldS3Backups(dbConfig.s3);
+      }
+    } catch (error) {
+      logger.error('Scheduled S3 backup failed:', error);
+    }
+  }
+
+  /**
+   * Delete S3 backups older than s3BackupRetentionDays
+   */
+  private async cleanupOldS3Backups(s3Config: S3Config): Promise<void> {
+    try {
+      const retentionDays = s3Config.s3BackupRetentionDays!;
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - retentionDays);
+
+      const backups = await s3BackupService.listBackups(this.databaseId, s3Config);
+      const toDelete = backups.filter(b => b.lastModified < cutoff);
+
+      for (const b of toDelete) {
+        await s3BackupService.deleteBackup(b.key, s3Config);
+        logger.info(`Deleted old S3 backup: ${b.key}`);
+      }
+
+      if (toDelete.length > 0) {
+        logger.info(`☁️  S3 cleanup: deleted ${toDelete.length} backup(s) older than ${retentionDays} days`);
+      }
+    } catch (error) {
+      logger.error('S3 backup cleanup failed:', error);
+    }
+  }
+
+  /**
+   * Restart the S3 backup schedule after config changes.
+   * Called from the API handler when S3 config is saved.
+   */
+  public async restartS3BackupSchedule(): Promise<void> {
+    await this.startAutoS3Backup();
+  }
+
+  /**
+   * Restart S3 schedule on an already-running instance (no-op if no instance exists)
+   */
+  public static async restartS3ScheduleIfRunning(databaseId: string): Promise<void> {
+    const instance = AutomationService.instances.get(databaseId);
+    if (instance) {
+      await instance.restartS3BackupSchedule();
     }
   }
 
@@ -493,6 +646,7 @@ class AutomationService {
    * Get automation status
    */
   public getStatus(): any {
+    const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
     return {
       isRunning: this.isRunning,
       autoCleanup: {
@@ -504,6 +658,11 @@ class AutomationService {
         enabled: config.automation.autoBackup,
         intervalHours: config.automation.backupIntervalHours,
         retentionDays: config.automation.backupRetentionDays,
+      },
+      s3Backup: {
+        scheduled: !!this.s3BackupInterval,
+        intervalHours: dbConfig?.s3?.s3BackupIntervalHours,
+        retentionDays: dbConfig?.s3?.s3BackupRetentionDays,
       },
       autoRestart: {
         enabled: config.automation.autoRestart,

@@ -2,6 +2,24 @@ import * as fs from 'fs';
 import * as path from 'path';
 import config from '../config';
 
+export interface S3Config {
+  enabled: boolean;
+  bucket: string;
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  endpoint?: string;        // custom endpoint for S3-compatible storage (MinIO, R2, B2, etc.)
+  forcePathStyle?: boolean; // required by most S3-compatible providers
+  pathPrefix?: string;
+  // Encryption
+  encryption?: 'none' | 'sse-s3' | 'sse-kms' | 'client-aes256';
+  kmsKeyId?: string;        // optional KMS key ARN/ID for sse-kms
+  encryptionKey?: string;   // 64-char hex (32-byte) key for client-aes256
+  // Scheduled S3 backups (independent of local backup schedule)
+  s3BackupIntervalHours?: number; // e.g. 6, 12, 24; 0 or absent = piggyback local backup only
+  s3BackupRetentionDays?: number; // days to keep S3 backups; 0 or absent = keep indefinitely
+}
+
 export interface DatabaseConfig {
   id: string;
   name: string;
@@ -9,6 +27,7 @@ export interface DatabaseConfig {
   duckdbPath: string;
   createdAt: string;
   updatedAt: string;
+  s3?: S3Config;
 }
 
 // Use config to ensure correct path in both dev and production
