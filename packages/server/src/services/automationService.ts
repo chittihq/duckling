@@ -27,6 +27,14 @@ class AutomationService {
   private lastSuccessfulSync: Date = new Date();
   private isRunning: boolean = false;
 
+  /**
+   * Resolve DuckDB path for container runtime.
+   * Converts relative data/* paths to /app/data/* while preserving absolute paths.
+   */
+  private resolveDuckdbPath(duckdbPath: string): string {
+    return duckdbPath.startsWith('data/') ? `/app/${duckdbPath}` : duckdbPath;
+  }
+
   private constructor(
     databaseId: string,
     syncService: SequentialAppenderService,
@@ -279,8 +287,8 @@ class AutomationService {
       // Backup DuckDB database file (database-specific path for multi-database setups)
       const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
       const duckdbPath = dbConfig?.duckdbPath
-        ? (dbConfig.duckdbPath.startsWith('data/') ? `/app/${dbConfig.duckdbPath}` : dbConfig.duckdbPath)
-        : config.duckdb.path;
+        ? this.resolveDuckdbPath(dbConfig.duckdbPath)
+        : this.resolveDuckdbPath(config.duckdb.path);
       if (fs.existsSync(duckdbPath)) {
         const duckdbBackup = path.join(backupPath, 'duckling.db');
         fs.copyFileSync(duckdbPath, duckdbBackup);
@@ -302,9 +310,7 @@ class AutomationService {
       // Upload to S3 if configured for this database
       if (dbConfig?.s3?.enabled) {
         try {
-          const resolvedDuckdbPath = dbConfig.duckdbPath.startsWith('data/')
-            ? `/app/${dbConfig.duckdbPath}`
-            : dbConfig.duckdbPath;
+          const resolvedDuckdbPath = this.resolveDuckdbPath(dbConfig.duckdbPath);
           if (fs.existsSync(resolvedDuckdbPath)) {
             const s3Key = await s3BackupService.uploadBackup(this.databaseId, resolvedDuckdbPath, dbConfig.s3);
             logger.info(`✅ S3 backup uploaded: ${s3Key}`);
@@ -327,9 +333,7 @@ class AutomationService {
       throw new Error('S3 not configured or not enabled for this database');
     }
 
-    const resolvedDuckdbPath = dbConfig.duckdbPath.startsWith('data/')
-      ? `/app/${dbConfig.duckdbPath}`
-      : dbConfig.duckdbPath;
+    const resolvedDuckdbPath = this.resolveDuckdbPath(dbConfig.duckdbPath);
 
     const tempPath = `${resolvedDuckdbPath}.restore-tmp`;
 
@@ -401,9 +405,7 @@ class AutomationService {
       const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
       if (!dbConfig?.s3?.enabled) return;
 
-      const resolvedDuckdbPath = dbConfig.duckdbPath.startsWith('data/')
-        ? `/app/${dbConfig.duckdbPath}`
-        : dbConfig.duckdbPath;
+      const resolvedDuckdbPath = this.resolveDuckdbPath(dbConfig.duckdbPath);
 
       if (!fs.existsSync(resolvedDuckdbPath)) {
         logger.warn(`S3 auto-backup: DuckDB file not found at ${resolvedDuckdbPath}`);
