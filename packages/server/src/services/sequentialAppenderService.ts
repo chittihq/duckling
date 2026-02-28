@@ -785,14 +785,14 @@ class SequentialAppenderService {
       await this.duckdb.run(`DROP TABLE IF EXISTS ${this.q(stagingTable)}`);
       await this.createTable(stagingTable, schema);
 
-      logger.info(`${tableName}: Starting Appender-based insert into staging table`);
+      logger.info(`${tableName}: Starting Appender-based insert into staging table ${stagingTable}`);
 
       let _appender: any = null;
       let _conn: any = null;
 
       try {
         // Create Appender instance for this table using unified DuckDB connection
-        logger.debug(`${tableName}: Creating Appender instance...`);
+        logger.debug(`${tableName}: Creating Appender instance for staging table ${stagingTable}...`);
         const { appender, connection: conn } = await this.duckdb.createAppender(stagingTable);
         _appender = appender;
         _conn = conn;
