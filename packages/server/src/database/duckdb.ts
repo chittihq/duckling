@@ -6,6 +6,10 @@ import logger from '../logger';
 import { QueryGovernor, QueryGovernorOptions } from '../services/queryGovernor';
 
 interface ExecutionOptions extends QueryGovernorOptions {
+  /**
+   * Bypass query governor for initialization and low-level internal operations only.
+   * Avoid using this for request-driven query paths.
+   */
   skipGovernor?: boolean;
 }
 
@@ -431,11 +435,6 @@ class DuckDBConnection {
     return this.queryGovernor.getStats();
   }
 
-  async executeWithoutGovernor(query: string, params?: any[]): Promise<any[]> {
-    await this.ensureInitialized();
-    return this.executeRaw(query, params, false); // Convert to objects with column names
-  }
-
   /**
    * Execute query for internal operations (sync, etc.)
    * Returns raw arrays without conversion for better memory efficiency
@@ -520,11 +519,6 @@ class DuckDBConnection {
 
   async runHighPriority(query: string, params?: any[], timeoutMs?: number): Promise<void> {
     return this.run(query, params, { priority: 'high', timeoutMs });
-  }
-
-  async runWithoutGovernor(query: string, params?: any[]): Promise<void> {
-    await this.ensureInitialized();
-    return this.runRaw(query, params);
   }
 
   async testConnection(): Promise<boolean> {

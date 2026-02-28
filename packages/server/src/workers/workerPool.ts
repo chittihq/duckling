@@ -2,6 +2,7 @@ import path from 'path';
 import { Worker } from 'worker_threads';
 import config from '../config';
 import logger from '../logger';
+import fs from 'fs';
 
 interface PendingRequest {
   resolve: (rows: any[][]) => void;
@@ -37,7 +38,10 @@ export class WorkerPool {
   }
 
   async sanitizeRows(rows: any[][], columnTypes: string[]): Promise<any[][]> {
-    if (!rows.length || !this.workers.length) return rows;
+    if (!rows.length) return rows;
+    if (!this.workers.length) {
+      throw new Error('Worker pool is unavailable');
+    }
 
     const requestId = ++this.requestId;
     const worker = this.getNextWorker();
@@ -55,11 +59,11 @@ export class WorkerPool {
   }
 
   private createWorker(): Worker {
-    const isTsRuntime = __filename.endsWith('.ts');
-    const workerFile = isTsRuntime
-      ? path.resolve(__dirname, 'sanitizeWorker.ts')
-      : path.resolve(__dirname, 'sanitizeWorker.js');
-    const worker = new Worker(workerFile, isTsRuntime ? { execArgv: ['-r', 'ts-node/register'] } : undefined);
+    const jsWorkerFile = path.resolve(__dirname, 'sanitizeWorker.js');
+    const tsWorkerFile = path.resolve(__dirname, 'sanitizeWorker.ts');
+    const useTsWorker = !fs.existsSync(jsWorkerFile) && fs.existsSync(tsWorkerFile);
+    const workerFile = useTsWorker ? tsWorkerFile : jsWorkerFile;
+    const worker = new Worker(workerFile, useTsWorker ? { execArgv: ['-r', 'ts-node/register'] } : undefined);
 
     worker.on('message', (message: WorkerResponse) => {
       const pending = this.pendingRequests.get(message.id);
@@ -70,6 +74,7 @@ export class WorkerPool {
 
     worker.on('error', (error) => {
       logger.warn('Worker thread error, request will fall back to main thread path', error);
+      this.rejectPendingRequestsForWorker(worker, new Error(`Worker error: ${error.message}`));
     });
 
     worker.on('exit', (code) => {
@@ -77,12 +82,7 @@ export class WorkerPool {
         logger.warn(`Worker exited unexpectedly with code ${code}, restarting worker`);
       }
 
-      for (const [id, pending] of this.pendingRequests.entries()) {
-        if (pending.worker === worker) {
-          this.pendingRequests.delete(id);
-          pending.reject(new Error('Worker exited before completing sanitize request'));
-        }
-      }
+      this.rejectPendingRequestsForWorker(worker, new Error('Worker exited before completing sanitize request'));
 
       const index = this.workers.indexOf(worker);
       if (index >= 0) {
@@ -92,5 +92,13 @@ export class WorkerPool {
 
     return worker;
   }
-}
 
+  private rejectPendingRequestsForWorker(worker: Worker, error: Error): void {
+    for (const [id, pending] of this.pendingRequests.entries()) {
+      if (pending.worker === worker) {
+        this.pendingRequests.delete(id);
+        pending.reject(error);
+      }
+    }
+  }
+}

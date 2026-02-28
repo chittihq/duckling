@@ -19,7 +19,7 @@ const sanitizeValue = (value: any, columnType: string): any => {
   if (lowerType.includes('timestamp') || lowerType.includes('datetime') || lowerType === 'date') {
     if (value === '0000-00-00 00:00:00' || value === '0000-00-00') return null;
     if (typeof value === 'string' && (value.includes('undefined') || value.trim() === '')) return null;
-    if (value instanceof Date && (isNaN(value.getTime()) || value.getTime() === 0 || value.getFullYear() === 0)) return null;
+    if (value instanceof Date && (isNaN(value.getTime()) || value.getFullYear() === 0)) return null;
   }
 
   if (lowerType.includes('time') && !lowerType.includes('datetime') && !lowerType.includes('timestamp')) {
@@ -33,7 +33,6 @@ const sanitizeValue = (value: any, columnType: string): any => {
   }
 
   if (value instanceof Date) {
-    if (isNaN(value.getTime()) || value.getFullYear() === 0) return null;
     return value.toISOString();
   }
 
@@ -54,4 +53,3 @@ parentPort?.on('message', (message: SanitizeRequest) => {
   );
   parentPort?.postMessage({ id: message.id, rows: sanitizedRows });
 });
-

@@ -78,7 +78,7 @@ export const config = {
   },
 
   workers: {
-    threads: Math.max(1, parseInt(process.env.WORKER_THREADS || String(Math.max(1, os.cpus().length - 1)))),
+    threads: Math.max(1, parseInt(process.env.WORKER_THREADS || String(os.cpus().length - 1))),
   },
 
   queryGovernor: {

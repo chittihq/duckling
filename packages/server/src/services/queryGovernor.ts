@@ -38,7 +38,6 @@ export class QueryGovernor {
   private readonly highPriorityQueue: PendingTask<any>[] = [];
   private readonly normalPriorityQueue: PendingTask<any>[] = [];
   private consecutiveHighServed = 0;
-  private activeQueries: number = 0;
 
   constructor(overrides: {
     maxConcurrentQueries?: number;
@@ -76,7 +75,7 @@ export class QueryGovernor {
 
   getStats(): { active: number; queued: number; queuedHigh: number; queuedNormal: number } {
     return {
-      active: this.activeQueries,
+      active: this.activeCount,
       queued: this.queuedCount(),
       queuedHigh: this.highPriorityQueue.length,
       queuedNormal: this.normalPriorityQueue.length
@@ -113,7 +112,6 @@ export class QueryGovernor {
 
   private async runTask<T>(run: () => Promise<T>, timeoutMs: number): Promise<T> {
     this.activeCount++;
-    this.activeQueries++;
 
     let timeoutHandle: NodeJS.Timeout | null = null;
     try {
@@ -131,7 +129,6 @@ export class QueryGovernor {
         clearTimeout(timeoutHandle);
       }
       this.activeCount--;
-      this.activeQueries--;
       this.scheduleNext();
     }
   }

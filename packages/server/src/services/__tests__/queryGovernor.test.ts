@@ -60,7 +60,7 @@ describe('QueryGovernor', () => {
 
     await Promise.all([blocker, high1, normal, high2]);
 
+    expect(executionOrder[0]).toBe('blocker');
     expect(executionOrder.slice(1)).toEqual(['high1', 'normal', 'high2']);
   });
 });
-
