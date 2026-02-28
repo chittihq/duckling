@@ -34,6 +34,30 @@ describe('Suite 2: Incremental Insert', () => {
     expect(await duckdbScalarStrict('SELECT name FROM users_with_timestamps WHERE id = 6', 'name')).toBe('Frank');
   });
 
+  test('Frank JSON metadata', async () => {
+    const raw = await duckdbScalarStrict('SELECT metadata FROM users_with_timestamps WHERE id = 6', 'metadata');
+    const parsed = JSON.parse(raw);
+    expect(parsed.level).toBe(1);
+    expect(parsed.tags).toEqual(['new']);
+  });
+
+  test('Frank is_active (BOOLEAN)', async () => {
+    const val = await duckdbScalarStrict('SELECT is_active FROM users_with_timestamps WHERE id = 6', 'is_active');
+    expect(val === 'true' || val === '1').toBe(true);
+  });
+
+  test('Frank birth_date (DATE)', async () => {
+    const val = await duckdbScalarStrict(
+      'SELECT CAST(birth_date AS VARCHAR) AS bd FROM users_with_timestamps WHERE id = 6',
+      'bd',
+    );
+    expect(val).toBe('1991-07-20');
+  });
+
+  test('Frank role (ENUM)', async () => {
+    expect(await duckdbScalarStrict('SELECT role FROM users_with_timestamps WHERE id = 6', 'role')).toBe('viewer');
+  });
+
   test('Logout event exists in DuckDB', async () => {
     expect(await duckdbScalarStrict('SELECT event_type FROM events_append_only WHERE id = 4', 'event_type')).toBe('logout');
   });
