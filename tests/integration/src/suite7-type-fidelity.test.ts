@@ -208,6 +208,25 @@ describe('Suite 7: MySQL 8 Type Fidelity', () => {
         await duckdbScalarStrict('SELECT col_enum FROM type_coverage WHERE id = 1', 'col_enum'),
       ).toBe('gamma');
     });
+
+    test('BOOLEAN true', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_boolean FROM type_coverage WHERE id = 1', 'col_boolean'),
+      ).toBe('true');
+    });
+
+    test('UTF-8 4-byte emoji', async () => {
+      const val = await duckdbScalarStrict('SELECT col_utf8_emoji FROM type_coverage WHERE id = 1', 'col_utf8_emoji');
+      expect(val).toContain('🦆');
+      expect(val).toContain('𝌆');
+      expect(val).toBe('Hello 🦆 World 𝌆 Test');
+    });
+
+    test('Zero date (0000-00-00) becomes null', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_date_zero FROM type_coverage WHERE id = 1', 'col_date_zero'),
+      ).toBe('null');
+    });
   });
 
   // ===== Row 2: Zero/empty values (id=2) =====
@@ -318,6 +337,26 @@ describe('Suite 7: MySQL 8 Type Fidelity', () => {
       expect(
         await duckdbScalarStrict('SELECT col_enum FROM type_coverage WHERE id = 2', 'col_enum'),
       ).toBe('alpha');
+    });
+
+    test('BOOLEAN false', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_boolean FROM type_coverage WHERE id = 2', 'col_boolean'),
+      ).toBe('false');
+    });
+
+    test('UTF-8 empty string', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_utf8_emoji FROM type_coverage WHERE id = 2', 'col_utf8_emoji'),
+      ).toBe('');
+    });
+
+    test('DATE min (1000-01-01)', async () => {
+      const val = await duckdbScalarStrict(
+        'SELECT CAST(col_date_zero AS VARCHAR) AS v FROM type_coverage WHERE id = 2',
+        'v',
+      );
+      expect(val).toContain('1000-01-01');
     });
   });
 
@@ -452,6 +491,24 @@ describe('Suite 7: MySQL 8 Type Fidelity', () => {
     test('ENUM null', async () => {
       expect(
         await duckdbScalarStrict('SELECT col_enum FROM type_coverage WHERE id = 3', 'col_enum'),
+      ).toBe('null');
+    });
+
+    test('BOOLEAN null', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_boolean FROM type_coverage WHERE id = 3', 'col_boolean'),
+      ).toBe('null');
+    });
+
+    test('UTF-8 emoji null', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_utf8_emoji FROM type_coverage WHERE id = 3', 'col_utf8_emoji'),
+      ).toBe('null');
+    });
+
+    test('DATE zero null', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_date_zero FROM type_coverage WHERE id = 3', 'col_date_zero'),
       ).toBe('null');
     });
   });

@@ -99,6 +99,11 @@ CREATE TABLE IF NOT EXISTS type_coverage (
   col_json              JSON,
   col_enum              ENUM('alpha','beta','gamma','delta'),
 
+  -- Boolean, UTF-8 4-byte, zero date
+  col_boolean           BOOLEAN,
+  col_utf8_emoji        VARCHAR(100),
+  col_date_zero         DATE,
+
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL
 ) ENGINE=InnoDB;
@@ -127,6 +132,9 @@ CREATE TABLE IF NOT EXISTS type_coverage_cdc (
   col_set               SET('a','b','c','d'),
   col_json              JSON,
   col_enum              ENUM('alpha','beta','gamma','delta'),
+  col_boolean           BOOLEAN,
+  col_utf8_emoji        VARCHAR(100),
+  col_date_zero         DATE,
 
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL

@@ -130,6 +130,9 @@ INSERT INTO products_simple (id, name, price, quantity, updated_at) VALUES
   (3, 'Gadget C',  199.99,   10, '2025-01-03 12:00:00'),
   (4, 'Gadget D',    9.99, 1000, '2025-01-04 12:00:00');
 
+-- Allow zero dates for type_coverage testing
+SET SESSION sql_mode = REPLACE(@@sql_mode, 'NO_ZERO_DATE', '');
+
 -- Seed type_coverage (3 rows: edge cases, zeros/empty, NULLs)
 -- Row 1: Edge cases — min/max/boundary values
 INSERT INTO type_coverage (
@@ -141,6 +144,7 @@ INSERT INTO type_coverage (
   col_date, col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
   col_set, col_bit_1, col_bit_8,
   col_json, col_enum,
+  col_boolean, col_utf8_emoji, col_date_zero,
   created_at, updated_at
 ) VALUES (
   1, -128, -32768, -8388608,
@@ -151,6 +155,7 @@ INSERT INTO type_coverage (
   '2025-06-15', '23:59:59', '23:59:59.123456', '2025-06-15 12:30:45', '2025-06-15 12:30:45.654321', '2025-06-15 12:30:45.654321', 2025,
   'a,c,d', b'1', b'11111111',
   '{"name":"test","tags":["a","b"],"nested":{"key":1},"flag":true,"nothing":null}', 'gamma',
+  TRUE, 'Hello 🦆 World 𝌆 Test', '0000-00-00',
   '2025-01-01 00:00:00', '2025-01-01 00:00:00'
 );
 
@@ -164,6 +169,7 @@ INSERT INTO type_coverage (
   col_date, col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
   col_set, col_bit_1, col_bit_8,
   col_json, col_enum,
+  col_boolean, col_utf8_emoji, col_date_zero,
   created_at, updated_at
 ) VALUES (
   2, 0, 0, 0,
@@ -174,6 +180,7 @@ INSERT INTO type_coverage (
   '1970-01-01', '00:00:00', '00:00:00.000000', '1970-01-01 00:00:01', '1970-01-01 00:00:01.000000', '1970-01-01 00:00:01.000000', 1970,
   '', b'0', b'00000000',
   '[]', 'alpha',
+  FALSE, '', '1000-01-01',
   '2025-01-01 00:00:00', '2025-01-01 00:00:00'
 );
 
@@ -187,6 +194,7 @@ INSERT INTO type_coverage (
   col_date, col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
   col_set, col_bit_1, col_bit_8,
   col_json, col_enum,
+  col_boolean, col_utf8_emoji, col_date_zero,
   created_at, updated_at
 ) VALUES (
   3, NULL, NULL, NULL,
@@ -197,6 +205,7 @@ INSERT INTO type_coverage (
   NULL, NULL, NULL, NULL, NULL, NULL, NULL,
   NULL, NULL, NULL,
   NULL, NULL,
+  NULL, NULL, NULL,
   '2025-01-01 00:00:00', '2025-01-01 00:00:00'
 );
 

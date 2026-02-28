@@ -491,9 +491,9 @@ class SequentialAppenderService {
       return JSON.stringify(value);
     }
 
-    // Handle invalid timestamps for timestamp/datetime columns
-    if (lowerType.includes('timestamp') || lowerType.includes('datetime')) {
-      // Check if value is the invalid timestamp string
+    // Handle invalid timestamps for timestamp/datetime/date columns
+    if (lowerType.includes('timestamp') || lowerType.includes('datetime') || lowerType === 'date') {
+      // Check if value is the invalid timestamp/date string
       if (value === '0000-00-00 00:00:00' || value === '0000-00-00' || value === null) {
         return null;
       }
