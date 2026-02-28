@@ -1,8 +1,10 @@
 import { DuckDBInstance } from '@duckdb/node-api';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import config from '../config';
 import logger from '../logger';
+import QueryMetricsService from '../services/queryMetricsService';
 
 class DuckDBConnection {
   private dbInstance: DuckDBInstance | null = null;
@@ -10,6 +12,7 @@ class DuckDBConnection {
   private static instances: Map<string, DuckDBConnection> = new Map();
   private static initializedInstances: Set<string> = new Set();
   private dbPath: string;
+  private databaseId: string = 'default';
   private initializationPromise: Promise<void> | null = null;
   private isInitializing: boolean = false;
   // Persistent connection for queries — avoids creating/closing hundreds of connections
@@ -126,6 +129,7 @@ class DuckDBConnection {
     if (!DuckDBConnection.instances.has(databaseId)) {
       const path = dbPath || config.duckdb.path;
       const instance = new DuckDBConnection(path);
+      instance.databaseId = databaseId;
       DuckDBConnection.instances.set(databaseId, instance);
 
       // Initialize database asynchronously (don't await here to keep method synchronous)
@@ -408,7 +412,18 @@ class DuckDBConnection {
 
   async execute(query: string, params?: any[]): Promise<any[]> {
     await this.ensureInitialized();
-    return this.executeRaw(query, params, false); // Convert to objects with column names
+    const metrics = QueryMetricsService.getInstance();
+    const id = crypto.randomUUID();
+    const start = Date.now();
+    metrics.trackStart(id, query, this.databaseId);
+    try {
+      const result = await this.executeRaw(query, params, false);
+      metrics.trackEnd(id, Date.now() - start);
+      return result;
+    } catch (err: any) {
+      metrics.trackEnd(id, Date.now() - start, err.message);
+      throw err;
+    }
   }
 
   /**

@@ -11,6 +11,8 @@ import AutomationService from './services/automationService';
 import CDCService from './services/cdcService';
 import WebSocketService from './services/websocketService';
 import LogBufferService from './services/logBufferService';
+import QueryMetricsService from './services/queryMetricsService';
+import SystemMetricsService from './services/systemMetricsService';
 import { DatabaseConfigManager } from './database/databaseConfig';
 import type { S3Config } from './database/databaseConfig';
 import { attachDatabaseContext, RequestWithDatabase } from './middleware/database';
@@ -269,6 +271,10 @@ class DuckDBServer {
 
     // Enhanced metrics endpoint
     this.app.get('/metrics', this.getMetrics.bind(this));
+
+    // Observability metrics endpoints
+    this.app.get('/api/metrics/queries', this.getQueryMetrics.bind(this));
+    this.app.get('/api/metrics/system', this.getSystemMetrics.bind(this));
 
     // Validation endpoints
     this.app.get('/api/validation/mysql-tables', attachDatabaseContext, this.getMySQLTables.bind(this));
@@ -750,6 +756,26 @@ class DuckDBServer {
       res.status(500).json({
         error: error instanceof Error ? error.message : 'Unknown error'
       });
+    }
+  }
+
+  private async getQueryMetrics(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const metrics = QueryMetricsService.getInstance();
+      res.json(metrics.getSnapshot());
+    } catch (error) {
+      logger.error('Get query metrics failed:', error);
+      sendError(res, error);
+    }
+  }
+
+  private async getSystemMetrics(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const metrics = SystemMetricsService.getInstance();
+      res.json(metrics.getSnapshot());
+    } catch (error) {
+      logger.error('Get system metrics failed:', error);
+      sendError(res, error);
     }
   }
 
@@ -1872,6 +1898,9 @@ class DuckDBServer {
       // Initialize log buffer service
       console.log('Initializing log buffer service...');
       this.logBufferService.initialize();
+
+      // Start system metrics collection
+      SystemMetricsService.getInstance().start();
 
       console.log('Server startup completed successfully');
     } catch (error) {

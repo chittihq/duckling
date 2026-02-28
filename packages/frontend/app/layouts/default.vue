@@ -77,6 +77,19 @@
         </NuxtLink>
 
         <NuxtLink
+          to="/observe"
+          class="flex items-center justify-center h-12 hover:bg-accent transition-colors group relative"
+          :class="{ 'bg-accent': $route.path === '/observe' }"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+          <span class="absolute left-full ml-2 px-2 py-1 bg-popover text-popover-foreground text-sm rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
+            Observe
+          </span>
+        </NuxtLink>
+
+        <NuxtLink
           to="/settings"
           class="flex items-center justify-center h-12 hover:bg-accent transition-colors group relative"
           :class="{ 'bg-accent': $route.path === '/settings' }"
