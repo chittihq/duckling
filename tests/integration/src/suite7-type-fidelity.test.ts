@@ -209,10 +209,10 @@ describe('Suite 7: MySQL 8 Type Fidelity', () => {
       ).toBe('gamma');
     });
 
-    test('BOOLEAN true', async () => {
+    test('BOOLEAN true (TINYINT 1)', async () => {
       expect(
         await duckdbScalarStrict('SELECT col_boolean FROM type_coverage WHERE id = 1', 'col_boolean'),
-      ).toBe('true');
+      ).toBe('1');
     });
 
     test('UTF-8 4-byte emoji', async () => {
@@ -339,10 +339,10 @@ describe('Suite 7: MySQL 8 Type Fidelity', () => {
       ).toBe('alpha');
     });
 
-    test('BOOLEAN false', async () => {
+    test('BOOLEAN false (TINYINT 0)', async () => {
       expect(
         await duckdbScalarStrict('SELECT col_boolean FROM type_coverage WHERE id = 2', 'col_boolean'),
-      ).toBe('false');
+      ).toBe('0');
     });
 
     test('UTF-8 empty string', async () => {

@@ -16,7 +16,8 @@ class MySQLConnection {
       connectionLimit: config.mysql.maxConnections,
       timezone: 'Z',
       multipleStatements: true,
-      dateStrings: true
+      dateStrings: true,
+      charset: 'utf8mb4'
     });
   }
 
