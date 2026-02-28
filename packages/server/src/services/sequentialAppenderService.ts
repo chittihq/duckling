@@ -573,12 +573,16 @@ class SequentialAppenderService {
       let lastLoggedAt = 0;
       const PROGRESS_LOG_INTERVAL = 10000;
 
-      // Clear existing data for full sync (separate transaction to avoid huge rollback)
-      await this.duckdb.run(`DELETE FROM ${this.q(tableName)}`);
+      logger.info(`${tableName}: Starting transactional full refresh`);
 
-      logger.info(`${tableName}: Table cleared, starting insert with periodic commits`);
-
+      let transactionStarted = false;
       try {
+        await this.duckdb.run('BEGIN TRANSACTION');
+        transactionStarted = true;
+
+        // Clear existing data for full sync and repopulate atomically
+        await this.duckdb.run(`DELETE FROM ${this.q(tableName)}`);
+
         // Get column names for INSERT statement
         const columns = schema.map(col => col.Field);
         const quotedColumns = columns.map(col => this.q(col)).join(', ');
@@ -647,7 +651,8 @@ class SequentialAppenderService {
           logger.debug(`Bulk inserted ${fetchedBatch.length} records to ${tableName}, total: ${recordsProcessed}`);
         }
 
-        // Final commit
+        await this.duckdb.run('COMMIT');
+        transactionStarted = false;
 
         // Get max ID for watermark (supports both numeric and string IDs)
         const primaryKeyColumn = await this.detectPrimaryKeyColumn(tableName, schema);
@@ -684,7 +689,13 @@ class SequentialAppenderService {
         logger.info(`Sequential sync completed for ${tableName}: ${recordsProcessed} records`);
 
       } catch (error) {
-        // Rollback on any error - no partial data
+        if (transactionStarted) {
+          try {
+            await this.duckdb.run('ROLLBACK');
+          } catch (rollbackError) {
+            logger.error(`Failed to rollback transaction for ${tableName}:`, rollbackError);
+          }
+        }
         throw error;
       }
 
@@ -770,13 +781,11 @@ class SequentialAppenderService {
       let lastLoggedAt = 0;
       const PROGRESS_LOG_INTERVAL = 10000;
 
-      // Clear existing data for full sync
-      await this.duckdb.run(`DELETE FROM ${this.q(tableName)}`);
+      const stagingTable = `__full_sync_staging_${tableName}`;
+      await this.duckdb.run(`DROP TABLE IF EXISTS ${this.q(stagingTable)}`);
+      await this.createTable(stagingTable, schema);
 
-      // Checkpoint after DELETE to ensure Appender sees empty table
-      await this.duckdb.checkpoint();
-
-      logger.info(`${tableName}: Table cleared, starting Appender-based insert`);
+      logger.info(`${tableName}: Starting Appender-based insert into staging table`);
 
       let _appender: any = null;
       let _conn: any = null;
@@ -784,7 +793,7 @@ class SequentialAppenderService {
       try {
         // Create Appender instance for this table using unified DuckDB connection
         logger.debug(`${tableName}: Creating Appender instance...`);
-        const { appender, connection: conn } = await this.duckdb.createAppender(tableName);
+        const { appender, connection: conn } = await this.duckdb.createAppender(stagingTable);
         _appender = appender;
         _conn = conn;
         logger.info(`${tableName}: Appender created successfully`);
@@ -868,12 +877,21 @@ class SequentialAppenderService {
         _conn = null;
         logger.info(`${tableName}: Appender flushed and closed successfully`);
 
-        // IMPORTANT: Force CHECKPOINT to flush WAL and ensure data durability
-        // Ensures all changes are persisted to the database file immediately
-        // Use checkpoint() which swallows errors, preventing invalidation from propagating
-        logger.debug(`${tableName}: Running CHECKPOINT to flush WAL...`);
-        await this.duckdb.checkpoint();
-        logger.info(`${tableName}: CHECKPOINT completed, data persisted successfully`);
+        await this.duckdb.run('BEGIN TRANSACTION');
+        try {
+          await this.duckdb.run(`DELETE FROM ${this.q(tableName)}`);
+          await this.duckdb.run(`INSERT INTO ${this.q(tableName)} SELECT * FROM ${this.q(stagingTable)}`);
+          await this.duckdb.run('COMMIT');
+        } catch (swapError) {
+          try {
+            await this.duckdb.run('ROLLBACK');
+          } catch (rollbackError) {
+            logger.error(`Failed to rollback staging swap for ${tableName}:`, rollbackError);
+          }
+          throw swapError;
+        } finally {
+          await this.duckdb.run(`DROP TABLE IF EXISTS ${this.q(stagingTable)}`);
+        }
 
         // Get max ID for watermark (supports both numeric and string IDs)
         const primaryKeyColumn = await this.detectPrimaryKeyColumn(tableName, schema);
@@ -912,6 +930,7 @@ class SequentialAppenderService {
       } catch (error) {
         if (_appender) { try { _appender.closeSync(); } catch {} }
         if (_conn) { try { _conn.closeSync(); } catch {} }
+        await this.duckdb.run(`DROP TABLE IF EXISTS ${this.q(stagingTable)}`);
         logger.error(`Appender sync failed for ${tableName}, error:`, error);
         throw error;
       }
