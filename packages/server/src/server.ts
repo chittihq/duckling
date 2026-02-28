@@ -281,7 +281,7 @@ class DuckDBServer {
       // Only serve index.html if it's not an API route
       if (!req.path.startsWith('/api/') && !req.path.startsWith('/_nuxt/')) {
         const indexPath = path.join(__dirname, '..', 'public', 'index.html');
-        if (require('fs').existsSync(indexPath)) {
+        if (fs.existsSync(indexPath)) {
           res.sendFile(indexPath);
         } else {
           // In development, Nuxt runs separately, so just return 404
@@ -857,7 +857,7 @@ class DuckDBServer {
       const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
       const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
       // Trigger manual backup via automation service
-      await automationService['performBackup']();
+      await automationService.performBackup();
       res.json({
         success: true,
         message: 'Manual backup completed successfully'
@@ -896,7 +896,7 @@ class DuckDBServer {
       const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
       const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
       // Trigger manual cleanup via automation service
-      await automationService['performCleanup']();
+      await automationService.performCleanup();
       res.json({
         success: true,
         message: 'Manual cleanup completed successfully'
