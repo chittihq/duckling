@@ -24,4 +24,12 @@ describe('isReadOnlyMySQLQuery', () => {
   test('rejects multiple statements', () => {
     expect(isReadOnlyMySQLQuery('SELECT 1; DROP TABLE users')).toBe(false);
   });
+
+  test('allows semicolons in string literals', () => {
+    expect(isReadOnlyMySQLQuery("SELECT ';' AS value")).toBe(true);
+  });
+
+  test('rejects cte queries to avoid write-capable WITH statements', () => {
+    expect(isReadOnlyMySQLQuery('WITH x AS (SELECT 1) SELECT * FROM x')).toBe(false);
+  });
 });
