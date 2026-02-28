@@ -4,10 +4,7 @@ import DuckDBConnection from '../duckdb';
 describe('DuckDBConnection getPersistentConnection', () => {
   test('uses a single connect call under concurrent access', async () => {
     const connection = { closeSync: vi.fn() };
-    const connect = vi.fn(async () => {
-      await new Promise(resolve => setTimeout(resolve, 10));
-      return connection;
-    });
+    const connect = vi.fn(async () => connection);
 
     const ctx: any = {
       persistentConn: null,

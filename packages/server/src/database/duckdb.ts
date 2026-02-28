@@ -88,6 +88,7 @@ class DuckDBConnection {
         this.persistentConn = await instance.connect();
         return this.persistentConn;
       })().catch((error) => {
+        this.persistentConn = null;
         this.persistentConnPromise = null;
         throw error;
       });
