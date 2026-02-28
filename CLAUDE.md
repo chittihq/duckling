@@ -221,6 +221,9 @@ The system uses a **unified @duckdb/node-api architecture** with high-performanc
 | DECIMAL, NUMERIC | DECIMAL | ✅ | Exact numeric |
 | BOOLEAN | BOOLEAN | ✅ | Boolean type |
 
+**Unsupported Types:**
+- Spatial/geometry types (`POINT`, `LINESTRING`, `POLYGON`, `GEOMETRY`, `MULTIPOINT`, `MULTILINESTRING`, `MULTIPOLYGON`, `GEOMETRYCOLLECTION`) are not supported. These columns fall through to `VARCHAR`, which stores the raw binary WKB representation as a string. Tables with spatial columns will sync but the spatial data is not usable for spatial queries in DuckDB.
+
 **Key Benefits:**
 - ✅ **60,000+ rows/sec** vs 10,000 rows/sec with INSERT
 - ✅ **Unified architecture** - single package for all operations

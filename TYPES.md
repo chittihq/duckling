@@ -28,7 +28,7 @@ This document covers Duckling's comprehensive MySQL 8 data type support, how eac
 | BLOB | BLOB | appendBlob | Full only | -- |
 | MEDIUMBLOB | BLOB | appendBlob | Full only | -- |
 | LONGBLOB | BLOB | appendBlob | Full only | -- |
-| JSON | VARCHAR | appendVarchar | Full + Incremental | CDC |
+| JSON | JSON | appendVarchar | Full + Incremental | CDC |
 | ENUM | VARCHAR | appendVarchar | Full + Incremental | CDC |
 | SET | VARCHAR | appendVarchar | Full + Incremental | CDC |
 | DATE | DATE | appendVarchar (auto) | Full + Incremental | CDC |
@@ -51,6 +51,10 @@ Values above `BIGINT_MAX` (9,223,372,036,854,775,807) overflow DuckDB's signed `
 ### DECIMAL Precision
 
 MySQL `DECIMAL(20,10)` maps to DuckDB's bare `DECIMAL` type. High-precision values may experience truncation depending on the DuckDB DECIMAL width. Tests use `assert_contains` on the integer portion rather than exact matching.
+
+### Spatial / Geometry Types
+
+MySQL spatial types (`POINT`, `LINESTRING`, `POLYGON`, `GEOMETRY`, `MULTIPOINT`, `MULTILINESTRING`, `MULTIPOLYGON`, `GEOMETRYCOLLECTION`) are not supported. These columns fall through to the `VARCHAR` default mapping, which stores the raw binary WKB representation as a string. Tables with spatial columns will sync but the spatial data is not usable for spatial queries in DuckDB. DuckDB has a `spatial` extension but Duckling does not perform WKB-to-geometry conversion.
 
 ### Binary Types & CDC
 
@@ -88,13 +92,13 @@ Tests non-binary types through the CDC INSERT and UPDATE paths:
 | Suite | Assertions |
 |-------|-----------|
 | Suite 1: Full Sync | 24 |
-| Suite 2: Incremental Insert | 8 |
+| Suite 2: Incremental Insert | 12 |
 | Suite 3: Incremental Update | 8 |
 | Suite 4: Single Table Sync | 4 |
 | Suite 5: Idempotent Re-sync | 8 |
 | Suite 6: CDC Real-Time (+ type ext) | 17 + 18 = 35 |
 | Suite 7: Type Fidelity | 64 |
-| **Total** | **~151** |
+| **Total** | **~155** |
 
 ## Running the Tests
 

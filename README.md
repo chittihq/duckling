@@ -175,7 +175,7 @@ See [CLI.md](CLI.md) for the full list of available commands.
 
 ## Type Support
 
-Duckling supports all MySQL 8 data types with comprehensive integration testing. See [TYPES.md](TYPES.md) for the full type mapping reference, known limitations, and test coverage details.
+Duckling supports all standard MySQL 8 data types with comprehensive integration testing. Spatial/geometry types (`POINT`, `POLYGON`, `GEOMETRY`, etc.) are **not supported** — these columns fall through to `VARCHAR` and are not usable for spatial queries. See [TYPES.md](TYPES.md) for the full type mapping reference, known limitations, and test coverage details.
 
 ## How It Works
 
