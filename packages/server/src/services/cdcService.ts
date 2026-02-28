@@ -506,7 +506,16 @@ export class CDCService {
 
     // Handle Date objects
     if (value instanceof Date) {
+      // Zero date (0000-00-00) comes as invalid Date or epoch 0
+      if (isNaN(value.getTime()) || value.getFullYear() === 0) {
+        return null;
+      }
       return value.toISOString();
+    }
+
+    // Handle zero date strings
+    if (value === '0000-00-00' || value === '0000-00-00 00:00:00') {
+      return null;
     }
 
     // Handle Buffer (BLOB)

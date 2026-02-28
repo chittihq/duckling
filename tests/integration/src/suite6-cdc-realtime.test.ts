@@ -192,19 +192,22 @@ describe('Suite 6: CDC Real-Time Replication', () => {
   describe('CDC type fidelity', () => {
     test('type_coverage_cdc INSERT detected', async () => {
       mysqlExec(`
+        SET SESSION sql_mode = REPLACE(@@sql_mode, 'NO_ZERO_DATE', '');
         INSERT INTO type_coverage_cdc (
           id, col_tinyint_signed, col_smallint, col_mediumint,
           col_int_unsigned, col_bigint_unsigned,
           col_double, col_decimal_5_0, col_decimal_20_10,
           col_char_10, col_tinytext, col_mediumtext, col_longtext,
-          col_time, col_timestamp, col_datetime_6, col_year, col_set,
+          col_date, col_time, col_timestamp, col_datetime_6, col_year, col_set,
+          col_json, col_enum, col_boolean, col_utf8_emoji, col_date_zero,
           created_at, updated_at
         ) VALUES (
           1, -42, 1000, 500000,
           3000000000, 9999999999,
           2.71828, 12345, 9876543210.1234500000,
           'CDC-TEST', 'cdc tiny', 'cdc medium text', 'cdc long text',
-          '14:30:00', '2025-06-15 12:00:00', '2025-06-15 12:00:00.123456', 2024, 'b,d',
+          '2024-12-25', '14:30:00', '2025-06-15 12:00:00', '2025-06-15 12:00:00.123456', 2024, 'b,d',
+          '{"cdc":true,"items":[1,2,3]}', 'beta', TRUE, 'CDC 🦆 emoji', '0000-00-00',
           NOW(), NOW()
         );
       `);
@@ -289,6 +292,45 @@ describe('Suite 6: CDC Real-Time Replication', () => {
       ).toBe('b,d');
     });
 
+    test('CDC type DATE', async () => {
+      const val = await duckdbScalarStrict(
+        'SELECT CAST(col_date AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = 1',
+        'v',
+      );
+      expect(val).toContain('2024-12-25');
+    });
+
+    test('CDC type JSON', async () => {
+      const raw = await duckdbScalarStrict('SELECT col_json FROM type_coverage_cdc WHERE id = 1', 'col_json');
+      const parsed = JSON.parse(raw);
+      expect(parsed.cdc).toBe(true);
+      expect(parsed.items).toEqual([1, 2, 3]);
+    });
+
+    test('CDC type ENUM', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_enum FROM type_coverage_cdc WHERE id = 1', 'col_enum'),
+      ).toBe('beta');
+    });
+
+    test('CDC type BOOLEAN', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_boolean FROM type_coverage_cdc WHERE id = 1', 'col_boolean'),
+      ).toBe('1');
+    });
+
+    test('CDC type UTF-8 emoji', async () => {
+      const val = await duckdbScalarStrict('SELECT col_utf8_emoji FROM type_coverage_cdc WHERE id = 1', 'col_utf8_emoji');
+      expect(val).toContain('🦆');
+      expect(val).toBe('CDC 🦆 emoji');
+    });
+
+    test('CDC type zero date becomes null', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_date_zero FROM type_coverage_cdc WHERE id = 1', 'col_date_zero'),
+      ).toBe('null');
+    });
+
     // --- CDC Type Fidelity UPDATE ---
     test('type_coverage_cdc UPDATE detected', async () => {
       mysqlExec(`
@@ -298,6 +340,9 @@ describe('Suite 6: CDC Real-Time Replication', () => {
           col_double = -1.0,
           col_char_10 = 'UPDATED',
           col_set = 'a,b,c',
+          col_json = '{"updated":true}',
+          col_enum = 'delta',
+          col_boolean = FALSE,
           updated_at = NOW()
         WHERE id = 1;
       `);
@@ -334,6 +379,24 @@ describe('Suite 6: CDC Real-Time Replication', () => {
       expect(
         await duckdbScalarStrict('SELECT col_set FROM type_coverage_cdc WHERE id = 1', 'col_set'),
       ).toBe('a,b,c');
+    });
+
+    test('CDC updated JSON', async () => {
+      const raw = await duckdbScalarStrict('SELECT col_json FROM type_coverage_cdc WHERE id = 1', 'col_json');
+      const parsed = JSON.parse(raw);
+      expect(parsed.updated).toBe(true);
+    });
+
+    test('CDC updated ENUM', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_enum FROM type_coverage_cdc WHERE id = 1', 'col_enum'),
+      ).toBe('delta');
+    });
+
+    test('CDC updated BOOLEAN', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_boolean FROM type_coverage_cdc WHERE id = 1', 'col_boolean'),
+      ).toBe('0');
     });
   });
 

@@ -17,7 +17,7 @@ export async function mysqlScalar(sql: string, field: string): Promise<string> {
 
 export function mysqlExec(sql: string): void {
   execSync(
-    'docker compose exec -T mysql mysql -h 127.0.0.1 -uintegration -pintegrationpass integration_db',
+    'docker compose exec -T mysql mysql -h 127.0.0.1 -uintegration -pintegrationpass --default-character-set=utf8mb4 integration_db',
     { input: sql, cwd: INTEGRATION_DIR, stdio: ['pipe', 'pipe', 'pipe'] },
   );
 }
