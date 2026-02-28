@@ -1,4 +1,4 @@
-import { DuckDBInstance } from '@duckdb/node-api';
+import { BLOB, DuckDBInstance, blobValue } from '@duckdb/node-api';
 import * as fs from 'fs';
 import * as path from 'path';
 import config from '../config';
@@ -329,7 +329,7 @@ class DuckDBConnection {
           } else if (typeof value === 'bigint') {
             prepared.bindBigInt(i + 1, value);
           } else if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
-            prepared.bindBlob(i + 1, value);
+            prepared.bindValue(i + 1, blobValue(value), BLOB);
           } else if (typeof value === 'string') {
             prepared.bindVarchar(i + 1, value);
           } else if (typeof value === 'number') {
@@ -440,7 +440,7 @@ class DuckDBConnection {
           } else if (typeof value === 'bigint') {
             prepared.bindBigInt(i + 1, value);
           } else if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
-            prepared.bindBlob(i + 1, value);
+            prepared.bindValue(i + 1, blobValue(value), BLOB);
           } else if (typeof value === 'string') {
             prepared.bindVarchar(i + 1, value);
           } else if (typeof value === 'number') {
