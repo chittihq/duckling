@@ -1351,7 +1351,7 @@ class SequentialAppenderService {
     // e.g., enum('Internship') contains 'int' but should map to VARCHAR
     if (type.includes('enum')) return 'VARCHAR';
     if (type.includes('set')) return 'VARCHAR';
-    if (type.includes('json')) return 'VARCHAR';
+    if (type.includes('json')) return 'JSON';
     if (type.includes('text')) return 'TEXT';
     if (type.includes('varchar') || type.includes('char')) return 'VARCHAR';
     if (type.includes('blob') || type.includes('binary')) return 'BLOB';
