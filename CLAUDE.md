@@ -216,7 +216,7 @@ The system uses a **unified @duckdb/node-api architecture** with high-performanc
 | INTEGER, BIGINT, TINYINT, etc. | Same | ✅ | Direct mapping |
 | VARCHAR, TEXT | VARCHAR | ✅ | String types |
 | BLOB, BINARY, VARBINARY | BLOB | ✅ | Binary data (verified) |
-| JSON | VARCHAR | ✅ | Stringified via JSON.stringify() |
+| JSON | JSON | ✅ | Stringified via JSON.stringify() |
 | DATE, DATETIME, TIMESTAMP | DATE/TIMESTAMP | ✅ | Converted to ISO string |
 | DECIMAL, NUMERIC | DECIMAL | ✅ | Exact numeric |
 | BOOLEAN | BOOLEAN | ✅ | Boolean type |

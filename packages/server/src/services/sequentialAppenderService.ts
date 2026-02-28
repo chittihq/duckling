@@ -126,7 +126,7 @@ class SequentialAppenderService {
    *
    * Based on @duckdb/node-api appender.test.ts verification:
    * - BLOB: ✅ Supported (verified in test)
-   * - JSON: ✅ Supported (maps to VARCHAR in DuckDB, values stringified)
+   * - JSON: ✅ Supported (maps to JSON in DuckDB, values stringified)
    * - VARCHAR, INTEGER, BIGINT, BOOLEAN, DATE, TIMESTAMP, etc.: ✅ All supported
    *
    * Currently, all MySQL standard types are compatible with Appender API.
@@ -138,7 +138,7 @@ class SequentialAppenderService {
    */
   private canUseAppender(schema: any[]): boolean {
     // After verification: All standard MySQL types are supported by Appender API
-    // JSON → VARCHAR (stringified), BLOB → BLOB, all numeric/date types supported
+    // JSON → JSON (stringified), BLOB → BLOB, all numeric/date types supported
     // Only complex DuckDB-specific types (ARRAY, MAP, STRUCT) would need fallback,
     // but these don't exist in standard MySQL schemas
 
