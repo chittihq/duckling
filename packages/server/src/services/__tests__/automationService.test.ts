@@ -27,7 +27,15 @@ describe('AutomationService backup', () => {
     config.duckdb.path = duckdbPath;
 
     vi.spyOn(DatabaseConfigManager, 'getInstance').mockReturnValue({
-      getDatabase: () => undefined,
+      getDatabase: () => ({
+        id: 'default',
+        name: 'Default Database',
+        mysqlConnectionString: 'mysql://test',
+        duckdbPath: config.duckdb.path,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        s3: { enabled: false },
+      }),
     } as any);
   });
 
@@ -45,11 +53,16 @@ describe('AutomationService backup', () => {
       checkpoint: vi.fn().mockResolvedValue(undefined),
     };
 
+    const syncServiceMock = {
+      incrementalSync: vi.fn(),
+      fullSync: vi.fn(),
+    };
+
     const service = new (AutomationService as any)(
       'default',
-      {},
+      syncServiceMock,
       duckdbMock,
-      {}
+      { query: vi.fn() }
     );
 
     await service.performBackup();
