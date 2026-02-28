@@ -631,8 +631,9 @@ class SequentialAppenderService {
                   allValues.push(val);
                 }
               }
-            } catch {
+            } catch (workerErr) {
               // Fallback to main-thread sanitization if worker pool fails
+              logger.warn(`${tableName}: Worker pool sanitization failed, falling back to main thread:`, workerErr);
               allValues = [];
               for (const record of batch) {
                 for (const col of columns) {
@@ -825,8 +826,9 @@ class SequentialAppenderService {
             const columnTypesObj: Record<string, string> = {};
             for (const [k, v] of columnTypes) columnTypesObj[k] = v;
             sanitizedRows = await pool.sanitizeBatch(fetchedBatch, columns, columnTypesObj);
-          } catch {
+          } catch (workerErr) {
             // Fallback to main-thread sanitization if worker pool fails
+            logger.warn(`${tableName}: Worker pool sanitization failed, falling back to main thread:`, workerErr);
             sanitizedRows = fetchedBatch.map(record =>
               columns.map(col => this.sanitizeValue(record[col], columnTypes.get(col) || ''))
             );
@@ -1094,8 +1096,9 @@ class SequentialAppenderService {
                   allValues.push(val);
                 }
               }
-            } catch {
+            } catch (workerErr) {
               // Fallback to main-thread sanitization if worker pool fails
+              logger.warn(`${tableName}: Worker pool sanitization failed (incremental), falling back to main thread:`, workerErr);
               allValues = [];
               for (const record of batch) {
                 for (const col of columns) {

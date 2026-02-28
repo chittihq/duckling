@@ -12,9 +12,12 @@
  * - For a 200GB database, copy takes ~60-90 seconds on SSD
  * - Replica refresh is atomic (rename) — queries never see a partial file
  *
- * DuckDB constraint: Multiple processes can open in READ_ONLY mode,
- * but only one process can write. The primary stays read-write,
- * the replica opens read-only.
+ * DuckDB constraint: Within a single process, read + write use MVCC
+ * (no conflict for separate tables). Across processes, all must open
+ * in READ_ONLY mode. This service creates a read-only *copy* of the
+ * database file within the same process, opened via a separate
+ * DuckDBInstance in READ_ONLY mode, providing isolation without
+ * requiring a separate OS process.
  *
  * Environment:
  *   READ_REPLICA_ENABLED  — Enable read replica mode (default: false)
@@ -271,7 +274,9 @@ export class ReadReplicaService {
 
   private closeReadonlyConnection(): void {
     if (this.readonlyConn) {
-      try { this.readonlyConn.closeSync(); } catch {}
+      try { this.readonlyConn.closeSync(); } catch (err) {
+        logger.debug(`Read replica connection close error for ${this.databaseId}:`, err);
+      }
       this.readonlyConn = null;
     }
   }

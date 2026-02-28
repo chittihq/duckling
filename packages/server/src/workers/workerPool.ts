@@ -151,15 +151,21 @@ export class WorkerPool {
 
     worker.on('error', (err) => {
       logger.error(`Worker ${index} error:`, err);
-      // Reject all pending requests for this worker
-      // (we can't tell which requests were on which worker, so reject all pending)
       this.totalErrors++;
     });
 
     worker.on('exit', (code) => {
       if (code !== 0) {
-        logger.warn(`Worker ${index} exited with code ${code}, respawning...`);
+        logger.warn(`Worker ${index} exited with code ${code}, rejecting pending requests and respawning...`);
         this.totalRespawns++;
+
+        // Reject all pending requests — we cannot identify which belonged to this worker
+        for (const [id, req] of this.pending) {
+          this.totalErrors++;
+          req.reject(new Error(`Worker ${index} exited unexpectedly with code ${code}`));
+        }
+        this.pending.clear();
+
         this.spawnWorker(index);
       }
     });

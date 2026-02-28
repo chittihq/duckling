@@ -240,9 +240,12 @@ export class QueryGovernorError extends Error {
   }
 }
 
-/** Truncate SQL for logging (max 200 chars). */
+/** Max SQL length for logging/tracking. */
+const SQL_TRUNCATE_LENGTH = 200;
+
+/** Truncate SQL for logging (max SQL_TRUNCATE_LENGTH chars). */
 function truncateSql(sql: string): string {
-  return sql.length > 200 ? sql.slice(0, 200) + '…' : sql;
+  return sql.length > SQL_TRUNCATE_LENGTH ? sql.slice(0, SQL_TRUNCATE_LENGTH) + '…' : sql;
 }
 
 // ── Singleton ──────────────────────────────────────────────────────────
