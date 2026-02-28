@@ -1,47 +1,22 @@
-# Duckling - DuckDB Server with MySQL Replication
+# Duckling
 
 ![Duckling Banner](docs/images/banner.jpeg)
 
-A high-performance DuckDB server that replicates data from MySQL using **Sequential Appender architecture** with ACID transactions for guaranteed data integrity and **5-10x faster query performance**.
+DuckDB server that replicates your MySQL data. Columnar storage makes analytical queries 100-13,000x faster depending on query shape. Writes are ACID — no partial syncs, no duplicates.
 
-## 🚀 Performance Features
+## Benchmarks (20M rows)
 
-- **⚡ 5-10x faster queries** through columnar storage
-- **🔄 Schema evolution** with zero-downtime updates
-- **🎯 Smart table classification** (dimensions, facts, metadata)
-- **✅ ACID Transactions** - All-or-nothing sync with guaranteed data integrity
-- **🔄 Atomic Operations** - No partial writes, no duplicates, no data loss
-- **⚡ Watermark-Based Sync** - Efficient incremental updates tracking last processed records
-- **📊 Streaming Batches** - Memory-efficient processing of large tables
-- **🗄️ Native DuckDB Storage** - Direct columnar storage without intermediate files
-- **💾 Persistent by Default** - File-based database survives restarts automatically
-
-## 🏗️ Core Features
-
-- **🔄 Incremental MySQL to DuckDB replication** with atomic transactions
-- **⚡ Incremental synchronization** with watermark tracking
-- **🗄️ Partitioned storage** for optimal query performance
-- **🔍 RESTful API** for querying and management
-- **💓 Health monitoring** and comprehensive metrics
-- **🐳 Docker support** with docker-compose
-- **🚀 Systemd service** for production deployment
-- **🛠️ Comprehensive CLI tools** for management
-
-## Benchmark Results (20M rows)
-
-Real results from our [benchmark suite](benchmark/) running 20M order rows through the same Duckling API:
+Real numbers from the [benchmark suite](benchmark/):
 
 | Query | MySQL | DuckDB | Speedup |
 |-------|-------|--------|---------|
-| Q1: Full table count | 4,258 ms | 4 ms | **1,064x** |
-| Q2: Filtered count | 1,475 ms | 20 ms | **73x** |
-| Q3: Group by status | 433,259 ms | 32 ms | **13,539x** |
-| Q4: Region x status breakdown | 16,685 ms | 112 ms | **148x** |
-| Q5: Monthly revenue (2023) | 7,536 ms | 30 ms | **251x** |
-| Q7: Regional analytics | 446,038 ms | 394 ms | **1,132x** |
-| **TOTAL** | **909,251 ms** | **592 ms** | **1,535x** |
-
-Run it yourself:
+| Full table count | 4,258 ms | 4 ms | 1,064x |
+| Filtered count | 1,475 ms | 20 ms | 73x |
+| Group by status | 433,259 ms | 32 ms | 13,539x |
+| Region x status breakdown | 16,685 ms | 112 ms | 148x |
+| Monthly revenue (2023) | 7,536 ms | 30 ms | 251x |
+| Regional analytics | 446,038 ms | 394 ms | 1,132x |
+| **Total** | **909,251 ms** | **592 ms** | **1,535x** |
 
 ```bash
 cd benchmark
@@ -49,204 +24,119 @@ cd benchmark
 BENCHMARK_SCALE=0.01 ./run.sh   # 200K rows (quick smoke test)
 ```
 
-## Architecture Benefits
+## What it does
 
-| Feature | Sequential Appender |
-|---------|-------------------|
-| **Data Integrity** | ✅ ACID guaranteed |
-| **Duplicates** | ✅ None (PK constraints) |
-| **Missing Records** | ✅ None (transactions) |
-| **Storage Layers** | ✅ One (DuckDB) |
-| **Restart Time** | ✅ Instant |
-| **Code Complexity** | ✅ ~800 lines |
+Replicates MySQL tables into DuckDB with ACID transactions. Incremental sync only fetches what changed since the last watermark. If you need sub-second replication, there's optional CDC through the MySQL binlog.
 
-## Why DuckDB over MariaDB ColumnStore?
+You get a REST API, a WebSocket SDK, and a Nuxt 4 dashboard. The whole thing runs on a $20/month droplet.
 
-We evaluated MariaDB ColumnStore but chose DuckDB for these reasons:
+| Feature | |
+|---------|---|
+| Data integrity | ACID transactions, primary key constraints |
+| Storage | Single DuckDB file, columnar, compressed |
+| Sync modes | Full, incremental (watermark), CDC (binlog) |
+| Schema changes | Additive column evolution, zero downtime |
+| Code | ~800 lines for the sync engine |
 
-- **Zero infrastructure** - DuckDB is embedded, no separate server needed
-- **Low resource requirements** - Runs on 4GB RAM vs ColumnStore's 128GB RAM + 64 cores for production
-- **Empty string support** - ColumnStore treats empty strings as NULL, breaking MySQL compatibility
-- **Full SQL support** - ColumnStore doesn't use indexes (uses extent elimination), no ORDER BY in DELETE/UPDATE
-- **Simple deployment** - Single file vs distributed cluster management
-- **Cost effective** - $20/month droplet vs $500+/month infrastructure
-- **Better for CDC** - In-process writes with zero network latency
+## How sync works
 
-ColumnStore makes sense for large-scale (100TB+) distributed analytics. For MySQL replication under 100GB, DuckDB is optimal.
+| Mechanism | Trigger | When to use |
+|-----------|---------|-------------|
+| Full sync | Manual or first run | Initial load, disaster recovery |
+| Incremental | Every 15 min (automatic) | Routine catch-up |
+| CDC | MySQL binlog stream | Sub-second replication (opt-in) |
 
-## Why DuckDB over ClickHouse?
+Full and incremental sync batch-read rows from MySQL into DuckDB using `INSERT OR REPLACE`. Watermarks track the last processed ID/timestamp per table.
 
-We evaluated ClickHouse but chose DuckDB for these reasons:
+CDC streams binlog events via [ZongJi](https://github.com/vlasky/zongji), processing inserts, updates, and deletes in order. Binlog position is checkpointed for resume after restarts. Enable with `CDC_ENABLED=true`. It can run alongside scheduled syncs.
 
-- **Lower resource requirements** - DuckDB runs on 4GB RAM vs ClickHouse's 32-64GB minimum for production
-- **Stable MySQL replication** - ClickHouse's `MaterializedMySQL` is experimental and not production-ready
-- **No cluster overhead** - ClickHouse requires ZooKeeper/Keeper even for single-node setups
-- **Better JOIN support** - ClickHouse recommends max 3-4 JOINs; DuckDB handles complex queries natively
-- **ACID transactions** - DuckDB provides full ACID; ClickHouse is optimized for append-only workloads
-- **Simple operations** - Single embedded file vs cluster management, monitoring, and tuning
-- **Cost effective** - $20/month droplet vs $300+/month infrastructure
+## Why DuckDB and not X?
 
-ClickHouse excels at 10B+ rows with 100K+ rows/sec ingestion and dedicated DevOps teams. For MySQL replication under 100GB, DuckDB is optimal.
+**vs MariaDB ColumnStore:** DuckDB is embedded (no separate server), runs on 4GB RAM instead of 128GB, handles empty strings correctly, and costs $20/month instead of $500+. If you have 100TB+ of data, ColumnStore might make more sense. We don't.
 
-## Quick Start
+**vs ClickHouse:** No ZooKeeper, no cluster management, no JOIN limits, actual ACID transactions. ClickHouse wins when you're ingesting 100K+ rows/sec into 10B+ row tables and have ops people to babysit it.
 
-### Docker (Recommended)
+## Quick start
+
+### Docker
 
 ```bash
-# Clone and build
 git clone <repository>
 cd duckling
-pnpm install
-pnpm run build
+pnpm install && pnpm run build
 
-# Start server and frontend with docker-compose
 docker-compose up -d
 
-# Check status
-curl http://localhost:3001/health  # Server on port 3001
-curl http://localhost:3000         # Frontend on port 3000
+curl http://localhost:3001/health  # Server
+curl http://localhost:3000         # Frontend
 ```
 
-### Manual Installation
+### Manual
 
 ```bash
-# Install all dependencies
 pnpm install
-
-# Build all packages
 pnpm run build
-
-# Start the server
 pnpm run start:server
-
-# Start the frontend (in another terminal)
+# In another terminal:
 pnpm run start:frontend
-
-# Health check
-curl http://localhost:3000/health
 ```
 
-### Development Mode
+### Development
 
 ```bash
-# Start both server and frontend with hot reload
-pnpm run dev
-
-# Or run individually:
-pnpm run dev:server      # Server on port 3000
-pnpm run dev:frontend    # Frontend on port 3000 (Nuxt dev server)
-pnpm run dev:sdk         # SDK build watch mode
+pnpm run dev                # Both server + frontend, hot reload
+pnpm run dev:server         # Server only
+pnpm run dev:frontend       # Frontend only
 ```
 
 ## Configuration
 
-Environment variables (copy `.env.example` to `.env`):
+Copy `.env.example` to `.env`:
 
 ```bash
-# Database Configuration
 MYSQL_CONNECTION_STRING=mysql://user:password@localhost:3306/database
-MYSQL_MAX_CONNECTIONS=5
 DUCKDB_PATH=data/duckling.db
 DUCKLING_API_KEY=your-secret-key
 
-# Sync Configuration
 SYNC_INTERVAL_MINUTES=15
 BATCH_SIZE=10000
 ENABLE_INCREMENTAL_SYNC=true
 AUTO_START_SYNC=false
 EXCLUDED_TABLES=temp_table,cache_table
-
-# Performance Optimization
-MAX_RETRIES=3
-CONNECTION_TIMEOUT=30000
-QUERY_TIMEOUT=30000
 ```
 
-## API Reference
+| Variable | Default | What it does |
+|----------|---------|-------------|
+| `MYSQL_CONNECTION_STRING` | — | MySQL connection string |
+| `DUCKDB_PATH` | `data/duckling.db` | Where the DuckDB file lives |
+| `BATCH_SIZE` | `10000` | Rows per batch during sync |
+| `SYNC_INTERVAL_MINUTES` | `15` | How often incremental sync runs |
+| `MAX_RETRIES` | `3` | Retry attempts on failure |
+| `CONNECTION_TIMEOUT` | `30000` | Connection timeout (ms) |
 
-See [API.md](./API.md) for complete API documentation including:
-- REST endpoints for sync, queries, and management
-- WebSocket SDK for high-performance real-time queries
-- Query examples and performance benchmarks
+## Tuning
 
-## CLI Commands
+**Batch size:** Default is 10,000 rows. For tables under 100K rows, 5,000 works well. Over 1M rows, try 20,000. Set via `BATCH_SIZE`.
 
-See [CLI.md](CLI.md) for the full list of available commands.
+**Sync frequency:** Default is every 15 minutes. Busy databases might want 5-10 min, quiet ones can do 30-60. Set via `SYNC_INTERVAL_MINUTES`.
 
-## Type Support
+**Queries:** DuckDB's columnar format handles analytical queries well out of the box. Selecting only the columns you need helps most.
 
-Duckling supports all standard MySQL 8 data types with comprehensive integration testing. Spatial/geometry types (`POINT`, `POLYGON`, `GEOMETRY`, etc.) are **not supported** — these columns fall through to `VARCHAR` and are not usable for spatial queries. See [TYPES.md](TYPES.md) for the full type mapping reference, known limitations, and test coverage details.
+## Type support
 
-## How It Works
+All standard MySQL 8 types work. Spatial/geometry types (`POINT`, `POLYGON`, `GEOMETRY`, etc.) do not — they fall through to `VARCHAR`. See [TYPES.md](TYPES.md) for the full mapping and test coverage.
 
-Duckling offers three complementary sync mechanisms:
+## More docs
 
-| Mechanism | Trigger | Use Case |
-|-----------|---------|----------|
-| **Full Sync** | Manual / first run | Initial load, disaster recovery |
-| **Incremental Sync** | Every 15 min (automatic) | Scheduled catch-up using watermarks |
-| **CDC (Real-time)** | MySQL binlog stream | Sub-second replication (opt-in) |
-
-**Full & Incremental** sync batch-read rows from MySQL into DuckDB using ACID transactions and `INSERT OR REPLACE` for safe upserts. Watermarks (`appender_watermarks` table) track the last processed ID/timestamp per table so incremental runs only fetch what changed.
-
-**CDC** streams MySQL binlog events directly into DuckDB via [ZongJi](https://github.com/vlasky/zongji), processing inserts, updates, and deletes in order. Binlog position is checkpointed to `cdc_binlog_position` for resume after restarts. Backpressure pauses the stream when the event queue fills up.
-
-CDC is **opt-in** (`CDC_ENABLED=true`) and can run alongside scheduled syncs.
-
-## Configuration Options
-
-| Environment Variable | Default | Description |
-|----------------------|---------|-------------|
-| `MYSQL_CONNECTION_STRING` | - | MySQL database connection string |
-| `DUCKDB_PATH` | `data/duckling.db` | DuckDB database file path |
-| `BATCH_SIZE` | `10000` | Records per batch during sync |
-| `SYNC_INTERVAL_MINUTES` | `15` | Auto-sync frequency |
-| `MAX_RETRIES` | `3` | Retry attempts for failed operations |
-| `CONNECTION_TIMEOUT` | `30000` | Connection timeout in ms |
-
-## Performance Tuning
-
-1. **Batch Size Optimization**
-   - Default: 10,000 rows per batch
-   - Small tables (< 100K rows): 5,000 rows/batch
-   - Large tables (> 1M rows): 20,000 rows/batch
-   - Configure via `BATCH_SIZE` environment variable
-
-2. **Incremental Sync Frequency**
-   - Default: Every 15 minutes
-   - High-frequency updates: 5-10 minutes
-   - Low-frequency updates: 30-60 minutes
-   - Configure via `SYNC_INTERVAL_MINUTES`
-
-3. **Query Optimization**
-   - Use indexes on frequently queried columns
-   - DuckDB columnar format optimizes analytical queries automatically
-   - Select only needed columns to minimize I/O
-
-## Deployment
-
-See [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) for complete deployment documentation including:
-- Security configuration (required before production)
-- Docker and docker-compose setup
-- Production builds
-- Health checks and monitoring
-- Backup and recovery
+- [API.md](./API.md) — REST endpoints, WebSocket SDK, query examples
+- [CLI.md](CLI.md) — CLI commands
+- [TYPES.md](TYPES.md) — Type mapping, known limitations, integration test details
+- [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) — Production deployment, security, backups
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Submit a pull request
+Fork the repo, make a branch, open a PR. Add tests for new functionality.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Support
-
-For issues and questions:
-- Create an issue on GitHub
-- Check the troubleshooting guide above
-- Review the logs for detailed error information
+MIT. See LICENSE file.
