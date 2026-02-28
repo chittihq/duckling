@@ -523,13 +523,15 @@ class DuckDBConnection {
     recordsProcessed: number,
     durationMs: number,
     status: string,
-    errorMessage?: string
+    errorMessage?: string,
+    watermarkBefore?: string | null,
+    watermarkAfter?: string | null
   ): Promise<void> {
     try {
       await this.run(`
-        INSERT INTO sync_log (id, table_name, sync_type, records_processed, duration_ms, status, error_message)
-        VALUES (nextval('sync_log_id_seq'), ?, ?, ?, ?, ?, ?)
-      `, [tableName, syncType, recordsProcessed, durationMs, status, errorMessage || null]);
+        INSERT INTO sync_log (id, table_name, sync_type, records_processed, duration_ms, status, error_message, watermark_before, watermark_after)
+        VALUES (nextval('sync_log_id_seq'), ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [tableName, syncType, recordsProcessed, durationMs, status, errorMessage || null, watermarkBefore || null, watermarkAfter || null]);
     } catch (error) {
       logger.error('Failed to log sync entry:', error);
     }
