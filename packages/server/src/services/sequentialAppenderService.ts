@@ -58,7 +58,7 @@ class SequentialAppenderService {
   private mysql: MySQLConnection;
   private duckdb: DuckDBConnection;
   private static instances: Map<string, SequentialAppenderService> = new Map();
-  private syncInProgress: boolean = false;
+  private tableSyncLocks: Set<string> = new Set();
   private syncQueue: Array<{ tableName?: string; resolve: (value: any) => void; reject: (error: any) => void }> = [];
 
   private constructor(mysql: MySQLConnection, duckdb: DuckDBConnection) {
@@ -167,38 +167,42 @@ class SequentialAppenderService {
   }
 
   /**
-   * Check if a sync operation is currently in progress
+   * Check if a sync operation is currently in progress for any table
    */
   isSyncInProgress(): boolean {
-    return this.syncInProgress;
+    return this.tableSyncLocks.size > 0;
   }
 
   /**
-   * Acquire sync lock - throws error if already locked
+   * Check if a sync operation is currently in progress for a specific table
    */
-  private acquireSyncLock(): void {
-    if (this.syncInProgress) {
-      throw new Error('Another sync operation is already in progress. Please wait for it to complete.');
+  isTableSyncInProgress(tableName: string): boolean {
+    return this.tableSyncLocks.has(tableName);
+  }
+
+  /**
+   * Acquire per-table sync lock - throws error if the table is already locked
+   */
+  private acquireTableSyncLock(tableName: string): void {
+    if (this.tableSyncLocks.has(tableName)) {
+      throw new Error(`Sync already in progress for table '${tableName}'. Please wait for it to complete.`);
     }
-    this.syncInProgress = true;
-    logger.info('Sync lock acquired');
+    this.tableSyncLocks.add(tableName);
+    logger.info(`Sync lock acquired for table: ${tableName}`);
   }
 
   /**
-   * Release sync lock
+   * Release per-table sync lock
    */
-  private releaseSyncLock(): void {
-    this.syncInProgress = false;
-    logger.info('Sync lock released');
+  private releaseTableSyncLock(tableName: string): void {
+    this.tableSyncLocks.delete(tableName);
+    logger.info(`Sync lock released for table: ${tableName}`);
   }
 
   /**
    * Full sync using sequential processing for all tables
    */
   async fullSync(): Promise<AppenderSyncStats> {
-    // Acquire lock before starting sync
-    this.acquireSyncLock();
-
     const startTime = Date.now();
     logger.info('Starting full sequential sync...');
 
@@ -223,19 +227,30 @@ class SequentialAppenderService {
       await this.cleanupDeletedTables(tables);
 
       for (const table of tables) {
-        // Use Appender API for full sync (6-10x faster than INSERT)
-        // Falls back to INSERT automatically on any Appender error
-        const result = await this.syncTableSequentialWithAppender(table);
+        // Skip tables that are already being synced (e.g., by a concurrent single-table sync)
+        if (this.tableSyncLocks.has(table)) {
+          logger.info(`Skipping table ${table}: sync already in progress`);
+          continue;
+        }
 
-        if (result.status === 'success') {
-          stats.successfulTables++;
-          stats.totalRecords += result.recordsProcessed;
-          stats.syncDetails.sequential++;
-        } else {
-          stats.failedTables++;
-          if (result.error) {
-            stats.errors.push(`${table}: ${result.error}`);
+        this.acquireTableSyncLock(table);
+        try {
+          // Use Appender API for full sync (6-10x faster than INSERT)
+          // Falls back to INSERT automatically on any Appender error
+          const result = await this.syncTableSequentialWithAppender(table);
+
+          if (result.status === 'success') {
+            stats.successfulTables++;
+            stats.totalRecords += result.recordsProcessed;
+            stats.syncDetails.sequential++;
+          } else {
+            stats.failedTables++;
+            if (result.error) {
+              stats.errors.push(`${table}: ${result.error}`);
+            }
           }
+        } finally {
+          this.releaseTableSyncLock(table);
         }
       }
 
@@ -250,9 +265,6 @@ class SequentialAppenderService {
       logger.error('Sequential full sync failed:', error);
       stats.errors.push(error instanceof Error ? error.message : 'Unknown error');
       throw error;
-    } finally {
-      // Always release lock, even if sync fails
-      this.releaseSyncLock();
     }
   }
 
@@ -260,9 +272,6 @@ class SequentialAppenderService {
    * Incremental sync using watermarks for efficient processing
    */
   async incrementalSync(): Promise<AppenderSyncStats> {
-    // Acquire lock before starting sync
-    this.acquireSyncLock();
-
     const startTime = Date.now();
     logger.info('Starting incremental watermark-based sync...');
 
@@ -289,25 +298,36 @@ class SequentialAppenderService {
       for (let i = 0; i < tables.length; i++) {
         const table = tables[i];
 
-        // Log table-level progress
-        logger.info(`[${i + 1}/${tables.length}] Syncing table: ${table}...`);
+        // Skip tables that are already being synced (e.g., by a concurrent single-table sync)
+        if (this.tableSyncLocks.has(table)) {
+          logger.info(`[${i + 1}/${tables.length}] Skipping table ${table}: sync already in progress`);
+          continue;
+        }
 
-        const result = await this.syncTableWatermark(table);
+        this.acquireTableSyncLock(table);
+        try {
+          // Log table-level progress
+          logger.info(`[${i + 1}/${tables.length}] Syncing table: ${table}...`);
 
-        if (result.status === 'success') {
-          stats.successfulTables++;
-          stats.totalRecords += result.recordsProcessed;
+          const result = await this.syncTableWatermark(table);
 
-          if (result.syncType === 'sequential') {
-            stats.syncDetails.sequential++;
+          if (result.status === 'success') {
+            stats.successfulTables++;
+            stats.totalRecords += result.recordsProcessed;
+
+            if (result.syncType === 'sequential') {
+              stats.syncDetails.sequential++;
+            } else {
+              stats.syncDetails.watermark++;
+            }
           } else {
-            stats.syncDetails.watermark++;
+            stats.failedTables++;
+            if (result.error) {
+              stats.errors.push(`${table}: ${result.error}`);
+            }
           }
-        } else {
-          stats.failedTables++;
-          if (result.error) {
-            stats.errors.push(`${table}: ${result.error}`);
-          }
+        } finally {
+          this.releaseTableSyncLock(table);
         }
       }
 
@@ -323,9 +343,6 @@ class SequentialAppenderService {
       logger.error('Incremental sync failed:', error);
       stats.errors.push(error instanceof Error ? error.message : 'Unknown error');
       throw error;
-    } finally {
-      // Always release lock, even if sync fails
-      this.releaseSyncLock();
     }
   }
 
@@ -333,8 +350,8 @@ class SequentialAppenderService {
    * Sync a single table (uses watermark-based incremental sync if available, otherwise full sync)
    */
   async syncSingleTable(tableName: string): Promise<AppenderSyncResult> {
-    // Acquire lock before starting sync
-    this.acquireSyncLock();
+    // Acquire per-table lock before starting sync
+    this.acquireTableSyncLock(tableName);
 
     try {
       logger.info(`Starting sync for table: ${tableName}`);
@@ -359,7 +376,7 @@ class SequentialAppenderService {
       return await this.syncTableWatermark(tableName);
     } finally {
       // Always release lock, even if sync fails
-      this.releaseSyncLock();
+      this.releaseTableSyncLock(tableName);
     }
   }
 
