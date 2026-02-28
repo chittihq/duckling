@@ -168,13 +168,7 @@ export class WebSocketService {
           return;
         }
 
-        // Log server-side API key status for debugging
-        const serverHasApiKey = !!config.auth.apiKey;
-        logger.debug('WebSocket auth attempt', {
-          serverHasApiKey,
-          clientProvidedKey: !!message.apiKey,
-          clientKeyLength: message.apiKey?.length
-        });
+        logger.debug('WebSocket auth attempt');
 
         // Validate API key
         if (config.auth.apiKey && message.apiKey === config.auth.apiKey) {
@@ -187,11 +181,7 @@ export class WebSocketService {
           logger.info('WebSocket client authenticated', { totalAuthenticated: this.authenticatedClients.size });
         } else {
           const reason = !config.auth.apiKey ? 'Server API key not configured' : 'API key mismatch';
-          logger.warn('WebSocket auth failed', {
-            reason,
-            serverHasApiKey,
-            clientKeyLength: message.apiKey?.length
-          });
+          logger.warn('WebSocket auth failed', { reason });
           this.sendMessage(ws, {
             id: message.id,
             success: false,
