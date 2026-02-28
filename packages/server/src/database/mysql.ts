@@ -95,13 +95,22 @@ class MySQLConnection {
   }
 
   /**
-   * Get the primary key column for a table
-   * Returns undefined if no primary key exists
+   * Get all primary key columns for a table
+   * Returns empty array if no primary key exists
+   */
+  async getPrimaryKeyColumns(tableName: string): Promise<string[]> {
+    const schema = await this.getTableSchema(tableName);
+    return schema.filter(col => col.Key === 'PRI').map(col => col.Field);
+  }
+
+  /**
+   * Get the primary key column for a table (single-column PKs only)
+   * Returns undefined if no primary key exists or if the primary key is composite.
+   * Composite primary keys are not suitable for single-column keyset pagination.
    */
   async getPrimaryKeyColumn(tableName: string): Promise<string | undefined> {
-    const schema = await this.getTableSchema(tableName);
-    const pkColumn = schema.find(col => col.Key === 'PRI');
-    return pkColumn?.Field;
+    const pkColumns = await this.getPrimaryKeyColumns(tableName);
+    return pkColumns.length === 1 ? pkColumns[0] : undefined;
   }
 
   /**
@@ -216,7 +225,7 @@ class MySQLConnection {
   /**
    * Stream table data in batches for sequential processing
    * Uses keyset pagination (WHERE pk > lastPk) for O(1) performance on large tables
-   * Falls back to OFFSET pagination if no primary key exists
+   * Falls back to OFFSET pagination if no single-column primary key exists (including composite PKs)
    */
   async *streamTableData(tableName: string, batchSize: number = 10000): AsyncGenerator<any[], void, unknown> {
     const primaryKey = await this.getPrimaryKeyColumn(tableName);
@@ -249,11 +258,11 @@ class MySQLConnection {
         }
       } while (batch.length === batchSize);
     } else {
-      // Fallback to OFFSET pagination for tables without primary key
+      // Fallback to OFFSET pagination for tables without single-column primary key (includes composite PKs)
       let offset = 0;
       let batch: any[];
 
-      logger.warn(`MySQL streamTableData for ${tableName}: no primary key found, falling back to OFFSET pagination (slower for large tables)`);
+      logger.warn(`MySQL streamTableData for ${tableName}: no single-column primary key found, falling back to OFFSET pagination (slower for large tables)`);
 
       do {
         batch = await this.getTableData(tableName, batchSize, offset);
@@ -314,7 +323,7 @@ class MySQLConnection {
       let offset = 0;
       let batch: any[];
 
-      logger.warn(`MySQL streamIncrementalData for ${tableName}: no primary key, falling back to OFFSET pagination`);
+      logger.warn(`MySQL streamIncrementalData for ${tableName}: no single-column primary key, falling back to OFFSET pagination`);
 
       do {
         const query = `SELECT * FROM ${this.q(tableName)} WHERE ${this.q(watermarkColumn)} >= ? ORDER BY ${this.q(watermarkColumn)} ASC LIMIT ${batchSize} OFFSET ${offset}`;

@@ -1383,13 +1383,15 @@ class SequentialAppenderService {
    * Detect primary key column from schema
    */
   private async detectPrimaryKeyColumn(tableName: string, schema: any[]): Promise<string | undefined> {
-    // Check schema for primary key
-    const pkColumn = schema.find(col => col.Key === 'PRI');
-    if (pkColumn) {
-      return pkColumn.Field;
+    // Check schema for primary key (single-column only)
+    // Composite primary keys are not suitable for single-column MAX() watermarks
+    // or single-column keyset pagination, so we skip them here.
+    const pkColumns = schema.filter(col => col.Key === 'PRI');
+    if (pkColumns.length === 1) {
+      return pkColumns[0].Field;
     }
 
-    // Check common ID patterns
+    // Composite PK or no PK - check common ID patterns as fallback
     const idPatterns = [
       'id',
       `${tableName.toLowerCase()}id`,
