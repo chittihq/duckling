@@ -19,12 +19,60 @@ import {
 } from './mysqlResultFormatter';
 import config from '../config';
 import logger from '../logger';
+import * as crypto from 'crypto';
 
-// mysql2 is CommonJS — use require for server-side API
+// mysql2 is CommonJS — use require for the server-side API
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const mysql2 = require('mysql2');
-const ClientFlags = require('mysql2/lib/constants/client.js');
-const auth41 = require('mysql2/lib/auth_41.js');
+
+/* ------------------------------------------------------------------ */
+/*  MySQL auth_41 helpers (inlined to avoid internal mysql2 imports)    */
+/* ------------------------------------------------------------------ */
+
+function sha1(...buffers: Buffer[]): Buffer {
+  const hash = crypto.createHash('sha1');
+  for (const buf of buffers) hash.update(buf);
+  return hash.digest();
+}
+
+function xor(a: Buffer, b: Buffer): Buffer {
+  const result = Buffer.allocUnsafe(a.length);
+  for (let i = 0; i < a.length; i++) result[i] = a[i] ^ b[i];
+  return result;
+}
+
+function doubleSha1(password: string): Buffer {
+  return sha1(sha1(Buffer.from(password)));
+}
+
+function verifyToken(
+  publicSeed1: Buffer,
+  publicSeed2: Buffer,
+  token: Buffer,
+  doubleSha: Buffer,
+): boolean {
+  const seed1 = publicSeed1.slice(0, 8);
+  const seed2 = publicSeed2.slice(0, 12);
+  const hashStage1 = xor(token, sha1(seed1, seed2, doubleSha));
+  const candidateHash2 = sha1(hashStage1);
+  return candidateHash2.compare(doubleSha) === 0;
+}
+
+/* ------------------------------------------------------------------ */
+/*  MySQL client capability flags (from protocol spec)                 */
+/* ------------------------------------------------------------------ */
+
+const CLIENT_LONG_PASSWORD = 0x00000001;
+const CLIENT_FOUND_ROWS = 0x00000002;
+const CLIENT_LONG_FLAG = 0x00000004;
+const CLIENT_CONNECT_WITH_DB = 0x00000008;
+const CLIENT_NO_SCHEMA = 0x00000010;
+const CLIENT_PROTOCOL_41 = 0x00000200;
+const CLIENT_TRANSACTIONS = 0x00002000;
+const CLIENT_SECURE_CONNECTION = 0x00008000;
+const CLIENT_MULTI_RESULTS = 0x00020000;
+const CLIENT_PLUGIN_AUTH = 0x00080000;
+const CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA = 0x00200000;
 
 /* ------------------------------------------------------------------ */
 /*  Connection state                                                   */
@@ -64,7 +112,7 @@ export class MySQLProtocolServer {
 
     // Pre-compute double SHA1 of the password for auth verification
     if (this.password) {
-      this.passwordDoubleSha1 = auth41.doubleSha1(this.password);
+      this.passwordDoubleSha1 = doubleSha1(this.password);
     }
   }
 
@@ -214,7 +262,7 @@ export class MySQLProtocolServer {
 
     // Verify password using mysql_native_password (AUTH 41)
     if (this.passwordDoubleSha1 && authToken && authToken.length > 0) {
-      const isValid = auth41.verifyToken(
+      const isValid = verifyToken(
         authPluginData1,
         authPluginData2,
         authToken,
@@ -423,17 +471,17 @@ export class MySQLProtocolServer {
 
   private buildCapabilityFlags(): number {
     return (
-      ClientFlags.LONG_PASSWORD |
-      ClientFlags.FOUND_ROWS |
-      ClientFlags.LONG_FLAG |
-      ClientFlags.CONNECT_WITH_DB |
-      ClientFlags.NO_SCHEMA |
-      ClientFlags.PROTOCOL_41 |
-      ClientFlags.TRANSACTIONS |
-      ClientFlags.SECURE_CONNECTION |
-      ClientFlags.MULTI_RESULTS |
-      ClientFlags.PLUGIN_AUTH |
-      ClientFlags.PLUGIN_AUTH_LENENC_CLIENT_DATA
+      CLIENT_LONG_PASSWORD |
+      CLIENT_FOUND_ROWS |
+      CLIENT_LONG_FLAG |
+      CLIENT_CONNECT_WITH_DB |
+      CLIENT_NO_SCHEMA |
+      CLIENT_PROTOCOL_41 |
+      CLIENT_TRANSACTIONS |
+      CLIENT_SECURE_CONNECTION |
+      CLIENT_MULTI_RESULTS |
+      CLIENT_PLUGIN_AUTH |
+      CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA
     );
   }
 }

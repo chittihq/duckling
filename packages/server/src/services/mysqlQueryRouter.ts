@@ -299,7 +299,14 @@ function tryInterceptSelect(
   // Strip leading SELECT and optional whitespace
   const expr = upper.replace(/^SELECT\s+/i, '').trim();
 
-  // @@variable patterns
+  // Multi-expression SELECT with only @@vars (e.g. mysql client init)
+  // Example: SELECT @@version_comment, @@max_allowed_packet
+  // Must be checked BEFORE single @@variable to handle comma-separated lists
+  if (expr.includes('@@') && expr.includes(',') && !expr.includes('FROM')) {
+    return interceptMultiVariable(norm, connectionId, currentDatabase, currentUser);
+  }
+
+  // @@variable patterns (single variable)
   if (expr.startsWith('@@')) {
     return interceptSystemVariable(expr, connectionId, currentDatabase, currentUser);
   }
@@ -330,10 +337,9 @@ function tryInterceptSelect(
     return { type: 'intercepted', ...r };
   }
 
-  // Multi-expression SELECT with only @@vars (e.g. mysql client init)
-  // Example: SELECT @@version_comment, @@max_allowed_packet
-  if (expr.includes('@@') && !expr.includes('FROM')) {
-    return interceptMultiVariable(norm, connectionId, currentDatabase, currentUser);
+  // Catch any remaining @@var expressions without FROM (e.g. "SELECT @@unknown_var")
+  if (expr.startsWith('@@') && !expr.includes('FROM')) {
+    return interceptSystemVariable(expr, connectionId, currentDatabase, currentUser);
   }
 
   return null;
