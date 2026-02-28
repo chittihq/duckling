@@ -192,6 +192,18 @@ class SequentialAppenderService {
   }
 
   /**
+   * Try to acquire per-table sync lock - returns false if the table is already locked
+   */
+  private tryAcquireTableSyncLock(tableName: string): boolean {
+    if (this.tableSyncLocks.has(tableName)) {
+      return false;
+    }
+    this.tableSyncLocks.add(tableName);
+    logger.info(`Sync lock acquired for table: ${tableName}`);
+    return true;
+  }
+
+  /**
    * Release per-table sync lock
    */
   private releaseTableSyncLock(tableName: string): void {
@@ -227,13 +239,11 @@ class SequentialAppenderService {
       await this.cleanupDeletedTables(tables);
 
       for (const table of tables) {
-        // Skip tables that are already being synced (e.g., by a concurrent single-table sync)
-        if (this.tableSyncLocks.has(table)) {
+        // Try to acquire per-table lock; skip tables already being synced
+        if (!this.tryAcquireTableSyncLock(table)) {
           logger.info(`Skipping table ${table}: sync already in progress`);
           continue;
         }
-
-        this.acquireTableSyncLock(table);
         try {
           // Use Appender API for full sync (6-10x faster than INSERT)
           // Falls back to INSERT automatically on any Appender error
@@ -298,13 +308,11 @@ class SequentialAppenderService {
       for (let i = 0; i < tables.length; i++) {
         const table = tables[i];
 
-        // Skip tables that are already being synced (e.g., by a concurrent single-table sync)
-        if (this.tableSyncLocks.has(table)) {
+        // Try to acquire per-table lock; skip tables already being synced
+        if (!this.tryAcquireTableSyncLock(table)) {
           logger.info(`[${i + 1}/${tables.length}] Skipping table ${table}: sync already in progress`);
           continue;
         }
-
-        this.acquireTableSyncLock(table);
         try {
           // Log table-level progress
           logger.info(`[${i + 1}/${tables.length}] Syncing table: ${table}...`);
