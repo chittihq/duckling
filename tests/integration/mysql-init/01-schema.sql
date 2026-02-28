@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS type_coverage (
   col_longblob          LONGBLOB,
 
   -- Temporal
+  col_date              DATE,
   col_time              TIME,
   col_time_6            TIME(6),
   col_timestamp         TIMESTAMP NULL,
@@ -118,6 +119,7 @@ CREATE TABLE IF NOT EXISTS type_coverage_cdc (
   col_tinytext          TINYTEXT,
   col_mediumtext        MEDIUMTEXT,
   col_longtext          LONGTEXT,
+  col_date              DATE,
   col_time              TIME,
   col_timestamp         TIMESTAMP NULL,
   col_datetime_6        DATETIME(6),

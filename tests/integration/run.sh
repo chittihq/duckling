@@ -138,7 +138,7 @@ INSERT INTO type_coverage (
   col_double, col_decimal_5_0, col_decimal_20_10,
   col_char_10, col_tinytext, col_mediumtext, col_longtext,
   col_binary_4, col_varbinary_64, col_tinyblob, col_mediumblob, col_longblob,
-  col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
+  col_date, col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
   col_set, col_bit_1, col_bit_8,
   col_json, col_enum,
   created_at, updated_at
@@ -148,7 +148,7 @@ INSERT INTO type_coverage (
   1.7976931348623157E+308, 99999, 1234567890.1234567890,
   'ABCDEFGHIJ', 'tiny', 'medium text value', 'long text value',
   X'DEADBEEF', X'CAFEBABE', X'FF', X'AABBCCDD', X'0102030405',
-  '23:59:59', '23:59:59.123456', '2025-06-15 12:30:45', '2025-06-15 12:30:45.654321', '2025-06-15 12:30:45.654321', 2025,
+  '2025-06-15', '23:59:59', '23:59:59.123456', '2025-06-15 12:30:45', '2025-06-15 12:30:45.654321', '2025-06-15 12:30:45.654321', 2025,
   'a,c,d', b'1', b'11111111',
   '{"name":"test","tags":["a","b"],"nested":{"key":1},"flag":true,"nothing":null}', 'gamma',
   '2025-01-01 00:00:00', '2025-01-01 00:00:00'
@@ -161,7 +161,7 @@ INSERT INTO type_coverage (
   col_double, col_decimal_5_0, col_decimal_20_10,
   col_char_10, col_tinytext, col_mediumtext, col_longtext,
   col_binary_4, col_varbinary_64, col_tinyblob, col_mediumblob, col_longblob,
-  col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
+  col_date, col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
   col_set, col_bit_1, col_bit_8,
   col_json, col_enum,
   created_at, updated_at
@@ -171,7 +171,7 @@ INSERT INTO type_coverage (
   -3.14159265358979, 0, 0.0000000000,
   '', '', '', '',
   X'00000000', X'00', X'00', X'00', X'00',
-  '00:00:00', '00:00:00.000000', '1970-01-01 00:00:01', '1970-01-01 00:00:01.000000', '1970-01-01 00:00:01.000000', 1970,
+  '1970-01-01', '00:00:00', '00:00:00.000000', '1970-01-01 00:00:01', '1970-01-01 00:00:01.000000', '1970-01-01 00:00:01.000000', 1970,
   '', b'0', b'00000000',
   '[]', 'alpha',
   '2025-01-01 00:00:00', '2025-01-01 00:00:00'
@@ -184,7 +184,7 @@ INSERT INTO type_coverage (
   col_double, col_decimal_5_0, col_decimal_20_10,
   col_char_10, col_tinytext, col_mediumtext, col_longtext,
   col_binary_4, col_varbinary_64, col_tinyblob, col_mediumblob, col_longblob,
-  col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
+  col_date, col_time, col_time_6, col_timestamp, col_timestamp_6, col_datetime_6, col_year,
   col_set, col_bit_1, col_bit_8,
   col_json, col_enum,
   created_at, updated_at
@@ -194,7 +194,7 @@ INSERT INTO type_coverage (
   NULL, NULL, NULL,
   NULL, NULL, NULL, NULL,
   NULL, NULL, NULL, NULL, NULL,
-  NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL,
   NULL, NULL, NULL,
   NULL, NULL,
   '2025-01-01 00:00:00', '2025-01-01 00:00:00'

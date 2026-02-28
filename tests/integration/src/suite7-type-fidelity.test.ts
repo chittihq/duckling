@@ -123,6 +123,14 @@ describe('Suite 7: MySQL 8 Type Fidelity', () => {
       expect(val).not.toBe('null');
     });
 
+    test('DATE', async () => {
+      const val = await duckdbScalarStrict(
+        'SELECT CAST(col_date AS VARCHAR) AS v FROM type_coverage WHERE id = 1',
+        'v',
+      );
+      expect(val).toContain('2025-06-15');
+    });
+
     test('TIME', async () => {
       expect(
         await duckdbScalarStrict('SELECT CAST(col_time AS VARCHAR) AS v FROM type_coverage WHERE id = 1', 'v'),
@@ -262,6 +270,14 @@ describe('Suite 7: MySQL 8 Type Fidelity', () => {
       ).toBe('');
     });
 
+    test('DATE epoch', async () => {
+      const val = await duckdbScalarStrict(
+        'SELECT CAST(col_date AS VARCHAR) AS v FROM type_coverage WHERE id = 2',
+        'v',
+      );
+      expect(val).toContain('1970-01-01');
+    });
+
     test('TIME zero', async () => {
       expect(
         await duckdbScalarStrict('SELECT CAST(col_time AS VARCHAR) AS v FROM type_coverage WHERE id = 2', 'v'),
@@ -382,6 +398,12 @@ describe('Suite 7: MySQL 8 Type Fidelity', () => {
     test('BINARY(4) null', async () => {
       expect(
         await duckdbScalarStrict('SELECT col_binary_4 FROM type_coverage WHERE id = 3', 'col_binary_4'),
+      ).toBe('null');
+    });
+
+    test('DATE null', async () => {
+      expect(
+        await duckdbScalarStrict('SELECT col_date FROM type_coverage WHERE id = 3', 'col_date'),
       ).toBe('null');
     });
 
