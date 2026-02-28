@@ -140,19 +140,23 @@ class DuckDBServer {
       res.sendFile(path.join(__dirname, '..', 'public', 'openapi.json'));
     });
 
-    // Global authentication middleware - protects API routes only
+    // Global authentication middleware - protects API and operational routes
     this.app.use((req, res, next) => {
-      // Public API routes (no auth required)
-      const publicApiPaths = ['/api/login', '/api/check-auth', '/openapi.json'];
+      const publicPaths = ['/api/login', '/api/check-auth', '/openapi.json'];
+      if (publicPaths.includes(req.path)) {
+        return next();
+      }
 
-      // Only protect API routes (except public ones)
-      // All frontend SPA routes are public and served by index.html
-      if (req.path.startsWith('/api/') && !publicApiPaths.includes(req.path)) {
-        // API routes (except public ones) require authentication
+      const protectedPrefixes = ['/api/', '/sync/', '/automation/', '/cdc/', '/metrics'];
+      const requiresAuth = protectedPrefixes.some(p =>
+        p.endsWith('/') ? req.path.startsWith(p) : req.path === p
+      ) || req.path === '/health' || req.path === '/status';
+
+      if (requiresAuth) {
         return this.checkApiKeyOrSession(req, res, next);
       }
 
-      // Allow all non-API routes (frontend SPA, static assets, etc.)
+      // Allow non-protected routes (frontend SPA, static assets)
       next();
     });
 
