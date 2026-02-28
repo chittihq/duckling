@@ -13,6 +13,24 @@ import { requireAuth } from './middleware/auth';
 import config from './config';
 import logger from './logger';
 
+class InvalidIdentifierError extends Error {
+  constructor(name: string) {
+    super(`Invalid identifier: ${name}`);
+    this.name = 'InvalidIdentifierError';
+  }
+}
+
+/** Validate and double-quote a SQL identifier (table or column name). */
+function q(name: string): string {
+  if (typeof name !== 'string' || name.length === 0 || name.length > 128) {
+    throw new InvalidIdentifierError(name);
+  }
+  if (/[\0;]/.test(name)) {
+    throw new InvalidIdentifierError(name);
+  }
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
 class DuckDBServer {
   private app: express.Application;
   private server: http.Server;
@@ -299,7 +317,7 @@ class DuckDBServer {
       // Drop all tables
       for (const table of tables) {
         try {
-          await this.duckdb.run(`DROP TABLE IF EXISTS ${table}`);
+          await this.duckdb.run(`DROP TABLE IF EXISTS ${q(table)}`);
         } catch (error) {
           logger.warn(`Failed to drop table ${table}:`, error);
         }
@@ -350,6 +368,7 @@ class DuckDBServer {
       let result: any[];
 
       // Execute query on selected database
+      // lgtm[js/sql-injection] - intentional query execution endpoint, protected by authentication
       if (database === 'mysql') {
         result = await this.mysql.execute(sql, params);
       } else {
@@ -397,13 +416,17 @@ class DuckDBServer {
   private async getTableSchema(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { name } = req.params;
-      const result = await this.duckdb.execute(`DESCRIBE ${name}`);
+      const result = await this.duckdb.execute(`DESCRIBE ${q(name)}`);
       res.json({ columns: result });
     } catch (error) {
       logger.error('Get table schema failed:', error);
-      res.status(500).json({
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
+      if (error instanceof InvalidIdentifierError) {
+        res.status(400).json({ error: error.message });
+      } else {
+        res.status(500).json({
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
     }
   }
 
@@ -412,9 +435,9 @@ class DuckDBServer {
       const { name } = req.params;
 
       const data = await this.duckdb.execute(
-        `SELECT * FROM ${name}`
+        `SELECT * FROM ${q(name)}`
       );
-      
+
       // Convert BigInt values to strings for JSON serialization
       const serializedData = data.map((row: any) => {
         const serializedRow: any = {};
@@ -427,13 +450,17 @@ class DuckDBServer {
         }
         return serializedRow;
       });
-      
+
       res.json(serializedData);
     } catch (error) {
       logger.error('Get table data failed:', error);
-      res.status(500).json({
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
+      if (error instanceof InvalidIdentifierError) {
+        res.status(400).json({ error: error.message });
+      } else {
+        res.status(500).json({
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
     }
   }
 
@@ -739,6 +766,9 @@ class DuckDBServer {
         return;
       }
 
+      // Validate identifier early — let InvalidIdentifierError propagate
+      const safeTableName = q(tableName);
+
       // Check DuckDB
       let duckdbExists = false;
       let duckdbColumnCount = 0;
@@ -751,7 +781,7 @@ class DuckDBServer {
 
         if (duckdbExists) {
           // Get column count and names
-          const schema = await this.duckdb.execute(`DESCRIBE ${tableName}`);
+          const schema = await this.duckdb.execute(`DESCRIBE ${safeTableName}`);
           duckdbColumnCount = schema.length;
           duckdbColumns = schema.map((col: any) => col.column_name);
 
@@ -840,9 +870,13 @@ class DuckDBServer {
       });
     } catch (error) {
       logger.error('Get table validation details failed:', error);
-      res.status(500).json({
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
+      if (error instanceof InvalidIdentifierError) {
+        res.status(400).json({ error: error.message });
+      } else {
+        res.status(500).json({
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
     }
   }
 
@@ -979,17 +1013,22 @@ class DuckDBServer {
 
       let whereClause = '';
       const conditions: string[] = [];
+      const params: any[] = [];
 
       if (status) {
-        conditions.push(`status = '${status}'`);
+        conditions.push(`status = ?`);
+        params.push(status);
       }
       if (tableName) {
-        conditions.push(`table_name = '${tableName}'`);
+        conditions.push(`table_name = ?`);
+        params.push(tableName);
       }
 
       if (conditions.length > 0) {
         whereClause = 'WHERE ' + conditions.join(' AND ');
       }
+
+      const queryParams = [...params, limit, offset];
 
       const query = `
         SELECT
@@ -1006,15 +1045,15 @@ class DuckDBServer {
         FROM sync_log
         ${whereClause}
         ORDER BY created_at DESC
-        LIMIT ${limit}
-        OFFSET ${offset}
+        LIMIT ?
+        OFFSET ?
       `;
 
-      const logs = await this.duckdb.query(query);
+      const logs = await this.duckdb.query(query, queryParams);
 
       // Get total count
       const countQuery = `SELECT COUNT(*) as total FROM sync_log ${whereClause}`;
-      const countResult = await this.duckdb.query(countQuery);
+      const countResult = await this.duckdb.query(countQuery, params);
       const total = countResult?.[0]?.total || 0;
 
       // Convert BigInt values to numbers for JSON serialization

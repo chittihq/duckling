@@ -66,6 +66,11 @@ class SequentialAppenderService {
     this.duckdb = duckdb;
   }
 
+  /** Double-quote a DuckDB identifier, escaping embedded double-quotes. */
+  private q(name: string): string {
+    return '"' + name.replace(/"/g, '""') + '"';
+  }
+
   static getInstance(databaseId: string, mysql: MySQLConnection, duckdb: DuckDBConnection): SequentialAppenderService {
     if (!SequentialAppenderService.instances.has(databaseId)) {
       SequentialAppenderService.instances.set(databaseId, new SequentialAppenderService(mysql, duckdb));
@@ -570,15 +575,16 @@ class SequentialAppenderService {
       const PROGRESS_LOG_INTERVAL = 10000;
 
       // Clear existing data for full sync (separate transaction to avoid huge rollback)
-      await this.duckdb.run(`DELETE FROM ${tableName}`);
+      await this.duckdb.run(`DELETE FROM ${this.q(tableName)}`);
 
       logger.info(`${tableName}: Table cleared, starting insert with periodic commits`);
 
       try {
         // Get column names for INSERT statement
         const columns = schema.map(col => col.Field);
+        const quotedColumns = columns.map(col => this.q(col)).join(', ');
         const placeholders = columns.map(() => '?').join(', ');
-        const insertQuery = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`;
+        const insertQuery = `INSERT INTO ${this.q(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
 
         // Create column type map for sanitization
         const columnTypes = new Map(schema.map(col => [col.Field, col.Type]));
@@ -609,7 +615,7 @@ class SequentialAppenderService {
             // Format: INSERT INTO table (col1, col2) VALUES (?, ?), (?, ?), ...
             const rowPlaceholders = `(${columns.map(() => '?').join(', ')})`;
             const allPlaceholders = batch.map(() => rowPlaceholders).join(', ');
-            const bulkInsertQuery = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${allPlaceholders}`;
+            const bulkInsertQuery = `INSERT INTO ${this.q(tableName)} (${quotedColumns}) VALUES ${allPlaceholders}`;
 
             // Flatten all values into single array for bulk insert
             const allValues: any[] = [];
@@ -650,7 +656,7 @@ class SequentialAppenderService {
 
         if (primaryKeyColumn && recordsProcessed > 0) {
           try {
-            const maxResult = await this.duckdb.execute(`SELECT MAX(${primaryKeyColumn}) as max_id FROM ${tableName}`);
+            const maxResult = await this.duckdb.execute(`SELECT MAX(${this.q(primaryKeyColumn)}) as max_id FROM ${this.q(tableName)}`);
             // execute() returns objects with column names
             if (maxResult.length > 0 && maxResult[0]?.max_id !== null && maxResult[0]?.max_id !== undefined) {
               // Convert BigInt to number for numeric IDs, keep strings as-is
@@ -766,7 +772,7 @@ class SequentialAppenderService {
       const PROGRESS_LOG_INTERVAL = 10000;
 
       // Clear existing data for full sync
-      await this.duckdb.run(`DELETE FROM ${tableName}`);
+      await this.duckdb.run(`DELETE FROM ${this.q(tableName)}`);
 
       // Checkpoint after DELETE to ensure Appender sees empty table
       await this.duckdb.checkpoint();
@@ -876,7 +882,7 @@ class SequentialAppenderService {
 
         if (primaryKeyColumn && recordsProcessed > 0) {
           try {
-            const maxResult = await this.duckdb.execute(`SELECT MAX(${primaryKeyColumn}) as max_id FROM ${tableName}`);
+            const maxResult = await this.duckdb.execute(`SELECT MAX(${this.q(primaryKeyColumn)}) as max_id FROM ${this.q(tableName)}`);
             // execute() returns objects with column names
             if (maxResult.length > 0 && maxResult[0]?.max_id !== null && maxResult[0]?.max_id !== undefined) {
               // Convert BigInt to number for numeric IDs, keep strings as-is
@@ -1043,7 +1049,7 @@ class SequentialAppenderService {
             // Build bulk INSERT OR REPLACE query for incremental records
             const rowPlaceholders = `(${columns.map(() => '?').join(', ')})`;
             const allPlaceholders = batch.map(() => rowPlaceholders).join(', ');
-            const bulkInsertQuery = `INSERT OR REPLACE INTO ${tableName} (${columns.join(', ')}) VALUES ${allPlaceholders}`;
+            const bulkInsertQuery = `INSERT OR REPLACE INTO ${this.q(tableName)} (${columns.map(c => this.q(c)).join(', ')}) VALUES ${allPlaceholders}`;
 
             // Flatten all values into single array for bulk insert
             const allValues: any[] = [];
@@ -1174,7 +1180,7 @@ class SequentialAppenderService {
 
       if (views.length > 0) {
         // Drop the view to allow creating a base table
-        await this.duckdb.run(`DROP VIEW IF EXISTS ${tableName}`);
+        await this.duckdb.run(`DROP VIEW IF EXISTS ${this.q(tableName)}`);
         logger.info(`Dropped view ${tableName} to create base table`);
       }
 
@@ -1211,15 +1217,15 @@ class SequentialAppenderService {
       // DuckDB enforces constraints strictly, so we allow NULL to prevent sync failures
 
       // Don't add PRIMARY KEY constraint here - we'll add it separately
-      return `${col.Field} ${type}`;
+      return `${this.q(col.Field)} ${type}`;
     });
 
     // Add composite primary key constraint if there are primary key columns
     if (primaryKeyColumns.length > 0) {
-      columns.push(`PRIMARY KEY (${primaryKeyColumns.join(', ')})`);
+      columns.push(`PRIMARY KEY (${primaryKeyColumns.map(pk => this.q(pk)).join(', ')})`);
     }
 
-    const createQuery = `CREATE TABLE ${tableName} (${columns.join(', ')})`;
+    const createQuery = `CREATE TABLE ${this.q(tableName)} (${columns.join(', ')})`;
     await this.duckdb.run(createQuery);
 
     logger.info(`Created table ${tableName} with ${schema.length} columns${primaryKeyColumns.length > 0 ? ` and primary key: (${primaryKeyColumns.join(', ')})` : ''}`);
@@ -1253,7 +1259,7 @@ class SequentialAppenderService {
         const type = this.mapMySQLTypeToDuckDB(col.Type);
 
         // Add column - DuckDB defaults to NULL for new columns
-        const alterQuery = `ALTER TABLE ${tableName} ADD COLUMN ${col.Field} ${type}`;
+        const alterQuery = `ALTER TABLE ${this.q(tableName)} ADD COLUMN ${this.q(col.Field)} ${type}`;
         await this.duckdb.run(alterQuery);
 
         logger.info(`Schema evolution: Added column '${col.Field}' (${type}) to table ${tableName}`);
@@ -1278,7 +1284,7 @@ class SequentialAppenderService {
       if (error.code === 'ER_NO_SUCH_TABLE' || error.errno === 1146) {
         logger.warn(`Table ${tableName} does not exist in MySQL, cleaning up from DuckDB`);
         try {
-          await this.duckdb.run(`DROP TABLE IF EXISTS ${tableName}`);
+          await this.duckdb.run(`DROP TABLE IF EXISTS ${this.q(tableName)}`);
           await this.duckdb.run('DELETE FROM appender_watermarks WHERE table_name = ?', [tableName]);
           logger.info(`Deleted orphaned table ${tableName} from DuckDB`);
         } catch (cleanupError) {
@@ -1318,7 +1324,7 @@ class SequentialAppenderService {
       for (const table of tablesToDelete) {
         try {
           // Drop the table
-          await this.duckdb.run(`DROP TABLE IF EXISTS ${table}`);
+          await this.duckdb.run(`DROP TABLE IF EXISTS ${this.q(table)}`);
           logger.info(`Deleted table ${table} from DuckDB`);
 
           // Clean up watermark

@@ -84,8 +84,13 @@ class MySQLConnection {
     return result.map((row: any) => Object.values(row)[0] as string);
   }
 
+  /** Backtick-quote a MySQL identifier, escaping embedded backticks. */
+  private q(name: string): string {
+    return '`' + name.replace(/`/g, '``') + '`';
+  }
+
   async getTableSchema(tableName: string): Promise<any[]> {
-    return await this.execute(`DESCRIBE ${tableName}`);
+    return await this.execute(`DESCRIBE ${this.q(tableName)}`);
   }
 
   /**
@@ -103,7 +108,7 @@ class MySQLConnection {
    * Use getTableRowCountFast() for progress tracking or estimates
    */
   async getTableRowCount(tableName: string): Promise<number> {
-    const result = await this.execute(`SELECT COUNT(*) as count FROM ${tableName}`);
+    const result = await this.execute(`SELECT COUNT(*) as count FROM ${this.q(tableName)}`);
     return result[0].count;
   }
 
@@ -150,7 +155,7 @@ class MySQLConnection {
       if (!timestampColumn) return null;
 
       const result = await this.execute(
-        `SELECT MAX(${timestampColumn.Field}) as max_timestamp FROM ${tableName}`
+        `SELECT MAX(${this.q(timestampColumn.Field)}) as max_timestamp FROM ${this.q(tableName)}`
       );
 
       return result[0].max_timestamp || null;
@@ -161,7 +166,7 @@ class MySQLConnection {
   }
 
   async getTableData(tableName: string, limit?: number, offset?: number): Promise<any[]> {
-    let query = `SELECT * FROM ${tableName}`;
+    let query = `SELECT * FROM ${this.q(tableName)}`;
 
     if (limit) {
       // Use non-parameterized LIMIT to avoid MySQL parameter issues
@@ -196,7 +201,7 @@ class MySQLConnection {
       return [];
     }
 
-    let query = `SELECT * FROM ${tableName} WHERE ${timestampColumn.Field} >= ?`;
+    let query = `SELECT * FROM ${this.q(tableName)} WHERE ${this.q(timestampColumn.Field)} >= ?`;
     const params: any[] = [lastSync];
 
     if (limit) {
@@ -228,10 +233,10 @@ class MySQLConnection {
 
         if (lastId === null) {
           // First batch - no WHERE clause needed
-          query = `SELECT * FROM ${tableName} ORDER BY ${primaryKey} ASC LIMIT ${batchSize}`;
+          query = `SELECT * FROM ${this.q(tableName)} ORDER BY ${this.q(primaryKey)} ASC LIMIT ${batchSize}`;
         } else {
           // Subsequent batches - use WHERE pk > lastPk
-          query = `SELECT * FROM ${tableName} WHERE ${primaryKey} > ? ORDER BY ${primaryKey} ASC LIMIT ${batchSize}`;
+          query = `SELECT * FROM ${this.q(tableName)} WHERE ${this.q(primaryKey)} > ? ORDER BY ${this.q(primaryKey)} ASC LIMIT ${batchSize}`;
           params = [lastId];
         }
 
@@ -286,11 +291,11 @@ class MySQLConnection {
 
         if (lastId === null) {
           // First batch
-          query = `SELECT * FROM ${tableName} WHERE ${watermarkColumn} >= ? ORDER BY ${watermarkColumn} ASC, ${primaryKey} ASC LIMIT ${batchSize}`;
+          query = `SELECT * FROM ${this.q(tableName)} WHERE ${this.q(watermarkColumn)} >= ? ORDER BY ${this.q(watermarkColumn)} ASC, ${this.q(primaryKey)} ASC LIMIT ${batchSize}`;
           params = [watermarkValue];
         } else {
           // Subsequent batches - handle tie-breaking with primary key
-          query = `SELECT * FROM ${tableName} WHERE (${watermarkColumn} > ?) OR (${watermarkColumn} = ? AND ${primaryKey} > ?) ORDER BY ${watermarkColumn} ASC, ${primaryKey} ASC LIMIT ${batchSize}`;
+          query = `SELECT * FROM ${this.q(tableName)} WHERE (${this.q(watermarkColumn)} > ?) OR (${this.q(watermarkColumn)} = ? AND ${this.q(primaryKey)} > ?) ORDER BY ${this.q(watermarkColumn)} ASC, ${this.q(primaryKey)} ASC LIMIT ${batchSize}`;
           params = [lastWatermark, lastWatermark, lastId];
         }
 
@@ -311,7 +316,7 @@ class MySQLConnection {
       logger.warn(`MySQL streamIncrementalData for ${tableName}: no primary key, falling back to OFFSET pagination`);
 
       do {
-        const query = `SELECT * FROM ${tableName} WHERE ${watermarkColumn} >= ? ORDER BY ${watermarkColumn} ASC LIMIT ${batchSize} OFFSET ${offset}`;
+        const query = `SELECT * FROM ${this.q(tableName)} WHERE ${this.q(watermarkColumn)} >= ? ORDER BY ${this.q(watermarkColumn)} ASC LIMIT ${batchSize} OFFSET ${offset}`;
         batch = await this.execute(query, [watermarkValue]);
 
         if (batch.length > 0) {

@@ -99,7 +99,7 @@ class S3BackupService {
     s3Config: S3Config,
     key: string
   ): Promise<void> {
-    const params: Record<string, any> = {
+    const params: any = {
       Bucket: s3Config.bucket,
       Key: key,
       Body: fs.createReadStream(filePath),

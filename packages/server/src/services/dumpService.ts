@@ -29,6 +29,11 @@ class DumpService {
   private duckdb: DuckDBConnection;
   private static instance: DumpService;
 
+  /** Double-quote a DuckDB identifier, escaping embedded double-quotes. */
+  private q(name: string): string {
+    return '"' + name.replace(/"/g, '""') + '"';
+  }
+
   private constructor() {
     // Legacy service - uses first database in config
     const dbManager = DatabaseConfigManager.getInstance();
@@ -157,10 +162,10 @@ class DumpService {
         let type = this.mapMySQLTypeToDuckDB(col.Type);
         let nullable = col.Null === 'YES' ? '' : ' NOT NULL';
         // Skip MySQL-specific extras like auto_increment, DEFAULT_GENERATED, etc.
-        return `  ${col.Field} ${type}${nullable}`;
+        return `  ${this.q(col.Field)} ${type}${nullable}`;
       });
 
-      const createTable = `CREATE TABLE IF NOT EXISTS ${tableName} (\n${columns.join(',\n')}\n);\n\n`;
+      const createTable = `CREATE TABLE IF NOT EXISTS ${this.q(tableName)} (\n${columns.join(',\n')}\n);\n\n`;
       writeStream.write(`-- Table: ${tableName}\n`);
       writeStream.write(createTable);
       writeStream.write(`-- Data for table: ${tableName}\n`);
@@ -203,7 +208,7 @@ class DumpService {
               return String(value);
             });
             
-            const insertStatement = `INSERT INTO ${tableName} (${columnNames.join(', ')}) VALUES (${values.join(', ')});\n`;
+            const insertStatement = `INSERT INTO ${this.q(tableName)} (${columnNames.map(c => this.q(c)).join(', ')}) VALUES (${values.join(', ')});\n`;
             writeStream.write(insertStatement);
           }
           
@@ -236,10 +241,10 @@ class DumpService {
         let type = this.mapMySQLTypeToDuckDB(col.Type);
         let nullable = col.Null === 'YES' ? '' : ' NOT NULL';
         // Skip MySQL-specific extras like auto_increment, DEFAULT_GENERATED, etc.
-        return `  ${col.Field} ${type}${nullable}`;
+        return `  ${this.q(col.Field)} ${type}${nullable}`;
       });
 
-      const createTable = `CREATE TABLE IF NOT EXISTS ${tableName} (\n${columns.join(',\n')}\n);`;
+      const createTable = `CREATE TABLE IF NOT EXISTS ${this.q(tableName)} (\n${columns.join(',\n')}\n);`;
       
       // Get all table data
       let offset = 0;
@@ -279,7 +284,7 @@ class DumpService {
               return String(value);
             });
             
-            insertStatements.push(`INSERT INTO ${tableName} (${columnNames.join(', ')}) VALUES (${values.join(', ')});`);
+            insertStatements.push(`INSERT INTO ${this.q(tableName)} (${columnNames.map(c => this.q(c)).join(', ')}) VALUES (${values.join(', ')});`);
           }
           
           recordCount += batch.length;

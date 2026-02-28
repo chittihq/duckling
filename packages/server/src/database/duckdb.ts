@@ -498,9 +498,14 @@ class DuckDBConnection {
   }
 
 
+  /** Double-quote a DuckDB identifier, escaping embedded double-quotes. */
+  private q(name: string): string {
+    return '"' + name.replace(/"/g, '""') + '"';
+  }
+
   async getTableRowCount(tableName: string): Promise<number> {
     try {
-      const result = await this.execute(`SELECT COUNT(*) as count FROM ${tableName}`);
+      const result = await this.execute(`SELECT COUNT(*) as count FROM ${this.q(tableName)}`);
       // After executeRaw conversion, returns objects with column names
       const count = result[0]?.count || 0;
       return typeof count === 'bigint' ? Number(count) : count;

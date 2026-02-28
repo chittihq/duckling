@@ -247,7 +247,7 @@ export class CDCService {
   /**
    * Quote SQL identifier to prevent syntax errors with reserved words/special chars
    */
-  private quoteIdentifier(name: string): string {
+  private q(name: string): string {
     return `"${name.replace(/"/g, '""')}"`;
   }
 
@@ -381,11 +381,11 @@ export class CDCService {
     try {
       for (const row of rows) {
         const columns = Object.keys(row);
-        const quotedColumns = columns.map(col => this.quoteIdentifier(col)).join(', ');
+        const quotedColumns = columns.map(col => this.q(col)).join(', ');
         const values = columns.map(col => this.sanitizeValue(row[col]));
         const placeholders = columns.map(() => '?').join(', ');
 
-        const query = `INSERT OR REPLACE INTO ${this.quoteIdentifier(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
+        const query = `INSERT OR REPLACE INTO ${this.q(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
         await this.duckdb.run(query, values);
       }
 
@@ -416,12 +416,12 @@ export class CDCService {
         // row.after contains the new values
         const afterRow = row.after || row;
         const columns = Object.keys(afterRow);
-        const quotedColumns = columns.map(col => this.quoteIdentifier(col)).join(', ');
+        const quotedColumns = columns.map(col => this.q(col)).join(', ');
         const values = columns.map(col => this.sanitizeValue(afterRow[col]));
         const placeholders = columns.map(() => '?').join(', ');
 
         // Use INSERT OR REPLACE for upsert behavior
-        const query = `INSERT OR REPLACE INTO ${this.quoteIdentifier(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
+        const query = `INSERT OR REPLACE INTO ${this.q(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
         await this.duckdb.run(query, values);
       }
 
@@ -448,15 +448,15 @@ export class CDCService {
         const pkColumn = this.findPrimaryKeyColumn(tableName, row);
 
         if (pkColumn && row[pkColumn] !== undefined) {
-          const query = `DELETE FROM ${this.quoteIdentifier(tableName)} WHERE ${this.quoteIdentifier(pkColumn)} = ?`;
+          const query = `DELETE FROM ${this.q(tableName)} WHERE ${this.q(pkColumn)} = ?`;
           await this.duckdb.run(query, [row[pkColumn]]);
         } else {
           // Fallback: delete by all columns (exact match)
           const columns = Object.keys(row);
-          const conditions = columns.map(col => `${this.quoteIdentifier(col)} = ?`).join(' AND ');
+          const conditions = columns.map(col => `${this.q(col)} = ?`).join(' AND ');
           const values = columns.map(col => this.sanitizeValue(row[col]));
 
-          const query = `DELETE FROM ${this.quoteIdentifier(tableName)} WHERE ${conditions}`;
+          const query = `DELETE FROM ${this.q(tableName)} WHERE ${conditions}`;
           await this.duckdb.run(query, values);
         }
       }
