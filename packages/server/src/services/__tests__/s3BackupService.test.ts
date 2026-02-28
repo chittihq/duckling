@@ -1,3 +1,4 @@
+import { ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import s3BackupService from '../s3BackupService';
 import { S3Config } from '../../database/databaseConfig';
@@ -19,12 +20,12 @@ describe('S3BackupService.listBackups', () => {
     const send = vi
       .fn()
       .mockResolvedValueOnce({
-        Contents: [{ Key: 'db/backup-2.db', Size: 2 }],
+        Contents: [{ Key: 'db/backup-2.db', Size: 2, LastModified: new Date() }],
         IsTruncated: true,
         NextContinuationToken: 'next-page',
       })
       .mockResolvedValueOnce({
-        Contents: [{ Key: 'db/backup-1.db', Size: 1 }],
+        Contents: [{ Key: 'db/backup-1.db', Size: 1, LastModified: new Date() }],
         IsTruncated: false,
       });
     vi.spyOn(s3BackupService as any, 'getClient').mockReturnValue({ send });
@@ -34,8 +35,10 @@ describe('S3BackupService.listBackups', () => {
 
     expect(backups).toHaveLength(2);
     expect(backups.map(backup => backup.key)).toEqual(['db/backup-2.db', 'db/backup-1.db']);
-    expect((send.mock.calls[0][0] as any).input.ContinuationToken).toBeUndefined();
-    expect((send.mock.calls[1][0] as any).input.ContinuationToken).toBe('next-page');
+    const firstCommand = send.mock.calls[0][0] as ListObjectsV2Command;
+    const secondCommand = send.mock.calls[1][0] as ListObjectsV2Command;
+    expect(firstCommand.input.ContinuationToken).toBeUndefined();
+    expect(secondCommand.input.ContinuationToken).toBe('next-page');
   });
 
   test('filters out prefix placeholder and .mac objects across pages', async () => {
@@ -43,15 +46,15 @@ describe('S3BackupService.listBackups', () => {
       .fn()
       .mockResolvedValueOnce({
         Contents: [
-          { Key: 'db/' },
-          { Key: 'db/backup-2.db', Size: 2 },
-          { Key: 'db/backup-2.db.mac', Size: 1 },
+          { Key: 'db/', LastModified: new Date() },
+          { Key: 'db/backup-2.db', Size: 2, LastModified: new Date() },
+          { Key: 'db/backup-2.db.mac', Size: 1, LastModified: new Date() },
         ],
         IsTruncated: true,
         NextContinuationToken: 'next-page',
       })
       .mockResolvedValueOnce({
-        Contents: [{ Key: 'db/backup-1.db', Size: 1 }],
+        Contents: [{ Key: 'db/backup-1.db', Size: 1, LastModified: new Date() }],
         IsTruncated: false,
       });
     vi.spyOn(s3BackupService as any, 'getClient').mockReturnValue({ send });

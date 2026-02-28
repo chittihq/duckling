@@ -67,7 +67,7 @@ class S3BackupService {
         new ListObjectsV2Command({
           Bucket: s3Config.bucket,
           Prefix: prefix,
-          ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+          ContinuationToken: continuationToken,
         })
       );
       contents.push(...(response.Contents ?? []));
