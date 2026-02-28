@@ -53,12 +53,6 @@ function normalise(sql: string): string {
   return sql.trim().replace(/\s+/g, ' ').replace(/;+$/, '');
 }
 
-/** Case-insensitive test of the first N tokens. */
-function startsWith(norm: string, ...tokens: string[]): boolean {
-  const upper = norm.toUpperCase();
-  return upper.startsWith(tokens.join(' '));
-}
-
 /** Extract the subject after SHOW … FROM <subject>. */
 function extractFrom(norm: string): string | null {
   const m = norm.match(/FROM\s+[`"]?(\w+)[`"]?/i);
