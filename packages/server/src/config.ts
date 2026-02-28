@@ -103,6 +103,15 @@ export const config = {
     tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1'),
   },
 
+  mysqlProtocol: {
+    enabled: process.env.MYSQL_PROTOCOL_ENABLED !== 'false', // enabled by default
+    port: parseInt(process.env.MYSQL_PROTOCOL_PORT || '3307'),
+    defaultDatabase: process.env.MYSQL_PROTOCOL_DEFAULT_DB || 'default',
+    maxConnections: parseInt(process.env.MYSQL_PROTOCOL_MAX_CONNECTIONS || '50'),
+    username: process.env.MYSQL_PROTOCOL_USER || 'duckling',
+    password: process.env.MYSQL_PROTOCOL_PASSWORD || process.env.DUCKLING_API_KEY || '',
+  },
+
   rateLimit: {
     enabled: process.env.RATE_LIMIT_ENABLED !== 'false',
     categories: {

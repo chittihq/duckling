@@ -7,6 +7,7 @@ services:
       dockerfile: docker/server.Dockerfile
     ports:
       - "3001:3000"
+      - "3307:3307"
     env_file:
       - .env
     environment:

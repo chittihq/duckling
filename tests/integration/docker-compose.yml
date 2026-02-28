@@ -36,6 +36,7 @@ services:
       dockerfile: docker/server.Dockerfile
     ports:
       - "3002:3000"
+      - "3309:3307"
     environment:
       - NODE_ENV=production
       - PORT=3000

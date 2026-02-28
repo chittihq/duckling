@@ -18,6 +18,7 @@ import s3BackupService from './services/s3BackupService';
 import { diagnoseDatabase } from './services/diagnoseService';
 import { generateToken, verifyToken, extractTokenFromHeader } from './utils/jwtUtils';
 import { preAuthRateLimiter, postAuthRateLimiter, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
+import { MySQLProtocolServer } from './services/mysqlProtocolServer';
 import config from './config';
 import logger from './logger';
 
@@ -74,6 +75,7 @@ class DuckDBServer {
   private server: http.Server;
   private websocketService: WebSocketService;
   private logBufferService: LogBufferService;
+  private mysqlProtocolServer: MySQLProtocolServer | null = null;
 
   constructor() {
     this.app = express();
@@ -1873,6 +1875,18 @@ class DuckDBServer {
       console.log('Initializing log buffer service...');
       this.logBufferService.initialize();
 
+      // Start MySQL wire protocol server
+      if (config.mysqlProtocol.enabled) {
+        try {
+          this.mysqlProtocolServer = new MySQLProtocolServer();
+          await this.mysqlProtocolServer.start();
+          console.log(`MySQL protocol server listening on port ${config.mysqlProtocol.port}`);
+        } catch (err) {
+          console.error('Failed to start MySQL protocol server:', err);
+          // Non-fatal: the HTTP server continues to operate
+        }
+      }
+
       console.log('Server startup completed successfully');
     } catch (error) {
       console.error('Failed to start server:', error);
@@ -1997,6 +2011,15 @@ class DuckDBServer {
    */
   async stop(): Promise<void> {
     stopRateLimitCleanup();
+
+    // Stop MySQL protocol server first
+    if (this.mysqlProtocolServer) {
+      try {
+        await this.mysqlProtocolServer.stop();
+      } catch (err) {
+        logger.error('Error stopping MySQL protocol server:', err);
+      }
+    }
 
     return new Promise((resolve, reject) => {
       if (!this.server) {

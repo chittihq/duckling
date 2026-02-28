@@ -412,6 +412,33 @@ class DuckDBConnection {
   }
 
   /**
+   * Execute query returning raw rows plus column metadata (names and types).
+   * Used by the MySQL wire protocol server to build typed result sets.
+   */
+  async executeWithMetadata(query: string): Promise<{ rows: any[][]; columnNames: string[]; columnTypes: string[] }> {
+    await this.ensureInitialized();
+    const connection = await this.getPersistentConnection();
+    try {
+      const reader = await connection.runAndReadAll(query);
+      const rows = reader.getRows() || [];
+      const columnNames: string[] = reader.columnNames();
+      const columnTypes: string[] = reader.columnTypes().map((t: any) =>
+        typeof t === 'object' && t.typeId !== undefined ? t.toString() : String(t),
+      );
+      return { rows, columnNames, columnTypes };
+    } catch (error: any) {
+      this.closePersistentConnection();
+      const errorMessage = error.message || error.toString();
+      if (errorMessage.includes('invalidated')) {
+        this.dbInstance = null;
+        this.wasInvalidated = true;
+      }
+      logger.error('DuckDB query error:', { query, error: errorMessage });
+      throw error;
+    }
+  }
+
+  /**
    * Execute query for internal operations (sync, etc.)
    * Returns raw arrays without conversion for better memory efficiency
    */
