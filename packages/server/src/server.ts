@@ -16,6 +16,7 @@ import type { S3Config } from './database/databaseConfig';
 import { attachDatabaseContext, RequestWithDatabase } from './middleware/database';
 import s3BackupService from './services/s3BackupService';
 import { diagnoseDatabase } from './services/diagnoseService';
+import { QueryQueueFullError, QueryTimeoutError } from './services/queryGovernor';
 import { generateToken, verifyToken, extractTokenFromHeader } from './utils/jwtUtils';
 import { preAuthRateLimiter, postAuthRateLimiter, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
 import config from './config';
@@ -582,6 +583,17 @@ class DuckDBServer {
       });
     } catch (error) {
       logger.error('Query execution failed:', error);
+      if (error instanceof QueryQueueFullError) {
+        res.status(503).json({ error: error.message });
+        return;
+      }
+      if (error instanceof QueryTimeoutError) {
+        res.status(504).json({
+          error: error.message,
+          note: 'DuckDB cancellation is best-effort; this timeout protects API responsiveness.'
+        });
+        return;
+      }
       res.status(500).json({
         error: error instanceof Error ? error.message : 'Unknown error'
       });

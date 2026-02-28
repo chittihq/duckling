@@ -3,6 +3,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import config from '../config';
 import logger from '../logger';
+import { QueryGovernor, QueryGovernorOptions } from '../services/queryGovernor';
+
+interface ExecutionOptions extends QueryGovernorOptions {
+  skipGovernor?: boolean;
+}
 
 class DuckDBConnection {
   private dbInstance: DuckDBInstance | null = null;
@@ -15,6 +20,7 @@ class DuckDBConnection {
   // Persistent connection for queries — avoids creating/closing hundreds of connections
   // which exhausts DuckDB's internal connection resources
   private persistentConn: any = null;
+  private queryGovernor = new QueryGovernor();
 
   private constructor(dbPath: string) {
     this.dbPath = dbPath;
@@ -406,7 +412,26 @@ class DuckDBConnection {
     }
   }
 
-  async execute(query: string, params?: any[]): Promise<any[]> {
+  async execute(query: string, params?: any[], options: ExecutionOptions = {}): Promise<any[]> {
+    await this.ensureInitialized();
+    if (options.skipGovernor) {
+      return this.executeRaw(query, params, false);
+    }
+    return this.queryGovernor.execute(
+      () => this.executeRaw(query, params, false),
+      { priority: options.priority, timeoutMs: options.timeoutMs }
+    );
+  }
+
+  async executeHighPriority(query: string, params?: any[], timeoutMs?: number): Promise<any[]> {
+    return this.execute(query, params, { priority: 'high', timeoutMs });
+  }
+
+  getQueryGovernorStats(): { active: number; queued: number; queuedHigh: number; queuedNormal: number } {
+    return this.queryGovernor.getStats();
+  }
+
+  async executeWithoutGovernor(query: string, params?: any[]): Promise<any[]> {
     await this.ensureInitialized();
     return this.executeRaw(query, params, false); // Convert to objects with column names
   }
@@ -482,7 +507,22 @@ class DuckDBConnection {
     }
   }
 
-  async run(query: string, params?: any[]): Promise<void> {
+  async run(query: string, params?: any[], options: ExecutionOptions = {}): Promise<void> {
+    await this.ensureInitialized();
+    if (options.skipGovernor) {
+      return this.runRaw(query, params);
+    }
+    return this.queryGovernor.execute(
+      () => this.runRaw(query, params),
+      { priority: options.priority, timeoutMs: options.timeoutMs }
+    );
+  }
+
+  async runHighPriority(query: string, params?: any[], timeoutMs?: number): Promise<void> {
+    return this.run(query, params, { priority: 'high', timeoutMs });
+  }
+
+  async runWithoutGovernor(query: string, params?: any[]): Promise<void> {
     await this.ensureInitialized();
     return this.runRaw(query, params);
   }

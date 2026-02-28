@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import os from 'os';
 
 dotenv.config();
 
@@ -74,6 +75,17 @@ export const config = {
     reconnectDelayMs: parseInt(process.env.CDC_RECONNECT_DELAY_MS || '5000'),
     sslRejectUnauthorized: process.env.CDC_SSL_REJECT_UNAUTHORIZED !== 'false', // true by default for security
     maxQueueSize: parseInt(process.env.CDC_MAX_QUEUE_SIZE || '5000'),
+  },
+
+  workers: {
+    threads: Math.max(1, parseInt(process.env.WORKER_THREADS || String(Math.max(1, os.cpus().length - 1)))),
+  },
+
+  queryGovernor: {
+    maxConcurrentQueries: Math.max(1, parseInt(process.env.MAX_CONCURRENT_QUERIES || '10')),
+    timeoutMs: Math.max(1, parseInt(process.env.QUERY_TIMEOUT_MS || '30000')),
+    queueMax: Math.max(1, parseInt(process.env.QUERY_QUEUE_MAX || '50')),
+    maxConsecutiveHighPriority: Math.max(1, parseInt(process.env.QUERY_HIGH_PRIORITY_BURST || '3')),
   },
   
   monitoring: {

@@ -3,6 +3,7 @@ import MySQLConnection from '../database/mysql';
 import config from '../config';
 import logger from '../logger';
 import { DuckDBTimestampValue, DuckDBTimeValue } from '@duckdb/node-api';
+import { WorkerPool } from '../workers/workerPool';
 // Appender functionality now provided by unified DuckDBConnection class
 
 export interface AppenderSyncResult {
@@ -60,10 +61,12 @@ class SequentialAppenderService {
   private static instances: Map<string, SequentialAppenderService> = new Map();
   private syncInProgress: boolean = false;
   private syncQueue: Array<{ tableName?: string; resolve: (value: any) => void; reject: (error: any) => void }> = [];
+  private workerPool: WorkerPool;
 
   private constructor(mysql: MySQLConnection, duckdb: DuckDBConnection) {
     this.mysql = mysql;
     this.duckdb = duckdb;
+    this.workerPool = WorkerPool.getInstance();
   }
 
   /** Double-quote a DuckDB identifier, escaping embedded double-quotes. */
@@ -533,6 +536,25 @@ class SequentialAppenderService {
   }
 
   /**
+   * Offload row sanitization to worker threads using lean tuple payloads.
+   */
+  private async sanitizeBatch(
+    records: any[],
+    columns: string[],
+    columnTypes: Map<string, string>
+  ): Promise<any[][]> {
+    const rawRows = records.map(record => columns.map(col => record[col]));
+    const typeList = columns.map(col => columnTypes.get(col) || '');
+
+    try {
+      return await this.workerPool.sanitizeRows(rawRows, typeList);
+    } catch (error) {
+      logger.warn('Worker sanitization failed, falling back to main-thread sanitization:', error);
+      return rawRows.map(row => row.map((value, index) => this.sanitizeValue(value, typeList[index])));
+    }
+  }
+
+  /**
    * Sequential table sync - process all records in order with atomic transaction
    *
    * Uses explicit transactions for atomic all-or-nothing insertion:
@@ -616,16 +638,18 @@ class SequentialAppenderService {
             const allPlaceholders = batch.map(() => rowPlaceholders).join(', ');
             const bulkInsertQuery = `INSERT INTO ${this.q(tableName)} (${quotedColumns}) VALUES ${allPlaceholders}`;
 
+            const sanitizedRows = await this.sanitizeBatch(batch, columns, columnTypes);
+
             // Flatten all values into single array for bulk insert
             const allValues: any[] = [];
-            for (const record of batch) {
-              for (const col of columns) {
-                allValues.push(this.sanitizeValue(record[col], columnTypes.get(col) || ''));
+            for (const row of sanitizedRows) {
+              for (const value of row) {
+                allValues.push(value);
               }
             }
 
             // Execute bulk insert (10-100x faster than individual inserts)
-            await this.duckdb.run(bulkInsertQuery, allValues);
+            await this.duckdb.runHighPriority(bulkInsertQuery, allValues);
 
             recordsProcessed += batch.length;
             recordsSinceLastCommit += batch.length;
@@ -800,11 +824,14 @@ class SequentialAppenderService {
         logger.info(`${tableName}: fetchBatchSize=${fetchBatchSize}, flushInterval=${FLUSH_INTERVAL}, using Appender API`);
 
         for await (const fetchedBatch of this.mysql.streamTableData(tableName, fetchBatchSize)) {
+          const sanitizedRows = await this.sanitizeBatch(fetchedBatch, columns, columnTypes);
+
           // Append each row using Appender API
-          for (const record of fetchedBatch) {
+          for (const row of sanitizedRows) {
             // Append each column value using appropriate method based on MySQL type
-            for (const col of columns) {
-              const value = this.sanitizeValue(record[col], columnTypes.get(col) || '');
+            for (let colIndex = 0; colIndex < columns.length; colIndex++) {
+              const col = columns[colIndex];
+              const value = row[colIndex];
               const mysqlType = columnTypes.get(col) || '';
 
               // Append value based on MySQL type
@@ -1050,16 +1077,18 @@ class SequentialAppenderService {
             const allPlaceholders = batch.map(() => rowPlaceholders).join(', ');
             const bulkInsertQuery = `INSERT OR REPLACE INTO ${this.q(tableName)} (${columns.map(c => this.q(c)).join(', ')}) VALUES ${allPlaceholders}`;
 
+            const sanitizedRows = await this.sanitizeBatch(batch, columns, columnTypes);
+
             // Flatten all values into single array for bulk insert
             const allValues: any[] = [];
-            for (const record of batch) {
-              for (const col of columns) {
-                allValues.push(this.sanitizeValue(record[col], columnTypes.get(col) || ''));
+            for (const row of sanitizedRows) {
+              for (const value of row) {
+                allValues.push(value);
               }
             }
 
             // Execute bulk upsert (much faster than individual inserts)
-            await this.duckdb.run(bulkInsertQuery, allValues);
+            await this.duckdb.runHighPriority(bulkInsertQuery, allValues);
 
             recordsProcessed += batch.length;
           }
