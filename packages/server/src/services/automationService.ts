@@ -276,8 +276,11 @@ class AutomationService {
         fs.mkdirSync(backupPath, { recursive: true });
       }
 
-      // Backup DuckDB database file
-      const duckdbPath = config.duckdb.path;
+      // Backup DuckDB database file (database-specific path for multi-database setups)
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
+      const duckdbPath = dbConfig?.duckdbPath
+        ? (dbConfig.duckdbPath.startsWith('data/') ? `/app/${dbConfig.duckdbPath}` : dbConfig.duckdbPath)
+        : config.duckdb.path;
       if (fs.existsSync(duckdbPath)) {
         const duckdbBackup = path.join(backupPath, 'duckling.db');
         fs.copyFileSync(duckdbPath, duckdbBackup);
@@ -297,7 +300,6 @@ class AutomationService {
       logger.info(`✅ Backup completed: ${backupPath}`);
 
       // Upload to S3 if configured for this database
-      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
       if (dbConfig?.s3?.enabled) {
         try {
           const resolvedDuckdbPath = dbConfig.duckdbPath.startsWith('data/')
