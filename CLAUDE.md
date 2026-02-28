@@ -711,6 +711,26 @@ docker exec duckling-server node packages/server/dist/cli.js health
 docker exec duckling-server node packages/server/dist/cli.js sync
 ```
 
+### Integration Tests
+
+The project has a full integration test suite that spins up MySQL + Duckling in Docker and runs 7 test suites via vitest (full sync, incremental insert/update/delete, idempotency, CDC, type fidelity).
+
+```bash
+# Run the full integration test suite
+cd tests/integration
+./run.sh
+```
+
+This script handles the complete lifecycle:
+1. Starts MySQL in Docker, seeds test data
+2. Builds and starts the Duckling server container
+3. Installs test dependencies and runs `pnpm test` (vitest)
+4. Cleans up all containers and volumes on exit
+
+Test files are in `tests/integration/src/suite*.test.ts`. Helpers (API calls, DuckDB/MySQL queries, sync triggers) are in `tests/integration/src/helpers/`.
+
+**Port:** The integration test server runs on port **3002** (not 3001) to avoid conflicts with a running dev instance.
+
 ### Memory Management
 - Batch processing prevents memory overflow on large datasets
 - Connection pooling limits concurrent database connections
