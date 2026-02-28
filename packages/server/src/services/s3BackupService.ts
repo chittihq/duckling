@@ -59,12 +59,22 @@ class S3BackupService {
   ): Promise<Array<{ key: string; size: number; lastModified: Date }>> {
     const client = this.getClient(s3Config);
     const prefix = this.getPrefix(databaseId, s3Config);
+    const contents: Array<{ Key?: string; Size?: number; LastModified?: Date }> = [];
+    let continuationToken: string | undefined;
 
-    const response = await client.send(
-      new ListObjectsV2Command({ Bucket: s3Config.bucket, Prefix: prefix })
-    );
+    do {
+      const response = await client.send(
+        new ListObjectsV2Command({
+          Bucket: s3Config.bucket,
+          Prefix: prefix,
+          ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+        })
+      );
+      contents.push(...(response.Contents ?? []));
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
 
-    return (response.Contents ?? [])
+    return contents
       .filter(obj => obj.Key && obj.Key !== prefix && !obj.Key.endsWith('.mac'))
       .map(obj => ({
         key: obj.Key!,
