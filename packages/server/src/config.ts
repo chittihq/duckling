@@ -3,6 +3,8 @@ import path from 'path';
 
 dotenv.config();
 
+export const DEFAULT_JWT_SECRET = 'default-jwt-secret-change-in-production';
+
 // Determine base data directory
 // In Docker: /app/data (volume mounted from ./data)
 // In development: ./data (relative to project root)
@@ -92,7 +94,7 @@ export const config = {
     adminPassword: process.env.ADMIN_PASSWORD || '',
     sessionSecret: process.env.SESSION_SECRET || '',
     apiKey: process.env.DUCKLING_API_KEY || '',
-    jwtSecret: process.env.JWT_SECRET || process.env.SESSION_SECRET || 'default-jwt-secret-change-in-production',
+    jwtSecret: process.env.JWT_SECRET || process.env.SESSION_SECRET || DEFAULT_JWT_SECRET,
     jwtExpiresIn: process.env.JWT_EXPIRES_IN || '1h', // 1 hour by default
   },
 
@@ -135,5 +137,16 @@ export const config = {
     cleanupIntervalMs: parseInt(process.env.RATE_LIMIT_CLEANUP_INTERVAL_MS || '60000'),
   }
 };
+
+export function getAuthSecurityIssues(auth = config.auth): string[] {
+  const issues: string[] = [];
+  if (auth.jwtSecret === DEFAULT_JWT_SECRET) {
+    issues.push('JWT_SECRET is using the insecure default value.');
+  }
+  if (!auth.adminUsername.trim() || !auth.adminPassword.trim()) {
+    issues.push('ADMIN_USERNAME and ADMIN_PASSWORD must both be set to non-empty values.');
+  }
+  return issues;
+}
 
 export default config;
