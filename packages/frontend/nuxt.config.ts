@@ -11,9 +11,6 @@ export default defineNuxtConfig({
     preset: 'static'
   },
 
-  // Use app directory as source
-  srcDir: 'app/',
-
   // Allow Docker container to accept external connections
   devServer: {
     host: '0.0.0.0',
@@ -21,7 +18,6 @@ export default defineNuxtConfig({
   },
 
   modules: [
-    '@nuxtjs/tailwindcss',
     'shadcn-nuxt'
   ],
 
@@ -39,6 +35,14 @@ export default defineNuxtConfig({
     public: {
       apiBase: process.env.NUXT_PUBLIC_API_BASE || ''
     }
+  },
+
+  // PostCSS with Tailwind (replaces @nuxtjs/tailwindcss module for Nuxt 4)
+  postcss: {
+    plugins: {
+      tailwindcss: {},
+      autoprefixer: {},
+    },
   },
 
   // TypeScript configuration
