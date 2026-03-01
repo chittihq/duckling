@@ -17,7 +17,7 @@ import { DatabaseConfigManager } from './database/databaseConfig';
 import type { S3Config } from './database/databaseConfig';
 import { attachDatabaseContext, RequestWithDatabase } from './middleware/database';
 import s3BackupService from './services/s3BackupService';
-import { diagnoseDatabase } from './services/diagnoseService';
+import { diagnoseDatabase, DiagnoseProgressEvent } from './services/diagnoseService';
 import { getQueryGovernor, QueryGovernorError } from './services/queryGovernor';
 import { WorkerPool } from './workers/workerPool';
 import { ReadReplicaService } from './services/readReplicaService';
@@ -63,6 +63,11 @@ function sendError(res: express.Response, error: unknown): void {
       error: error instanceof Error ? error.message : 'Unknown error'
     });
   }
+}
+
+function sendSSE(res: express.Response, event: string, payload: unknown): void {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
 // Extend Express Request to include JWT user info
@@ -145,16 +150,16 @@ class DuckDBServer {
    */
   private checkApiKeyOrSession(req: express.Request, res: express.Response, next: express.NextFunction): void {
     const authHeader = req.headers.authorization;
+    const queryToken = typeof req.query.token === 'string' ? req.query.token : null;
+    const token = authHeader ? extractTokenFromHeader(authHeader) : queryToken;
 
-    if (!authHeader) {
+    if (!token) {
       res.status(401).json({
         error: 'Unauthorized',
-        message: 'Authentication required. Provide JWT token or API key in Authorization header.'
+        message: 'Authentication required. Provide JWT token or API key in Authorization header (or token query parameter for SSE).'
       });
       return;
     }
-
-    const token = extractTokenFromHeader(authHeader);
 
     // Try API key first (exact match)
     if (config.auth.apiKey && token === config.auth.apiKey) {
@@ -225,6 +230,7 @@ class DuckDBServer {
     this.app.delete('/api/databases/:id', this.deleteDatabase.bind(this));
     this.app.post('/api/databases/:id/test', this.testDatabaseConnection.bind(this));
     this.app.post('/api/databases/:id/diagnose', this.diagnoseDatabaseConnection.bind(this));
+    this.app.get('/api/databases/:id/diagnose/stream', this.diagnoseDatabaseConnectionStream.bind(this));
 
     // S3 config endpoints (per database by :id, no ?db= needed)
     this.app.get('/api/databases/:id/s3', this.getS3Config.bind(this));
@@ -1422,6 +1428,58 @@ class DuckDBServer {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'
       });
+    }
+  }
+
+  private async diagnoseDatabaseConnectionStream(req: express.Request, res: express.Response): Promise<void> {
+    let closed = false;
+    try {
+      const { id } = req.params;
+      const dbManager = DatabaseConfigManager.getInstance();
+      const dbConfig = dbManager.getDatabase(id);
+
+      if (!dbConfig) {
+        res.status(404).json({ success: false, error: 'Database not found' });
+        return;
+      }
+
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      req.on('close', () => {
+        closed = true;
+      });
+
+      let tickId = 0;
+      const sendProgress = (event: DiagnoseProgressEvent): void => {
+        if (closed) return;
+        tickId += 1;
+        sendSSE(res, 'tick', { id: tickId, ...event });
+      };
+
+      sendSSE(res, 'start', { message: 'Diagnose started' });
+      const mysql = MySQLConnection.getInstance(id, dbConfig.mysqlConnectionString);
+      const result = await diagnoseDatabase(mysql, sendProgress);
+      if (closed) return;
+      sendSSE(res, 'result', { diagnosis: result });
+      sendSSE(res, 'done', { success: true });
+      res.end();
+    } catch (error) {
+      logger.error('Diagnose database stream failed:', error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+        return;
+      }
+      if (!closed) {
+        sendSSE(res, 'error', { error: error instanceof Error ? error.message : 'Unknown error' });
+        res.end();
+      }
     }
   }
 

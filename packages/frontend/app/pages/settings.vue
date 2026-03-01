@@ -134,16 +134,17 @@
     </Dialog>
 
     <!-- Backup Management Dialog (per database) -->
-    <DialogScrollContent v-model:open="showBackupDialog" class="max-w-3xl">
-      <DialogHeader>
-        <DialogTitle>Backups — {{ selectedBackupDb?.name }}</DialogTitle>
-      </DialogHeader>
+    <Dialog v-model:open="showBackupDialog">
+      <DialogScrollContent class="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>Backups — {{ selectedBackupDb?.name }}</DialogTitle>
+        </DialogHeader>
 
-      <div v-if="loadingBackups" class="py-8 text-center text-sm text-muted-foreground">
-        Loading...
-      </div>
+        <div v-if="loadingBackups" class="py-8 text-center text-sm text-muted-foreground">
+          Loading...
+        </div>
 
-      <div v-else class="space-y-6 mt-2">
+        <div v-else class="space-y-6 mt-2">
 
         <!-- S3 Configuration -->
         <div>
@@ -364,129 +365,162 @@
           </table>
         </div>
 
-      </div>
-    </DialogScrollContent>
+        </div>
+      </DialogScrollContent>
+    </Dialog>
 
     <!-- Diagnose Results Dialog -->
-    <DialogScrollContent v-model:open="showDiagnoseDialog" class="max-w-3xl">
-      <DialogHeader>
-        <DialogTitle>Diagnose — {{ selectedDiagnoseDb?.name }}</DialogTitle>
-      </DialogHeader>
+    <Dialog v-model:open="showDiagnoseDialog">
+      <DialogScrollContent class="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>Diagnose — {{ selectedDiagnoseDb?.name }}</DialogTitle>
+        </DialogHeader>
 
-      <div v-if="diagnoseResult" class="space-y-6 mt-2">
-
-        <!-- Server Checks -->
+        <div class="space-y-6 mt-2">
         <div>
-          <h3 class="text-sm font-semibold mb-3">Server Checks</h3>
-          <div class="space-y-1.5">
-            <div v-for="check in diagnoseResult.server" :key="check.name" class="flex items-center gap-2 text-sm">
+          <h3 class="text-sm font-semibold mb-3">Realtime Progress</h3>
+          <div v-if="diagnoseTicks.length === 0" class="text-sm text-muted-foreground">
+            Waiting for diagnose updates...
+          </div>
+          <div v-else class="space-y-1.5">
+            <div v-for="tick in diagnoseTicks" :key="tick.id" class="flex items-center gap-2 text-sm">
               <span
                 :class="{
-                  'text-green-600': check.status === 'pass',
-                  'text-yellow-600': check.status === 'warn',
-                  'text-red-600': check.status === 'fail',
+                  'text-green-600': tick.status === 'pass',
+                  'text-yellow-600': tick.status === 'warn',
+                  'text-red-600': tick.status === 'fail',
                 }"
                 class="w-4 text-center font-bold"
               >
-                {{ check.status === 'pass' ? '\u2713' : check.status === 'warn' ? '!' : '\u2717' }}
+                {{ tick.status === 'pass' ? '\u2713' : tick.status === 'warn' ? '!' : '\u2717' }}
               </span>
-              <span class="w-40 text-muted-foreground">{{ check.name }}</span>
-              <span :class="{ 'text-yellow-600': check.status === 'warn', 'text-red-600': check.status === 'fail' }">
-                {{ check.detail }}
+              <span class="w-40 text-muted-foreground">{{ tick.name }}</span>
+              <span :class="{ 'text-yellow-600': tick.status === 'warn', 'text-red-600': tick.status === 'fail' }">
+                {{ tick.detail }}
               </span>
             </div>
           </div>
+          <p v-if="diagnosing === selectedDiagnoseDb?.id && !diagnoseStreamDone" class="text-xs text-muted-foreground mt-2">
+            Running diagnose...
+          </p>
         </div>
 
-        <div class="border-t border-border" />
+        <template v-if="diagnoseResult">
+          <div class="border-t border-border" />
 
-        <!-- Summary -->
-        <div>
-          <h3 class="text-sm font-semibold mb-3">Summary</h3>
-          <div class="flex flex-wrap gap-x-6 gap-y-1 text-sm">
-            <span>Tables: <strong>{{ diagnoseResult.summary.totalTables }}</strong></span>
-            <span>With PK: <strong :class="diagnoseResult.summary.tablesWithPrimaryKey < diagnoseResult.summary.totalTables ? 'text-yellow-600' : ''">{{ diagnoseResult.summary.tablesWithPrimaryKey }}</strong></span>
-            <span>With timestamp: <strong :class="diagnoseResult.summary.tablesWithTimestamp < diagnoseResult.summary.totalTables ? 'text-yellow-600' : ''">{{ diagnoseResult.summary.tablesWithTimestamp }}</strong></span>
-            <span>Columns: <strong>{{ diagnoseResult.summary.totalColumns }}</strong></span>
-            <span>Unsupported types: <strong :class="diagnoseResult.summary.unsupportedColumns > 0 ? 'text-yellow-600' : ''">{{ diagnoseResult.summary.unsupportedColumns }}</strong></span>
+          <!-- Server Checks -->
+          <div>
+            <h3 class="text-sm font-semibold mb-3">Server Checks</h3>
+            <div class="space-y-1.5">
+              <div v-for="check in diagnoseResult.server" :key="check.name" class="flex items-center gap-2 text-sm">
+                <span
+                  :class="{
+                    'text-green-600': check.status === 'pass',
+                    'text-yellow-600': check.status === 'warn',
+                    'text-red-600': check.status === 'fail',
+                  }"
+                  class="w-4 text-center font-bold"
+                >
+                  {{ check.status === 'pass' ? '\u2713' : check.status === 'warn' ? '!' : '\u2717' }}
+                </span>
+                <span class="w-40 text-muted-foreground">{{ check.name }}</span>
+                <span :class="{ 'text-yellow-600': check.status === 'warn', 'text-red-600': check.status === 'fail' }">
+                  {{ check.detail }}
+                </span>
+              </div>
+            </div>
           </div>
-        </div>
 
-        <div class="border-t border-border" />
+          <div class="border-t border-border" />
 
-        <!-- Per-table results -->
-        <div>
-          <h3 class="text-sm font-semibold mb-3">Tables</h3>
-          <div class="space-y-2">
-            <div
-              v-for="tbl in sortedDiagnoseTables"
-              :key="tbl.table"
-              class="border border-border rounded-lg"
-            >
-              <button
-                @click="toggleTableExpand(tbl.table)"
-                class="w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-muted/50 rounded-lg"
+          <!-- Summary -->
+          <div>
+            <h3 class="text-sm font-semibold mb-3">Summary</h3>
+            <div class="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+              <span>Tables: <strong>{{ diagnoseResult.summary.totalTables }}</strong></span>
+              <span>With PK: <strong :class="diagnoseResult.summary.tablesWithPrimaryKey < diagnoseResult.summary.totalTables ? 'text-yellow-600' : ''">{{ diagnoseResult.summary.tablesWithPrimaryKey }}</strong></span>
+              <span>With timestamp: <strong :class="diagnoseResult.summary.tablesWithTimestamp < diagnoseResult.summary.totalTables ? 'text-yellow-600' : ''">{{ diagnoseResult.summary.tablesWithTimestamp }}</strong></span>
+              <span>Columns: <strong>{{ diagnoseResult.summary.totalColumns }}</strong></span>
+              <span>Unsupported types: <strong :class="diagnoseResult.summary.unsupportedColumns > 0 ? 'text-yellow-600' : ''">{{ diagnoseResult.summary.unsupportedColumns }}</strong></span>
+            </div>
+          </div>
+
+          <div class="border-t border-border" />
+
+          <!-- Per-table results -->
+          <div>
+            <h3 class="text-sm font-semibold mb-3">Tables</h3>
+            <div class="space-y-2">
+              <div
+                v-for="tbl in sortedDiagnoseTables"
+                :key="tbl.table"
+                class="border border-border rounded-lg"
               >
-                <div class="flex items-center gap-2">
-                  <span class="font-mono font-medium">{{ tbl.table }}</span>
-                  <span
-                    v-if="tableHasWarning(tbl)"
-                    class="px-1.5 py-0.5 rounded text-xs bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
-                  >!</span>
-                </div>
-                <div class="flex items-center gap-3 text-xs text-muted-foreground">
-                  <span>~{{ formatNumber(tbl.estimatedRows) }} rows</span>
-                  <span>{{ expandedTables.has(tbl.table) ? '\u25B2' : '\u25BC' }}</span>
-                </div>
-              </button>
-              <div v-if="expandedTables.has(tbl.table)" class="px-3 pb-3 text-sm space-y-1.5">
-                <div class="flex gap-4 text-xs">
-                  <span>
-                    PK:
-                    <strong :class="tbl.primaryKey ? '' : 'text-yellow-600'">
-                      {{ tbl.primaryKey || 'none' }}
-                    </strong>
-                  </span>
-                  <span>
-                    Timestamp:
-                    <strong :class="tbl.timestampColumn ? (tbl.timestampQuality === 'append-only' ? 'text-yellow-600' : '') : 'text-yellow-600'">
-                      {{ tbl.timestampColumn || 'none' }}
-                    </strong>
-                  </span>
-                  <span>Charset: <span class="font-mono">{{ tbl.charset }}</span></span>
-                </div>
-                <!-- Warnings -->
-                <div v-if="!tbl.primaryKey" class="text-xs text-yellow-600">
-                  No primary key — slow sync, no CDC deletes
-                </div>
-                <div v-if="!tbl.timestampColumn" class="text-xs text-yellow-600">
-                  No timestamp column — no incremental sync possible
-                </div>
-                <div v-else-if="tbl.timestampQuality === 'append-only'" class="text-xs text-yellow-600">
-                  Only {{ tbl.timestampColumn }} — updates not tracked
-                </div>
-                <!-- Unsupported columns -->
-                <div v-if="tbl.unsupportedColumns.length > 0" class="text-xs text-yellow-600">
-                  Unsupported types (mapped to VARCHAR):
-                  <span v-for="(col, i) in tbl.unsupportedColumns" :key="col.column">
-                    {{ col.column }} ({{ col.type }}){{ i < tbl.unsupportedColumns.length - 1 ? ', ' : '' }}
-                  </span>
-                </div>
-                <div v-if="!tableHasWarning(tbl)" class="text-xs text-green-600">
-                  All checks passed
+                <button
+                  @click="toggleTableExpand(tbl.table)"
+                  class="w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-muted/50 rounded-lg"
+                >
+                  <div class="flex items-center gap-2">
+                    <span class="font-mono font-medium">{{ tbl.table }}</span>
+                    <span
+                      v-if="tableHasWarning(tbl)"
+                      class="px-1.5 py-0.5 rounded text-xs bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+                    >!</span>
+                  </div>
+                  <div class="flex items-center gap-3 text-xs text-muted-foreground">
+                    <span>~{{ formatNumber(tbl.estimatedRows) }} rows</span>
+                    <span>{{ expandedTables.has(tbl.table) ? '\u25B2' : '\u25BC' }}</span>
+                  </div>
+                </button>
+                <div v-if="expandedTables.has(tbl.table)" class="px-3 pb-3 text-sm space-y-1.5">
+                  <div class="flex gap-4 text-xs">
+                    <span>
+                      PK:
+                      <strong :class="tbl.primaryKey ? '' : 'text-yellow-600'">
+                        {{ tbl.primaryKey || 'none' }}
+                      </strong>
+                    </span>
+                    <span>
+                      Timestamp:
+                      <strong :class="tbl.timestampColumn ? (tbl.timestampQuality === 'append-only' ? 'text-yellow-600' : '') : 'text-yellow-600'">
+                        {{ tbl.timestampColumn || 'none' }}
+                      </strong>
+                    </span>
+                    <span>Charset: <span class="font-mono">{{ tbl.charset }}</span></span>
+                  </div>
+                  <!-- Warnings -->
+                  <div v-if="!tbl.primaryKey" class="text-xs text-yellow-600">
+                    No primary key — slow sync, no CDC deletes
+                  </div>
+                  <div v-if="!tbl.timestampColumn" class="text-xs text-yellow-600">
+                    No timestamp column — no incremental sync possible
+                  </div>
+                  <div v-else-if="tbl.timestampQuality === 'append-only'" class="text-xs text-yellow-600">
+                    Only {{ tbl.timestampColumn }} — updates not tracked
+                  </div>
+                  <!-- Unsupported columns -->
+                  <div v-if="tbl.unsupportedColumns.length > 0" class="text-xs text-yellow-600">
+                    Unsupported types (mapped to VARCHAR):
+                    <span v-for="(col, i) in tbl.unsupportedColumns" :key="col.column">
+                      {{ col.column }} ({{ col.type }}){{ i < tbl.unsupportedColumns.length - 1 ? ', ' : '' }}
+                    </span>
+                  </div>
+                  <div v-if="!tableHasWarning(tbl)" class="text-xs text-green-600">
+                    All checks passed
+                  </div>
                 </div>
               </div>
             </div>
           </div>
+        </template>
         </div>
-
-      </div>
-    </DialogScrollContent>
+      </DialogScrollContent>
+    </Dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import { toast } from '@/components/ui/toast';
 
 interface S3Config {
@@ -549,7 +583,17 @@ interface DiagnoseResult {
   };
 }
 
+interface DiagnoseTick {
+  id: number;
+  name: string;
+  status: 'pass' | 'warn' | 'fail';
+  detail: string;
+}
+
 const { get, post, put, delete: del } = useApi();
+const { getAuthToken } = useAuth();
+const runtimeConfig = useRuntimeConfig();
+const apiBase = runtimeConfig.public.apiBase || '';
 
 // --- Database list state ---
 const databases = ref<Database[]>([]);
@@ -568,7 +612,10 @@ const diagnosing = ref('');
 const showDiagnoseDialog = ref(false);
 const selectedDiagnoseDb = ref<Database | null>(null);
 const diagnoseResult = ref<DiagnoseResult | null>(null);
+const diagnoseTicks = ref<DiagnoseTick[]>([]);
+const diagnoseStreamDone = ref(false);
 const expandedTables = ref<Set<string>>(new Set());
+let diagnoseEventSource: EventSource | null = null;
 
 // --- Backup dialog state ---
 const showBackupDialog = ref(false);
@@ -604,6 +651,20 @@ const backingUpLocal = ref(false);
 const restoring = ref(false);
 
 onMounted(loadDatabases);
+onBeforeUnmount(() => {
+  if (diagnoseEventSource) {
+    diagnoseEventSource.close();
+    diagnoseEventSource = null;
+  }
+});
+
+watch(showDiagnoseDialog, (open) => {
+  if (!open && diagnoseEventSource) {
+    diagnoseEventSource.close();
+    diagnoseEventSource = null;
+    diagnosing.value = '';
+  }
+});
 
 // --- Database management ---
 
@@ -696,20 +757,64 @@ async function runDiagnose(db: Database) {
   try {
     diagnosing.value = db.id;
     selectedDiagnoseDb.value = db;
+    showDiagnoseDialog.value = true;
     diagnoseResult.value = null;
+    diagnoseTicks.value = [];
+    diagnoseStreamDone.value = false;
     expandedTables.value = new Set();
-    const data = await post<{ success: boolean; diagnosis?: DiagnoseResult; error?: string }>(
-      `/api/databases/${db.id}/diagnose`
-    );
-    if (data.success && data.diagnosis) {
-      diagnoseResult.value = data.diagnosis;
-      showDiagnoseDialog.value = true;
-    } else {
-      toast({ title: 'Error', description: data.error || 'Diagnose failed', variant: 'destructive' });
+
+    if (diagnoseEventSource) {
+      diagnoseEventSource.close();
+      diagnoseEventSource = null;
     }
+
+    const token = getAuthToken();
+    if (!token) {
+      throw new Error('Missing authentication token');
+    }
+
+    diagnoseEventSource = new EventSource(`${apiBase}/api/databases/${db.id}/diagnose/stream?token=${encodeURIComponent(token)}`);
+
+    diagnoseEventSource.addEventListener('tick', (event) => {
+      const tick = JSON.parse((event as MessageEvent).data) as DiagnoseTick;
+      const index = diagnoseTicks.value.findIndex(t => t.id === tick.id);
+      if (index === -1) diagnoseTicks.value.push(tick);
+      else diagnoseTicks.value[index] = tick;
+    });
+
+    diagnoseEventSource.addEventListener('result', (event) => {
+      const payload = JSON.parse((event as MessageEvent).data) as { diagnosis: DiagnoseResult };
+      diagnoseResult.value = payload.diagnosis;
+    });
+
+    diagnoseEventSource.addEventListener('done', () => {
+      diagnoseStreamDone.value = true;
+      diagnosing.value = '';
+      if (diagnoseEventSource) {
+        diagnoseEventSource.close();
+        diagnoseEventSource = null;
+      }
+    });
+
+    diagnoseEventSource.addEventListener('error', (event) => {
+      const payload = (() => {
+        try {
+          return JSON.parse((event as MessageEvent).data) as { error?: string };
+        } catch {
+          return null;
+        }
+      })();
+      if (!diagnoseStreamDone.value) {
+        toast({ title: 'Error', description: payload?.error || 'Diagnose failed', variant: 'destructive' });
+      }
+      diagnosing.value = '';
+      if (diagnoseEventSource) {
+        diagnoseEventSource.close();
+        diagnoseEventSource = null;
+      }
+    });
   } catch {
     toast({ title: 'Error', description: 'Diagnose failed', variant: 'destructive' });
-  } finally {
     diagnosing.value = '';
   }
 }

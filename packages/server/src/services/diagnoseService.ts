@@ -19,7 +19,7 @@ interface TableDiagnosis {
   charset: string;
 }
 
-interface DiagnoseResult {
+export interface DiagnoseResult {
   server: DiagnoseCheck[];
   tables: TableDiagnosis[];
   summary: {
@@ -29,6 +29,12 @@ interface DiagnoseResult {
     totalColumns: number;
     unsupportedColumns: number;
   };
+}
+
+export interface DiagnoseProgressEvent {
+  name: string;
+  status: 'pass' | 'warn' | 'fail';
+  detail: string;
 }
 
 // --- Type mapping (duplicated from sequentialAppenderService to avoid coupling) ---
@@ -101,15 +107,25 @@ async function getVariable(mysql: MySQLConnection, varName: string): Promise<str
 
 // --- Main diagnose function ---
 
-export async function diagnoseDatabase(mysql: MySQLConnection): Promise<DiagnoseResult> {
+export async function diagnoseDatabase(
+  mysql: MySQLConnection,
+  onProgress?: (event: DiagnoseProgressEvent) => void
+): Promise<DiagnoseResult> {
   const serverChecks: DiagnoseCheck[] = [];
+  const reportProgress = (event: DiagnoseProgressEvent): void => {
+    if (onProgress) onProgress(event);
+  };
 
   // 1. Connection test
   try {
     await mysql.execute('SELECT 1');
-    serverChecks.push({ name: 'Connection', status: 'pass', detail: 'OK' });
+    const check = { name: 'Connection', status: 'pass' as const, detail: 'OK' };
+    serverChecks.push(check);
+    reportProgress(check);
   } catch (err: any) {
-    serverChecks.push({ name: 'Connection', status: 'fail', detail: err.message || 'Connection failed' });
+    const check = { name: 'Connection', status: 'fail' as const, detail: err.message || 'Connection failed' };
+    serverChecks.push(check);
+    reportProgress(check);
     // Can't continue if connection fails
     return {
       server: serverChecks,
@@ -121,51 +137,61 @@ export async function diagnoseDatabase(mysql: MySQLConnection): Promise<Diagnose
   // 2. Server charset
   const charset = await getVariable(mysql, 'character_set_server');
   if (charset) {
-    serverChecks.push({
+    const check = {
       name: 'Server charset',
       status: charset === 'utf8mb4' ? 'pass' : 'warn',
       detail: charset === 'utf8mb4' ? charset : `${charset} — 4-byte emoji will be lost`,
-    });
+    } as const;
+    serverChecks.push(check);
+    reportProgress(check);
   }
 
   // 3. Server collation
   const collation = await getVariable(mysql, 'collation_server');
   if (collation) {
-    serverChecks.push({
+    const check = {
       name: 'Server collation',
       status: collation.startsWith('utf8mb4') ? 'pass' : 'warn',
       detail: collation,
-    });
+    } as const;
+    serverChecks.push(check);
+    reportProgress(check);
   }
 
   // 4. Binlog enabled
   const logBin = await getVariable(mysql, 'log_bin');
   if (logBin !== null) {
-    serverChecks.push({
+    const check = {
       name: 'Binlog enabled',
       status: logBin === 'ON' ? 'pass' : 'warn',
       detail: logBin === 'ON' ? 'ON' : 'OFF — CDC will not work',
-    });
+    } as const;
+    serverChecks.push(check);
+    reportProgress(check);
   }
 
   // 5. Binlog format
   const binlogFormat = await getVariable(mysql, 'binlog_format');
   if (binlogFormat !== null) {
-    serverChecks.push({
+    const check = {
       name: 'Binlog format',
       status: binlogFormat === 'ROW' ? 'pass' : 'warn',
       detail: binlogFormat === 'ROW' ? 'ROW' : `${binlogFormat} — CDC needs ROW format`,
-    });
+    } as const;
+    serverChecks.push(check);
+    reportProgress(check);
   }
 
   // 6. Binlog row image
   const binlogRowImage = await getVariable(mysql, 'binlog_row_image');
   if (binlogRowImage !== null) {
-    serverChecks.push({
+    const check = {
       name: 'Binlog row image',
       status: binlogRowImage === 'FULL' ? 'pass' : 'warn',
       detail: binlogRowImage === 'FULL' ? 'FULL' : `${binlogRowImage} — CDC may miss columns`,
-    });
+    } as const;
+    serverChecks.push(check);
+    reportProgress(check);
   }
 
   // 7. sql_mode zero dates
@@ -173,11 +199,13 @@ export async function diagnoseDatabase(mysql: MySQLConnection): Promise<Diagnose
     const rows = await mysql.execute('SELECT @@sql_mode as mode');
     const sqlMode = rows[0]?.mode || '';
     const hasNoZeroDate = sqlMode.includes('NO_ZERO_DATE');
-    serverChecks.push({
+    const check = {
       name: 'Zero-date handling',
       status: hasNoZeroDate ? 'pass' : 'warn',
       detail: hasNoZeroDate ? 'NO_ZERO_DATE enabled' : 'NO_ZERO_DATE not set — zero dates may appear',
-    });
+    } as const;
+    serverChecks.push(check);
+    reportProgress(check);
   } catch {
     // skip
   }
@@ -235,6 +263,11 @@ export async function diagnoseDatabase(mysql: MySQLConnection): Promise<Diagnose
         unsupportedColumns: unsupported,
         charset: tableStatuses.get(table) || 'unknown',
       });
+      reportProgress({
+        name: `Table ${table}`,
+        status: unsupported.length > 0 || !primaryKey || !ts.column || ts.quality === 'append-only' ? 'warn' : 'pass',
+        detail: `~${rowCounts.get(table) || 0} rows`,
+      });
     } catch (err) {
       logger.warn(`Diagnose failed for table ${table}:`, err);
       tableDiagnoses.push({
@@ -245,6 +278,11 @@ export async function diagnoseDatabase(mysql: MySQLConnection): Promise<Diagnose
         timestampQuality: 'none',
         unsupportedColumns: [],
         charset: 'error',
+      });
+      reportProgress({
+        name: `Table ${table}`,
+        status: 'fail',
+        detail: 'Failed to inspect table',
       });
     }
   }
