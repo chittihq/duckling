@@ -226,7 +226,7 @@ class AutomationService {
    * Perform cleanup (Sequential Appender architecture)
    * DuckDB handles storage management automatically
    */
-  private async performCleanup(): Promise<void> {
+  public async performCleanup(): Promise<void> {
     try {
       logger.info(`🧹 Running automatic cleanup...`);
 
@@ -260,7 +260,7 @@ class AutomationService {
   /**
    * Perform backup of critical data
    */
-  private async performBackup(): Promise<void> {
+  public async performBackup(): Promise<void> {
     try {
       logger.info('💾 Running automatic backup...');
 
