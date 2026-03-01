@@ -95,13 +95,29 @@ class MySQLConnection {
   }
 
   /**
-   * Get the primary key column for a table
-   * Returns undefined if no primary key exists
+   * Get all primary key columns for a table in PRIMARY KEY index order.
+   * Uses SHOW INDEX to get columns ordered by SEQ_IN_INDEX, which matches
+   * the actual index definition and enables index-backed keyset pagination.
+   * Returns empty array if no primary key exists.
+   */
+  async getPrimaryKeyColumns(tableName: string): Promise<string[]> {
+    const rows = await this.execute(
+      `SHOW INDEX FROM ${this.q(tableName)} WHERE Key_name = 'PRIMARY'`
+    );
+    // Sort by Seq_in_index to guarantee correct composite-key order
+    return rows
+      .sort((a: any, b: any) => a.Seq_in_index - b.Seq_in_index)
+      .map((row: any) => row.Column_name);
+  }
+
+  /**
+   * Get the primary key column for a table (single-column PKs only)
+   * Returns undefined if no primary key exists or if the primary key is composite.
+   * Composite primary keys are not suitable for single-column keyset pagination.
    */
   async getPrimaryKeyColumn(tableName: string): Promise<string | undefined> {
-    const schema = await this.getTableSchema(tableName);
-    const pkColumn = schema.find(col => col.Key === 'PRI');
-    return pkColumn?.Field;
+    const pkColumns = await this.getPrimaryKeyColumns(tableName);
+    return pkColumns.length === 1 ? pkColumns[0] : undefined;
   }
 
   /**
@@ -216,40 +232,51 @@ class MySQLConnection {
   /**
    * Stream table data in batches for sequential processing
    * Uses keyset pagination (WHERE pk > lastPk) for O(1) performance on large tables
-   * Falls back to OFFSET pagination if no primary key exists
+   * Supports composite primary keys via row-value tuple comparison: (col1, col2) > (?, ?)
+   * Falls back to OFFSET pagination only if no primary key exists at all
    */
   async *streamTableData(tableName: string, batchSize: number = 10000): AsyncGenerator<any[], void, unknown> {
-    const primaryKey = await this.getPrimaryKeyColumn(tableName);
+    const pkColumns = await this.getPrimaryKeyColumns(tableName);
 
-    if (primaryKey) {
+    if (pkColumns.length > 0) {
       // Keyset pagination - O(1) per batch regardless of table size
-      let lastId: any = null;
+      // For composite PKs, uses MySQL row-value tuple comparison: (col1, col2) > (?, ?)
+      let lastValues: any[] | null = null;
       let batch: any[];
 
-      logger.info(`MySQL streamTableData for ${tableName}: batchSize=${batchSize}, using keyset pagination on '${primaryKey}'`);
+      const orderByClause = pkColumns.map(pk => `${this.q(pk)} ASC`).join(', ');
+
+      logger.info(`MySQL streamTableData for ${tableName}: batchSize=${batchSize}, using keyset pagination on (${pkColumns.join(', ')})`);
 
       do {
         let query: string;
         let params: any[] = [];
 
-        if (lastId === null) {
+        if (lastValues === null) {
           // First batch - no WHERE clause needed
-          query = `SELECT * FROM ${this.q(tableName)} ORDER BY ${this.q(primaryKey)} ASC LIMIT ${batchSize}`;
+          query = `SELECT * FROM ${this.q(tableName)} ORDER BY ${orderByClause} LIMIT ${batchSize}`;
         } else {
-          // Subsequent batches - use WHERE pk > lastPk
-          query = `SELECT * FROM ${this.q(tableName)} WHERE ${this.q(primaryKey)} > ? ORDER BY ${this.q(primaryKey)} ASC LIMIT ${batchSize}`;
-          params = [lastId];
+          // Subsequent batches - use row-value tuple comparison for keyset pagination.
+          // MySQL row-value syntax: (col1, col2) > (val1, val2) compares tuples
+          // lexicographically (left-to-right), equivalent to:
+          //   col1 > val1 OR (col1 = val1 AND col2 > val2)
+          // Requires MySQL 5.7+.  Enables O(1) keyset pagination for composite PKs.
+          const tupleCols = `(${pkColumns.map(pk => this.q(pk)).join(', ')})`;
+          const tuplePlaceholders = `(${pkColumns.map(() => '?').join(', ')})`;
+          query = `SELECT * FROM ${this.q(tableName)} WHERE ${tupleCols} > ${tuplePlaceholders} ORDER BY ${orderByClause} LIMIT ${batchSize}`;
+          params = lastValues;
         }
 
         batch = await this.execute(query, params);
 
         if (batch.length > 0) {
-          lastId = batch[batch.length - 1][primaryKey];
+          const lastRecord = batch[batch.length - 1];
+          lastValues = pkColumns.map(pk => lastRecord[pk]);
           yield batch;
         }
       } while (batch.length === batchSize);
     } else {
-      // Fallback to OFFSET pagination for tables without primary key
+      // Fallback to OFFSET pagination for tables without any primary key
       let offset = 0;
       let batch: any[];
 
@@ -269,6 +296,7 @@ class MySQLConnection {
   /**
    * Stream incremental data based on watermark
    * Uses keyset pagination for O(1) performance on large result sets
+   * Supports composite primary keys via row-value tuple comparison for tie-breaking
    */
   async *streamIncrementalData(
     tableName: string,
@@ -276,41 +304,49 @@ class MySQLConnection {
     watermarkValue: any,
     batchSize: number = 10000
   ): AsyncGenerator<any[], void, unknown> {
-    const primaryKey = await this.getPrimaryKeyColumn(tableName);
+    const pkColumns = await this.getPrimaryKeyColumns(tableName);
 
-    if (primaryKey) {
-      // Keyset pagination using primary key for ordering within same watermark values
-      let lastId: any = null;
+    if (pkColumns.length > 0) {
+      // Keyset pagination using primary key(s) for ordering within same watermark values
+      let lastPkValues: any[] | null = null;
       let lastWatermark: any = watermarkValue;
       let batch: any[];
 
-      logger.info(`MySQL streamIncrementalData for ${tableName}: using keyset pagination on '${primaryKey}'`);
+      const pkOrderByClause = pkColumns.map(pk => `${this.q(pk)} ASC`).join(', ');
+
+      logger.info(`MySQL streamIncrementalData for ${tableName}: using keyset pagination on (${pkColumns.join(', ')})`);
 
       do {
         let query: string;
         let params: any[];
 
-        if (lastId === null) {
+        if (lastPkValues === null) {
           // First batch
-          query = `SELECT * FROM ${this.q(tableName)} WHERE ${this.q(watermarkColumn)} >= ? ORDER BY ${this.q(watermarkColumn)} ASC, ${this.q(primaryKey)} ASC LIMIT ${batchSize}`;
+          query = `SELECT * FROM ${this.q(tableName)} WHERE ${this.q(watermarkColumn)} >= ? ORDER BY ${this.q(watermarkColumn)} ASC, ${pkOrderByClause} LIMIT ${batchSize}`;
           params = [watermarkValue];
         } else {
-          // Subsequent batches - handle tie-breaking with primary key
-          query = `SELECT * FROM ${this.q(tableName)} WHERE (${this.q(watermarkColumn)} > ?) OR (${this.q(watermarkColumn)} = ? AND ${this.q(primaryKey)} > ?) ORDER BY ${this.q(watermarkColumn)} ASC, ${this.q(primaryKey)} ASC LIMIT ${batchSize}`;
-          params = [lastWatermark, lastWatermark, lastId];
+          // Subsequent batches - handle tie-breaking with primary key(s).
+          // Fetches rows where: watermark > lastWatermark (next time-window)
+          //   OR watermark = lastWatermark AND (pk tuple) > (last pk values)
+          // The tuple comparison handles composite PKs correctly, paginating
+          // across rows that share the same watermark value.
+          const tupleCols = `(${pkColumns.map(pk => this.q(pk)).join(', ')})`;
+          const tuplePlaceholders = `(${pkColumns.map(() => '?').join(', ')})`;
+          query = `SELECT * FROM ${this.q(tableName)} WHERE (${this.q(watermarkColumn)} > ?) OR (${this.q(watermarkColumn)} = ? AND ${tupleCols} > ${tuplePlaceholders}) ORDER BY ${this.q(watermarkColumn)} ASC, ${pkOrderByClause} LIMIT ${batchSize}`;
+          params = [lastWatermark, lastWatermark, ...lastPkValues];
         }
 
         batch = await this.execute(query, params);
 
         if (batch.length > 0) {
           const lastRecord = batch[batch.length - 1];
-          lastId = lastRecord[primaryKey];
+          lastPkValues = pkColumns.map(pk => lastRecord[pk]);
           lastWatermark = lastRecord[watermarkColumn];
           yield batch;
         }
       } while (batch.length === batchSize);
     } else {
-      // Fallback to OFFSET pagination
+      // Fallback to OFFSET pagination for tables without any primary key
       let offset = 0;
       let batch: any[];
 
