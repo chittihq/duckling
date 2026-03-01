@@ -90,6 +90,33 @@ Keeps a read-only copy of the DuckDB file for API queries while sync and CDC wri
 | `READ_REPLICA_ENABLED` | `false` | Off by default |
 | `REPLICA_REFRESH_INTERVAL` | `300` | Seconds between snapshots |
 
+## Backups
+
+Local backups run daily by default. S3 backups are opt-in with optional client-side AES-256 encryption.
+
+| Variable | Default | |
+|----------|---------|---|
+| `AUTO_BACKUP` | `true` | Scheduled local backups |
+| `BACKUP_INTERVAL_HOURS` | `24` | Hours between backups |
+| `BACKUP_RETENTION_DAYS` | `7` | Days to keep old backups |
+
+### Encryption
+
+| Mode | Key holder | |
+|------|-----------|---|
+| `none` | -- | No encryption |
+| `sse-s3` | AWS | At-rest encryption |
+| `sse-kms` | AWS KMS | At-rest + CloudTrail audit |
+| `client-aes256` | you | Encrypted before upload, bucket leak safe |
+
+Use `client-aes256` for production. Streams AES-256-CTR on upload, verifies HMAC-SHA256 on restore.
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+R2, B2, Spaces, and MinIO all work via the `endpoint` field. The `/backups` dashboard page handles config, triggers, history, and restores.
+
 ## Observability
 
 The `/observe` dashboard page shows CPU, memory, event loop latency, active queries, and query pattern stats (which queries run most, slowest, etc.). Samples every 30 seconds, keeps 30 minutes of history.
