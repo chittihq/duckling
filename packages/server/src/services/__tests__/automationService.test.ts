@@ -21,6 +21,8 @@ describe('AutomationService backups', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     AutomationService.closeInstance('tenant-db');
+    AutomationService.closeInstance('tenant-db-a');
+    AutomationService.closeInstance('tenant-db-b');
   });
 
   test('performBackup uses database-specific duckdbPath for local backup', async () => {
@@ -38,7 +40,7 @@ describe('AutomationService backups', () => {
 
     expect(fs.copyFileSync).toHaveBeenCalledWith(
       '/app/data/tenant.db',
-      expect.stringMatching(/duckling\.db$/)
+      expect.stringMatching(/backup-tenant-db-.*\/duckling\.db$/)
     );
     expect(getDatabase).toHaveBeenCalledWith('tenant-db');
   });
@@ -55,7 +57,7 @@ describe('AutomationService backups', () => {
     const service = AutomationService.getInstance('tenant-db', {} as any, {} as any, {} as any);
     await (service as any).performBackup();
 
-    expect(fs.copyFileSync).toHaveBeenCalledWith('/custom/tenant.db', expect.stringMatching(/duckling\.db$/));
+    expect(fs.copyFileSync).toHaveBeenCalledWith('/custom/tenant.db', expect.stringMatching(/backup-tenant-db-.*\/duckling\.db$/));
   });
 
   test('performBackup falls back to global duckdb path when database config is missing', async () => {
@@ -68,6 +70,38 @@ describe('AutomationService backups', () => {
     const service = AutomationService.getInstance('tenant-db', {} as any, {} as any, {} as any);
     await (service as any).performBackup();
 
-    expect(fs.copyFileSync).toHaveBeenCalledWith(fallbackPath, expect.stringMatching(/duckling\.db$/));
+    expect(fs.copyFileSync).toHaveBeenCalledWith(fallbackPath, expect.stringMatching(/backup-tenant-db-.*\/duckling\.db$/));
+  });
+
+  test('performBackup writes distinct local backup targets for different database IDs', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath: fs.PathLike) =>
+      filePath === '/app/data/tenant-a.db' || filePath === '/app/data/tenant-b.db'
+    );
+    vi.spyOn(DatabaseConfigManager, 'getInstance').mockReturnValue({
+      getDatabase: (id: string) => {
+        if (id === 'tenant-db-a') {
+          return { id, duckdbPath: 'data/tenant-a.db' };
+        }
+        if (id === 'tenant-db-b') {
+          return { id, duckdbPath: 'data/tenant-b.db' };
+        }
+        return undefined;
+      },
+    } as any);
+
+    const serviceA = AutomationService.getInstance('tenant-db-a', {} as any, {} as any, {} as any);
+    const serviceB = AutomationService.getInstance('tenant-db-b', {} as any, {} as any, {} as any);
+
+    await (serviceA as any).performBackup();
+    await (serviceB as any).performBackup();
+
+    expect(fs.copyFileSync).toHaveBeenCalledWith(
+      '/app/data/tenant-a.db',
+      expect.stringMatching(/backup-tenant-db-a-.*\/duckling\.db$/)
+    );
+    expect(fs.copyFileSync).toHaveBeenCalledWith(
+      '/app/data/tenant-b.db',
+      expect.stringMatching(/backup-tenant-db-b-.*\/duckling\.db$/)
+    );
   });
 });

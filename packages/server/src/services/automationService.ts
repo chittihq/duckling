@@ -35,6 +35,14 @@ class AutomationService {
     return duckdbPath.startsWith('data/') ? `/app/${duckdbPath}` : duckdbPath;
   }
 
+  /**
+   * Build a safe per-database backup directory name to avoid cross-database overwrite.
+   */
+  private buildBackupDirectoryName(timestamp: string): string {
+    const safeDatabaseId = this.databaseId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    return `backup-${safeDatabaseId}-${timestamp}`;
+  }
+
   private constructor(
     databaseId: string,
     syncService: SequentialAppenderService,
@@ -277,8 +285,8 @@ class AutomationService {
         fs.mkdirSync(backupDir, { recursive: true });
       }
 
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
-      const backupPath = path.join(backupDir, `backup-${timestamp}`);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const backupPath = path.join(backupDir, this.buildBackupDirectoryName(timestamp));
 
       if (!fs.existsSync(backupPath)) {
         fs.mkdirSync(backupPath, { recursive: true });
