@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll } from 'vitest';
 import { triggerFullSync, triggerIncrementalSync } from './helpers/sync';
 import { duckdbQuery, duckdbScalarStrict } from './helpers/duckdb';
 import { mysqlExec } from './helpers/mysql';
+import { sleep } from './helpers/cdc';
 
 const FULL_SYNC_ROWS = 10_000;
 const INCR_SYNC_ROWS = 2_000;
@@ -56,6 +57,9 @@ describe('Suite 9: Benchmarks', () => {
   }, 120_000);
 
   test('incremental sync throughput >= 50 rows/sec', async () => {
+    // Ensure MySQL NOW() timestamps are after the full-sync watermark
+    // (MySQL DATETIME has second-level precision)
+    await sleep(2000);
     seedBenchmarkRows(INCR_SYNC_ROWS, FULL_SYNC_ROWS + 1);
 
     const start = Date.now();

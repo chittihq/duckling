@@ -25,6 +25,7 @@ import { ReadReplicaService } from './services/readReplicaService';
 import { generateToken, verifyToken, extractTokenFromHeader } from './utils/jwtUtils';
 import { isReadOnlyMySQLQuery } from './utils/sqlSafety';
 import { preAuthRateLimiter, postAuthRateLimiter, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
+import './middleware/auth'; // pull in global Express.Request.user declaration
 import config, { getAuthSecurityIssues } from './config';
 import { MySQLProtocolServer } from './services/mysqlProtocolServer';
 import logger from './logger';
