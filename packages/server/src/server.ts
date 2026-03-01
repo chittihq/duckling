@@ -1805,7 +1805,7 @@ class DuckDBServer {
 
       const authSecurityIssues = getAuthSecurityIssues();
       if (authSecurityIssues.length > 0) {
-        const authSecurityMessage = `Insecure authentication configuration detected: ${authSecurityIssues.join(' ')}`;
+        const authSecurityMessage = `Insecure auth config:\n${authSecurityIssues.map(i => `  - ${i}`).join('\n')}`;
         if (config.env === 'production') {
           throw new Error(authSecurityMessage);
         }
