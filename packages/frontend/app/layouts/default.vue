@@ -162,11 +162,11 @@
         </div>
         <div class="flex items-center gap-2 text-sm">
           <template v-if="statusType === 'syncing'">
-            <svg class="animate-spin text-primary" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg class="animate-spin text-primary shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
             </svg>
-            <span>
-              Syncing {{ syncState.tablesProcessed }}/{{ syncState.totalTables }} tables<span v-if="syncState.currentTable"> ({{ syncState.currentTable }})</span>...
+            <span class="w-64 truncate">
+              Syncing {{ syncState.tablesProcessed }}/{{ syncState.totalTables }} tables<span v-if="syncState.currentTable"> &middot; {{ syncState.currentTable }}</span>
             </span>
           </template>
           <template v-else-if="statusType === 'error'">
