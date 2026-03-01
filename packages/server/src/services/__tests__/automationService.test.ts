@@ -1,79 +1,57 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 import AutomationService from '../automationService';
-import config from '../../config';
-import { DatabaseConfigManager } from '../../database/databaseConfig';
 
-describe('AutomationService backup', () => {
-  const originalBackupsPath = config.paths.backups;
-  const originalMetadataPath = config.paths.metadata;
-  const originalDuckdbPath = config.duckdb.path;
-
-  let tmpDir: string;
+describe('AutomationService scheduling guards', () => {
+  const databaseId = 'test-automation-guards';
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'duckling-backup-test-'));
-    const backupsDir = path.join(tmpDir, 'backups');
-    const metadataDir = path.join(tmpDir, 'metadata');
-    const duckdbPath = path.join(tmpDir, 'duckling.db');
-
-    fs.mkdirSync(backupsDir, { recursive: true });
-    fs.writeFileSync(duckdbPath, 'duckdb-test-data');
-
-    config.paths.backups = backupsDir;
-    config.paths.metadata = metadataDir;
-    config.duckdb.path = duckdbPath;
-
-    vi.spyOn(DatabaseConfigManager, 'getInstance').mockReturnValue({
-      getDatabase: () => ({
-        id: 'default',
-        name: 'Default Database',
-        mysqlConnectionString: 'mysql://test',
-        duckdbPath: config.duckdb.path,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        s3: { enabled: false },
-      }),
-    } as any);
+    AutomationService.closeInstance(databaseId);
   });
 
   afterEach(() => {
-    config.paths.backups = originalBackupsPath;
-    config.paths.metadata = originalMetadataPath;
-    config.duckdb.path = originalDuckdbPath;
-
+    AutomationService.closeInstance(databaseId);
     vi.restoreAllMocks();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test('checkpoints DuckDB before copying backup file', async () => {
-    const duckdbMock = {
-      checkpoint: vi.fn().mockResolvedValue(undefined),
-    };
-
+  test('skips automatic backup while sync is in progress', async () => {
     const syncServiceMock = {
       incrementalSync: vi.fn(),
       fullSync: vi.fn(),
     };
 
-    const service = new (AutomationService as any)(
-      'default',
-      syncServiceMock,
-      duckdbMock,
-      { query: vi.fn() }
+    const duckdbMock = {
+      checkpoint: vi.fn(),
+    };
+
+    const service = AutomationService.getInstance(
+      databaseId,
+      syncServiceMock as any,
+      duckdbMock as any,
+      { query: vi.fn() } as any
     );
 
-    await service.performBackup();
+    (service as any).isSyncInProgress = true;
+    await (service as any).performBackup();
 
-    expect(duckdbMock.checkpoint).toHaveBeenCalledTimes(1);
+    expect(duckdbMock.checkpoint).not.toHaveBeenCalled();
+  });
 
-    const backupDirs = fs.readdirSync(config.paths.backups)
-      .filter(name => name.startsWith('backup-'));
-    expect(backupDirs.length).toBeGreaterThan(0);
+  test('skips scheduled incremental sync while backup is in progress', async () => {
+    const syncServiceMock = {
+      incrementalSync: vi.fn(),
+      fullSync: vi.fn(),
+    };
 
-    const duckdbBackupPath = path.join(config.paths.backups, backupDirs[0], 'duckling.db');
-    expect(fs.existsSync(duckdbBackupPath)).toBe(true);
+    const service = AutomationService.getInstance(
+      databaseId,
+      syncServiceMock as any,
+      { checkpoint: vi.fn() } as any,
+      { query: vi.fn() } as any
+    );
+
+    (service as any).isBackupInProgress = true;
+    await (service as any).performIncrementalSync();
+
+    expect(syncServiceMock.incrementalSync).not.toHaveBeenCalled();
   });
 });

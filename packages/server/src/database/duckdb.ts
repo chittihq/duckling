@@ -571,6 +571,7 @@ class DuckDBConnection {
       logger.info('DuckDB checkpoint completed - WAL merged into database file');
     } catch (error) {
       logger.warn('Failed to checkpoint DuckDB:', error);
+      throw error;
     }
   }
 

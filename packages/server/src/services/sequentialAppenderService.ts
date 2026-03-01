@@ -870,7 +870,7 @@ class SequentialAppenderService {
 
         // IMPORTANT: Force CHECKPOINT to flush WAL and ensure data durability
         // Ensures all changes are persisted to the database file immediately
-        // Use checkpoint() which swallows errors, preventing invalidation from propagating
+        // Use checkpoint() to flush WAL and fail sync if durability checkpoint fails
         logger.debug(`${tableName}: Running CHECKPOINT to flush WAL...`);
         await this.duckdb.checkpoint();
         logger.info(`${tableName}: CHECKPOINT completed, data persisted successfully`);

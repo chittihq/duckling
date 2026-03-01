@@ -26,6 +26,8 @@ class AutomationService {
   private restartAttempts: number = 0;
   private lastSuccessfulSync: Date = new Date();
   private isRunning: boolean = false;
+  private isSyncInProgress: boolean = false;
+  private isBackupInProgress: boolean = false;
 
   private constructor(
     databaseId: string,
@@ -167,6 +169,16 @@ class AutomationService {
    * Perform full sync
    */
   private async performFullSync(): Promise<void> {
+    if (this.isBackupInProgress) {
+      logger.warn('Skipping scheduled full sync: backup is currently in progress');
+      return;
+    }
+    if (this.isSyncInProgress) {
+      logger.warn('Skipping scheduled full sync: another sync is already in progress');
+      return;
+    }
+
+    this.isSyncInProgress = true;
     try {
       logger.info('🔄 Running scheduled full sync...');
       const stats = await this.syncService.fullSync();
@@ -181,6 +193,8 @@ class AutomationService {
       await this.duckdb.checkpoint();
     } catch (error) {
       logger.error('Scheduled full sync failed:', error);
+    } finally {
+      this.isSyncInProgress = false;
     }
   }
 
@@ -188,6 +202,16 @@ class AutomationService {
    * Perform incremental sync
    */
   private async performIncrementalSync(): Promise<void> {
+    if (this.isBackupInProgress) {
+      logger.warn('Skipping scheduled incremental sync: backup is currently in progress');
+      return;
+    }
+    if (this.isSyncInProgress) {
+      logger.warn('Skipping scheduled incremental sync: another sync is already in progress');
+      return;
+    }
+
+    this.isSyncInProgress = true;
     try {
       logger.info('🔄 Running scheduled incremental sync...');
       const stats = await this.syncService.incrementalSync();
@@ -202,6 +226,8 @@ class AutomationService {
       await this.duckdb.checkpoint();
     } catch (error) {
       logger.error('Scheduled incremental sync failed:', error);
+    } finally {
+      this.isSyncInProgress = false;
     }
   }
 
@@ -261,6 +287,16 @@ class AutomationService {
    * Perform backup of critical data
    */
   private async performBackup(): Promise<void> {
+    if (this.isSyncInProgress) {
+      logger.warn('Skipping automatic backup: sync is currently in progress');
+      return;
+    }
+    if (this.isBackupInProgress) {
+      logger.warn('Skipping automatic backup: another backup is already in progress');
+      return;
+    }
+
+    this.isBackupInProgress = true;
     try {
       logger.info('💾 Running automatic backup...');
 
@@ -315,6 +351,8 @@ class AutomationService {
       }
     } catch (error) {
       logger.error('Automatic backup failed:', error);
+    } finally {
+      this.isBackupInProgress = false;
     }
   }
 
