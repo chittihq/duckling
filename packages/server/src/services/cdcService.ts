@@ -66,6 +66,7 @@ export class CDCService {
   private stats: CDCStats;
   private tableSchemas: Map<string, Map<string, string>> = new Map(); // tableName -> columnName -> type
   private currentBinlogFilename: string | null = null;
+  private workerPool: WorkerPool;
 
   // Event queue for serialized processing (EventEmitter doesn't await async handlers)
   private eventQueue: Array<() => Promise<void>> = [];
@@ -88,6 +89,7 @@ export class CDCService {
     }
     this.duckdb = DuckDBConnection.getInstance(config.databaseId, dbConfig.duckdbPath);
     this.maxQueueSize = appConfig.cdc.maxQueueSize;
+    this.workerPool = WorkerPool.getInstance();
 
     this.stats = {
       isRunning: false,
@@ -371,6 +373,7 @@ export class CDCService {
    */
   private async handleInsert(tableName: string, rows: any[]): Promise<void> {
     if (!this.shouldProcessTable(tableName)) return;
+    if (rows.length === 0) return;
 
     await this.cacheTableSchema(tableName);
     const schema = this.tableSchemas.get(tableName);
@@ -380,14 +383,29 @@ export class CDCService {
     }
 
     try {
-      for (const row of rows) {
-        const columns = Object.keys(row);
-        const quotedColumns = columns.map(col => this.q(col)).join(', ');
-        const values = columns.map(col => this.sanitizeValue(row[col]));
-        const placeholders = columns.map(() => '?').join(', ');
+      const columns = Object.keys(rows[0]);
+      const hasMixedShape = rows.some(row => Object.keys(row).join('|') !== columns.join('|'));
+      if (hasMixedShape) {
+        for (const row of rows) {
+          const rowColumns = Object.keys(row);
+          const quotedColumns = rowColumns.map(col => this.q(col)).join(', ');
+          const values = rowColumns.map(col => this.sanitizeValue(row[col]));
+          const placeholders = rowColumns.map(() => '?').join(', ');
+          const query = `INSERT OR REPLACE INTO ${this.q(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
+          await this.duckdb.run(query, values, 'high');
+        }
+        this.stats.insertsProcessed += rows.length;
+        logger.debug(`CDC INSERT: ${tableName} - ${rows.length} rows`);
+        return;
+      }
 
-        const query = `INSERT OR REPLACE INTO ${this.q(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
-        await this.duckdb.run(query, values);
+      const sanitizedRows = await this.sanitizeRows(rows, columns, schema);
+      const quotedColumns = columns.map(col => this.q(col)).join(', ');
+      const placeholders = columns.map(() => '?').join(', ');
+      const query = `INSERT OR REPLACE INTO ${this.q(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
+
+      for (const values of sanitizedRows) {
+        await this.duckdb.run(query, values, 'high');
       }
 
       this.stats.insertsProcessed += rows.length;
@@ -404,6 +422,7 @@ export class CDCService {
    */
   private async handleUpdate(tableName: string, rows: any[]): Promise<void> {
     if (!this.shouldProcessTable(tableName)) return;
+    if (rows.length === 0) return;
 
     await this.cacheTableSchema(tableName);
     const schema = this.tableSchemas.get(tableName);
@@ -413,17 +432,31 @@ export class CDCService {
     }
 
     try {
-      for (const row of rows) {
-        // row.after contains the new values
-        const afterRow = row.after || row;
-        const columns = Object.keys(afterRow);
-        const quotedColumns = columns.map(col => this.q(col)).join(', ');
-        const values = columns.map(col => this.sanitizeValue(afterRow[col]));
-        const placeholders = columns.map(() => '?').join(', ');
+      const afterRows = rows.map(row => row.after || row);
+      const columns = Object.keys(afterRows[0]);
+      const hasMixedShape = afterRows.some(row => Object.keys(row).join('|') !== columns.join('|'));
+      if (hasMixedShape) {
+        for (const row of afterRows) {
+          const rowColumns = Object.keys(row);
+          const quotedColumns = rowColumns.map(col => this.q(col)).join(', ');
+          const values = rowColumns.map(col => this.sanitizeValue(row[col]));
+          const placeholders = rowColumns.map(() => '?').join(', ');
+          const query = `INSERT OR REPLACE INTO ${this.q(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
+          await this.duckdb.run(query, values, 'high');
+        }
+        this.stats.updatesProcessed += rows.length;
+        logger.debug(`CDC UPDATE: ${tableName} - ${rows.length} rows`);
+        return;
+      }
 
-        // Use INSERT OR REPLACE for upsert behavior
-        const query = `INSERT OR REPLACE INTO ${this.q(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
-        await this.duckdb.run(query, values);
+      const sanitizedRows = await this.sanitizeRows(afterRows, columns, schema);
+      const quotedColumns = columns.map(col => this.q(col)).join(', ');
+      const placeholders = columns.map(() => '?').join(', ');
+
+      // Use INSERT OR REPLACE for upsert behavior
+      const query = `INSERT OR REPLACE INTO ${this.q(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
+      for (const values of sanitizedRows) {
+        await this.duckdb.run(query, values, 'high');
       }
 
       this.stats.updatesProcessed += rows.length;
@@ -450,7 +483,7 @@ export class CDCService {
 
         if (pkColumn && row[pkColumn] !== undefined) {
           const query = `DELETE FROM ${this.q(tableName)} WHERE ${this.q(pkColumn)} = ?`;
-          await this.duckdb.run(query, [row[pkColumn]]);
+          await this.duckdb.run(query, [row[pkColumn]], 'high');
         } else {
           // Fallback: delete by all columns (exact match)
           const columns = Object.keys(row);
@@ -458,7 +491,7 @@ export class CDCService {
           const values = columns.map(col => this.sanitizeValue(row[col]));
 
           const query = `DELETE FROM ${this.q(tableName)} WHERE ${conditions}`;
-          await this.duckdb.run(query, values);
+          await this.duckdb.run(query, values, 'high');
         }
       }
 
@@ -535,6 +568,24 @@ export class CDCService {
     }
 
     return value;
+  }
+
+  private async sanitizeRows(rows: any[], columns: string[], schema: Map<string, string>): Promise<any[][]> {
+    if (rows.length === 0 || columns.length === 0) {
+      return [];
+    }
+
+    const columnTypes: Record<string, string> = {};
+    for (const col of columns) {
+      columnTypes[col] = schema.get(col) || '';
+    }
+
+    try {
+      return await this.workerPool.sanitizeBatch(rows, columns, columnTypes);
+    } catch (error) {
+      logger.warn(`CDC worker sanitization failed for ${this.databaseId}, falling back to main-thread sanitization`, error);
+      return rows.map(row => columns.map(col => this.sanitizeValue(row[col])));
+    }
   }
 
   /**

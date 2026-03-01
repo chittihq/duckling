@@ -24,6 +24,7 @@ interface PendingRequest {
   resolve: (rows: any[][]) => void;
   reject: (error: Error) => void;
   sentAt: number;
+  worker: Worker;
 }
 
 export interface WorkerPoolStats {
@@ -43,6 +44,7 @@ export class WorkerPool {
   private requestId: number = 0;
   private poolSize: number;
   private workerScript: string;
+  private workerExecArgv?: string[];
 
   // Stats
   private totalProcessed: number = 0;
@@ -59,8 +61,12 @@ export class WorkerPool {
 
     if (fs.existsSync(jsPath)) {
       this.workerScript = jsPath;
-    } else {
+      this.workerExecArgv = undefined;
+    } else if (fs.existsSync(tsPath)) {
       this.workerScript = tsPath;
+      this.workerExecArgv = ['-r', 'ts-node/register'];
+    } else {
+      throw new Error(`sanitize worker script not found: checked ${jsPath} and ${tsPath}`);
     }
 
     this.spawnAll();
@@ -98,12 +104,20 @@ export class WorkerPool {
     columns: string[],
     columnTypes: Record<string, string>
   ): Promise<any[][]> {
+    if (!rows.length) {
+      return Promise.resolve([]);
+    }
+
+    if (!this.workers.length) {
+      return Promise.reject(new Error('Worker pool is unavailable'));
+    }
+
     return new Promise((resolve, reject) => {
       const id = ++this.requestId;
       const worker = this.workers[this.nextWorker % this.poolSize];
       this.nextWorker = (this.nextWorker + 1) % this.poolSize;
 
-      this.pending.set(id, { resolve, reject, sentAt: Date.now() });
+      this.pending.set(id, { resolve, reject, sentAt: Date.now(), worker });
 
       worker.postMessage({ id, rows, columns, columnTypes });
     });
@@ -132,7 +146,10 @@ export class WorkerPool {
   }
 
   private spawnWorker(index: number): void {
-    const worker = new Worker(this.workerScript);
+    const worker = new Worker(
+      this.workerScript,
+      this.workerExecArgv ? { execArgv: this.workerExecArgv } : undefined
+    );
 
     worker.on('message', (msg: { id: number; rows?: any[][]; error?: string }) => {
       const req = this.pending.get(msg.id);
@@ -150,27 +167,39 @@ export class WorkerPool {
     });
 
     worker.on('error', (err) => {
-      logger.error(`Worker ${index} error:`, err);
+      logger.warn(`Worker ${index} error, request(s) will fall back to main-thread sanitization:`, err);
       this.totalErrors++;
+      this.rejectPendingRequestsForWorker(
+        worker,
+        new Error(`Worker ${index} error: ${err.message}`)
+      );
     });
 
     worker.on('exit', (code) => {
       if (code !== 0) {
-        logger.warn(`Worker ${index} exited with code ${code}, rejecting pending requests and respawning...`);
+        logger.warn(`Worker ${index} exited with code ${code}, rejecting in-flight requests for this worker and respawning`);
         this.totalRespawns++;
 
-        // Reject all pending requests — we cannot identify which belonged to this worker
-        for (const [id, req] of this.pending) {
-          this.totalErrors++;
-          req.reject(new Error(`Worker ${index} exited unexpectedly with code ${code}`));
-        }
-        this.pending.clear();
+        this.rejectPendingRequestsForWorker(
+          worker,
+          new Error(`Worker ${index} exited unexpectedly with code ${code}`)
+        );
 
         this.spawnWorker(index);
       }
     });
 
     this.workers[index] = worker;
+  }
+
+  private rejectPendingRequestsForWorker(worker: Worker, error: Error): void {
+    for (const [id, req] of this.pending.entries()) {
+      if (req.worker === worker) {
+        this.totalErrors++;
+        req.reject(error);
+        this.pending.delete(id);
+      }
+    }
   }
 }
 
