@@ -109,8 +109,8 @@ class SequentialAppenderService {
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'main'
-          AND substr(table_name, 1, ${stagingPrefix.length}) = '${stagingPrefix}'
-      `);
+          AND substr(table_name, 1, ?) = ?
+      `, [stagingPrefix.length, stagingPrefix]);
 
       let cleaned = 0;
       for (const row of rows) {
