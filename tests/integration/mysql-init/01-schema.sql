@@ -47,6 +47,17 @@ CREATE TABLE IF NOT EXISTS products_simple (
   updated_at DATETIME NOT NULL
 ) ENGINE=InnoDB;
 
+-- Composite primary key table (index order differs from column definition order)
+-- Used to validate composite-PK keyset pagination and incremental upsert behavior.
+CREATE TABLE IF NOT EXISTS composite_keyset_test (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  payload VARCHAR(100),
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (b, a)
+) ENGINE=InnoDB;
+
 -- =============================================
 -- Comprehensive type coverage for Suite 7
 -- Tests all MySQL 8 data types through full-sync Appender path

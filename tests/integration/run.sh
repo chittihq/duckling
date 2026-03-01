@@ -130,6 +130,15 @@ INSERT INTO products_simple (id, name, price, quantity, updated_at) VALUES
   (3, 'Gadget C',  199.99,   10, '2025-01-03 12:00:00'),
   (4, 'Gadget D',    9.99, 1000, '2025-01-04 12:00:00');
 
+-- Seed composite_keyset_test (PRIMARY KEY (b, a); not (a, b))
+INSERT INTO composite_keyset_test (a, b, payload, created_at, updated_at) VALUES
+  (1, 10, 'seed-1-10', '2025-01-01 09:00:00', '2025-01-01 09:00:00'),
+  (2, 10, 'seed-2-10', '2025-01-01 09:00:00', '2025-01-01 09:00:00'),
+  (1, 20, 'seed-1-20', '2025-01-02 09:00:00', '2025-01-02 09:00:00'),
+  (2, 20, 'seed-2-20', '2025-01-02 09:00:00', '2025-01-02 09:00:00'),
+  (3, 20, 'seed-3-20', '2025-01-03 09:00:00', '2025-01-03 09:00:00'),
+  (4, 20, 'seed-4-20', '2025-01-03 09:00:00', '2025-01-03 09:00:00');
+
 -- Allow zero dates for type_coverage testing
 SET SESSION sql_mode = REPLACE(@@sql_mode, 'NO_ZERO_DATE', '');
 
