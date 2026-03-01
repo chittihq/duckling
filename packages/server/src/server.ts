@@ -1450,7 +1450,8 @@ class DuckDBServer {
       const backupDir = config.paths.backups;
       if (fs.existsSync(backupDir)) {
         const safeDatabaseId = databaseId.replace(/[^a-zA-Z0-9_-]/g, '_');
-        const backupPrefix = `backup-${safeDatabaseId}-`;
+        const escapedDatabaseId = safeDatabaseId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const backupPattern = new RegExp(`^backup-${escapedDatabaseId}-\\d{4}-\\d{2}-\\d{2}T`);
         const backupFileName = `duckling-${safeDatabaseId}.db`;
         const isLegacyBackupDirectory = (entry: string): boolean => /^backup-\d{4}-\d{2}-\d{2}$/.test(entry);
 
@@ -1458,7 +1459,7 @@ class DuckDBServer {
         for (const entry of entries) {
           const entryPath = path.join(backupDir, entry);
           const stat = fs.statSync(entryPath);
-          if (stat.isDirectory() && (entry.startsWith(backupPrefix) || (databaseId === 'default' && isLegacyBackupDirectory(entry)))) {
+          if (stat.isDirectory() && (backupPattern.test(entry) || (databaseId === 'default' && isLegacyBackupDirectory(entry)))) {
             const scopedDbFile = path.join(entryPath, backupFileName);
             const dbFile = fs.existsSync(scopedDbFile)
               ? scopedDbFile

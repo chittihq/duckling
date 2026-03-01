@@ -104,4 +104,31 @@ describe('AutomationService backups', () => {
       expect.stringMatching(/backup-tenant-db-b-.*\/duckling-tenant-db-b\.db$/)
     );
   });
+
+  test('cleanupOldBackups only deletes backups for the current database prefix', async () => {
+    vi.spyOn(DatabaseConfigManager, 'getInstance').mockReturnValue({
+      getDatabase: () => ({
+        id: 'tenant-db',
+        duckdbPath: 'data/tenant.db',
+      }),
+    } as any);
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      'backup-tenant-db-2024-01-01T00-00-00-000Z',
+      'backup-tenant-db-b-2024-01-01T00-00-00-000Z',
+      'backup-default-2024-01-01T00-00-00-000Z',
+    ] as any);
+    vi.mocked(fs.statSync).mockImplementation(() => ({
+      isDirectory: () => true,
+      mtime: new Date('2000-01-01T00:00:00.000Z'),
+    } as any));
+
+    const service = AutomationService.getInstance('tenant-db', {} as any, {} as any, {} as any);
+    await (service as any).cleanupOldBackups('/tmp/backups');
+
+    expect(fs.rmSync).toHaveBeenCalledTimes(1);
+    expect(fs.rmSync).toHaveBeenCalledWith(
+      '/tmp/backups/backup-tenant-db-2024-01-01T00-00-00-000Z',
+      { recursive: true, force: true }
+    );
+  });
 });

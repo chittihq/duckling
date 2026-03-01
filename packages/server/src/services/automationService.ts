@@ -46,8 +46,9 @@ class AutomationService {
     return `backup-${this.getSafeDatabaseId()}-${timestamp}`;
   }
 
-  private getBackupDirectoryPrefix(): string {
-    return `backup-${this.getSafeDatabaseId()}-`;
+  private getBackupDirectoryPattern(): RegExp {
+    const escapedDatabaseId = this.getSafeDatabaseId().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`^backup-${escapedDatabaseId}-\\d{4}-\\d{2}-\\d{2}T`);
   }
 
   private getBackupFileName(): string {
@@ -388,10 +389,15 @@ class AutomationService {
     try {
       const retentionDate = new Date();
       retentionDate.setDate(retentionDate.getDate() - config.automation.backupRetentionDays);
+      const backupPattern = this.getBackupDirectoryPattern();
 
       const backups = fs.readdirSync(backupDir);
 
       for (const backup of backups) {
+        if (!backupPattern.test(backup)) {
+          continue;
+        }
+
         const backupPath = path.join(backupDir, backup);
         const stats = fs.statSync(backupPath);
 
@@ -647,7 +653,7 @@ class AutomationService {
         .filter(name => {
           const backupPath = path.join(backupDir, name);
           if (!fs.statSync(backupPath).isDirectory()) return false;
-          if (name.startsWith(this.getBackupDirectoryPrefix())) return true;
+          if (this.getBackupDirectoryPattern().test(name)) return true;
           return this.databaseId === 'default' && this.isLegacyBackupDirectory(name);
         })
         .sort()
