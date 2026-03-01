@@ -14,7 +14,7 @@ import LogBufferService from './services/logBufferService';
 import QueryMetricsService from './services/queryMetricsService';
 import SystemMetricsService from './services/systemMetricsService';
 import { DatabaseConfigManager } from './database/databaseConfig';
-import type { S3Config } from './database/databaseConfig';
+import type { DatabaseConfig, S3Config } from './database/databaseConfig';
 import { attachDatabaseContext, RequestWithDatabase } from './middleware/database';
 import s3BackupService from './services/s3BackupService';
 import { diagnoseDatabase } from './services/diagnoseService';
@@ -63,6 +63,42 @@ function sendError(res: express.Response, error: unknown): void {
       error: error instanceof Error ? error.message : 'Unknown error'
     });
   }
+}
+
+type DatabaseUpdatePayload = Partial<Pick<DatabaseConfig, 'name' | 'mysqlConnectionString'>>;
+
+export function validateDatabaseUpdatePayload(body: unknown): { updates?: DatabaseUpdatePayload; error?: string } {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { error: 'Request body must be an object' };
+  }
+
+  const payload = body as Record<string, unknown>;
+  const allowedFields = new Set(['name', 'mysqlConnectionString']);
+  const invalidFields = Object.keys(payload).filter(field => !allowedFields.has(field));
+
+  if (invalidFields.length > 0) {
+    return {
+      error: `Invalid update fields: ${invalidFields.join(', ')}. Only name and mysqlConnectionString can be updated`
+    };
+  }
+
+  const updates: DatabaseUpdatePayload = {};
+
+  if ('name' in payload) {
+    if (typeof payload.name !== 'string' || payload.name.trim().length === 0) {
+      return { error: 'name must be a non-empty string' };
+    }
+    updates.name = payload.name;
+  }
+
+  if ('mysqlConnectionString' in payload) {
+    if (typeof payload.mysqlConnectionString !== 'string' || payload.mysqlConnectionString.trim().length === 0) {
+      return { error: 'mysqlConnectionString must be a non-empty string' };
+    }
+    updates.mysqlConnectionString = payload.mysqlConnectionString;
+  }
+
+  return { updates };
 }
 
 // Extend Express Request to include JWT user info
@@ -1311,7 +1347,16 @@ class DuckDBServer {
   private async updateDatabase(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { id } = req.params;
-      const updates = req.body;
+      const validation = validateDatabaseUpdatePayload(req.body);
+      if (validation.error || !validation.updates) {
+        res.status(400).json({
+          success: false,
+          error: validation.error || 'Invalid request body'
+        });
+        return;
+      }
+
+      const updates = validation.updates;
 
       const dbManager = DatabaseConfigManager.getInstance();
       const updated = dbManager.updateDatabase(id, updates);
