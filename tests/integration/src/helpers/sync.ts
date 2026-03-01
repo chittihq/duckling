@@ -10,5 +10,5 @@ export async function triggerIncrementalSync(): Promise<any> {
 }
 
 export async function triggerTableSync(table: string): Promise<any> {
-  return apiPost(`/sync/table/${table}?db=${DB_ID}`);
+  return apiPost(`/sync/table/${encodeURIComponent(table)}?db=${DB_ID}`);
 }
