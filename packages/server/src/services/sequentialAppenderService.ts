@@ -60,6 +60,8 @@ class SequentialAppenderService {
   private duckdb: DuckDBConnection;
   private static instances: Map<string, SequentialAppenderService> = new Map();
   private syncInProgress: boolean = false;
+  private tableSyncLocks: Set<string> = new Set();
+  private syncQueue: Array<{ tableName?: string; resolve: (value: any) => void; reject: (error: any) => void }> = [];
 
   private constructor(mysql: MySQLConnection, duckdb: DuckDBConnection) {
     this.mysql = mysql;
@@ -223,14 +225,15 @@ class SequentialAppenderService {
   }
 
   /**
-   * Check if a sync operation is currently in progress
+   * Check if a batch sync (fullSync/incrementalSync) is currently in progress
    */
   isSyncInProgress(): boolean {
     return this.syncInProgress;
   }
 
   /**
-   * Acquire sync lock - throws error if already locked
+   * Acquire global sync lock - throws error if already locked.
+   * Prevents concurrent fullSync/incrementalSync calls.
    */
   private acquireSyncLock(): void {
     if (this.syncInProgress) {
@@ -241,7 +244,7 @@ class SequentialAppenderService {
   }
 
   /**
-   * Release sync lock
+   * Release global sync lock
    */
   private releaseSyncLock(): void {
     this.syncInProgress = false;
@@ -249,10 +252,28 @@ class SequentialAppenderService {
   }
 
   /**
+   * Acquire per-table sync lock for single-table syncs.
+   * Throws if the specific table is already being synced.
+   */
+  private acquireTableLock(tableName: string): void {
+    if (this.tableSyncLocks.has(tableName)) {
+      throw new Error(`Sync already in progress for table '${tableName}'. Please wait for it to complete.`);
+    }
+    this.tableSyncLocks.add(tableName);
+  }
+
+  /**
+   * Release per-table sync lock
+   */
+  private releaseTableLock(tableName: string): void {
+    this.tableSyncLocks.delete(tableName);
+  }
+
+  /**
    * Full sync using sequential processing for all tables
    */
   async fullSync(): Promise<AppenderSyncStats> {
-    // Acquire lock before starting sync
+    // Acquire global lock to prevent concurrent batch syncs
     this.acquireSyncLock();
 
     const startTime = Date.now();
@@ -307,7 +328,6 @@ class SequentialAppenderService {
       stats.errors.push(error instanceof Error ? error.message : 'Unknown error');
       throw error;
     } finally {
-      // Always release lock, even if sync fails
       this.releaseSyncLock();
     }
   }
@@ -316,7 +336,7 @@ class SequentialAppenderService {
    * Incremental sync using watermarks for efficient processing
    */
   async incrementalSync(): Promise<AppenderSyncStats> {
-    // Acquire lock before starting sync
+    // Acquire global lock to prevent concurrent batch syncs
     this.acquireSyncLock();
 
     const startTime = Date.now();
@@ -380,7 +400,6 @@ class SequentialAppenderService {
       stats.errors.push(error instanceof Error ? error.message : 'Unknown error');
       throw error;
     } finally {
-      // Always release lock, even if sync fails
       this.releaseSyncLock();
     }
   }
@@ -389,8 +408,8 @@ class SequentialAppenderService {
    * Sync a single table (uses watermark-based incremental sync if available, otherwise full sync)
    */
   async syncSingleTable(tableName: string): Promise<AppenderSyncResult> {
-    // Acquire lock before starting sync
-    this.acquireSyncLock();
+    // Acquire per-table lock — only blocks if this specific table is already syncing
+    this.acquireTableLock(tableName);
 
     try {
       logger.info(`Starting sync for table: ${tableName}`);
@@ -414,8 +433,7 @@ class SequentialAppenderService {
       // Use watermark-based sync (same as incremental sync) - checks for watermark and does incremental if available
       return await this.syncTableWatermark(tableName);
     } finally {
-      // Always release lock, even if sync fails
-      this.releaseSyncLock();
+      this.releaseTableLock(tableName);
     }
   }
 
