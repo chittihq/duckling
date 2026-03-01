@@ -27,6 +27,45 @@ class AutomationService {
   private lastSuccessfulSync: Date = new Date();
   private isRunning: boolean = false;
 
+  /**
+   * Resolve DuckDB path for container runtime.
+   * Converts relative data/* paths to /app/data/* while preserving absolute paths.
+   */
+  private resolveDuckdbPath(duckdbPath: string): string {
+    return duckdbPath.startsWith('data/') ? `/app/${duckdbPath}` : duckdbPath;
+  }
+
+  private getSafeDatabaseId(): string {
+    return this.databaseId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  }
+
+  /**
+   * Build a safe per-database backup directory name to avoid cross-database overwrite.
+   */
+  private buildBackupDirectoryName(timestamp: string): string {
+    return `backup-${this.getSafeDatabaseId()}-${timestamp}`;
+  }
+
+  private getBackupDirectoryPattern(): RegExp {
+    const escapedDatabaseId = this.getSafeDatabaseId().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`^backup-${escapedDatabaseId}-\\d{4}-\\d{2}-\\d{2}T`);
+  }
+
+  private getBackupFileName(): string {
+    return `duckling-${this.getSafeDatabaseId()}.db`;
+  }
+
+  private isLegacyBackupDirectory(name: string): boolean {
+    return /^backup-\d{4}-\d{2}-\d{2}$/.test(name);
+  }
+
+  private resolveLocalDuckdbPath(): string {
+    const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
+    return dbConfig?.duckdbPath
+      ? this.resolveDuckdbPath(dbConfig.duckdbPath)
+      : this.resolveDuckdbPath(config.duckdb.path);
+  }
+
   private constructor(
     databaseId: string,
     syncService: SequentialAppenderService,
@@ -269,17 +308,20 @@ class AutomationService {
         fs.mkdirSync(backupDir, { recursive: true });
       }
 
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
-      const backupPath = path.join(backupDir, `backup-${timestamp}`);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const backupPath = path.join(backupDir, this.buildBackupDirectoryName(timestamp));
 
       if (!fs.existsSync(backupPath)) {
         fs.mkdirSync(backupPath, { recursive: true });
       }
 
-      // Backup DuckDB database file
-      const duckdbPath = config.duckdb.path;
+      // Backup DuckDB database file (database-specific path for multi-database setups)
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
+      const duckdbPath = dbConfig?.duckdbPath
+        ? this.resolveDuckdbPath(dbConfig.duckdbPath)
+        : this.resolveDuckdbPath(config.duckdb.path);
       if (fs.existsSync(duckdbPath)) {
-        const duckdbBackup = path.join(backupPath, 'duckling.db');
+        const duckdbBackup = path.join(backupPath, this.getBackupFileName());
         fs.copyFileSync(duckdbPath, duckdbBackup);
         logger.info(`Backed up DuckDB database to ${duckdbBackup}`);
       }
@@ -297,12 +339,9 @@ class AutomationService {
       logger.info(`✅ Backup completed: ${backupPath}`);
 
       // Upload to S3 if configured for this database
-      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
       if (dbConfig?.s3?.enabled) {
         try {
-          const resolvedDuckdbPath = dbConfig.duckdbPath.startsWith('data/')
-            ? `/app/${dbConfig.duckdbPath}`
-            : dbConfig.duckdbPath;
+          const resolvedDuckdbPath = this.resolveDuckdbPath(dbConfig.duckdbPath);
           if (fs.existsSync(resolvedDuckdbPath)) {
             const s3Key = await s3BackupService.uploadBackup(this.databaseId, resolvedDuckdbPath, dbConfig.s3);
             logger.info(`✅ S3 backup uploaded: ${s3Key}`);
@@ -325,9 +364,7 @@ class AutomationService {
       throw new Error('S3 not configured or not enabled for this database');
     }
 
-    const resolvedDuckdbPath = dbConfig.duckdbPath.startsWith('data/')
-      ? `/app/${dbConfig.duckdbPath}`
-      : dbConfig.duckdbPath;
+    const resolvedDuckdbPath = this.resolveDuckdbPath(dbConfig.duckdbPath);
 
     const tempPath = `${resolvedDuckdbPath}.restore-tmp`;
 
@@ -352,10 +389,15 @@ class AutomationService {
     try {
       const retentionDate = new Date();
       retentionDate.setDate(retentionDate.getDate() - config.automation.backupRetentionDays);
+      const backupPattern = this.getBackupDirectoryPattern();
 
       const backups = fs.readdirSync(backupDir);
 
       for (const backup of backups) {
+        if (!backupPattern.test(backup)) {
+          continue;
+        }
+
         const backupPath = path.join(backupDir, backup);
         const stats = fs.statSync(backupPath);
 
@@ -399,9 +441,7 @@ class AutomationService {
       const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
       if (!dbConfig?.s3?.enabled) return;
 
-      const resolvedDuckdbPath = dbConfig.duckdbPath.startsWith('data/')
-        ? `/app/${dbConfig.duckdbPath}`
-        : dbConfig.duckdbPath;
+      const resolvedDuckdbPath = this.resolveDuckdbPath(dbConfig.duckdbPath);
 
       if (!fs.existsSync(resolvedDuckdbPath)) {
         logger.warn(`S3 auto-backup: DuckDB file not found at ${resolvedDuckdbPath}`);
@@ -610,7 +650,12 @@ class AutomationService {
 
       // Find latest backup
       const backups = fs.readdirSync(backupDir)
-        .filter(name => fs.statSync(path.join(backupDir, name)).isDirectory())
+        .filter(name => {
+          const backupPath = path.join(backupDir, name);
+          if (!fs.statSync(backupPath).isDirectory()) return false;
+          if (this.getBackupDirectoryPattern().test(name)) return true;
+          return this.databaseId === 'default' && this.isLegacyBackupDirectory(name);
+        })
         .sort()
         .reverse();
 
@@ -622,9 +667,12 @@ class AutomationService {
       logger.info(`Restoring from backup: ${backups[0]}`);
 
       // Restore DuckDB database
-      const duckdbBackup = path.join(latestBackup, 'duckling.db');
+      const scopedBackup = path.join(latestBackup, this.getBackupFileName());
+      const duckdbBackup = fs.existsSync(scopedBackup)
+        ? scopedBackup
+        : path.join(latestBackup, 'duckling.db'); // backward compatibility
       if (fs.existsSync(duckdbBackup)) {
-        fs.copyFileSync(duckdbBackup, config.duckdb.path);
+        fs.copyFileSync(duckdbBackup, this.resolveLocalDuckdbPath());
         logger.info('Restored DuckDB database');
       }
 
