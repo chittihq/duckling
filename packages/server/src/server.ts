@@ -4,7 +4,7 @@ import cors from 'cors';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as http from 'http';
-import * as crypto from 'crypto';
+import { createHash } from 'crypto';
 import DuckDBConnection from './database/duckdb';
 import MySQLConnection from './database/mysql';
 import SequentialAppenderService from './services/sequentialAppenderService';
@@ -63,20 +63,6 @@ function sendError(res: express.Response, error: unknown): void {
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Unknown error'
     });
-  }
-}
-
-// Extend Express Request to include JWT user info
-declare global {
-  namespace Express {
-    interface Request {
-      user?: {
-        username: string;
-        jti?: string;
-        authMethod?: 'jwt' | 'apiKey';
-        apiKeyId?: string;
-      };
-    }
   }
 }
 
@@ -162,7 +148,7 @@ class DuckDBServer {
 
     // Try API key first (exact match)
     if (config.auth.apiKey && token === config.auth.apiKey) {
-      const apiKeyId = crypto.createHash('sha256').update(token).digest('hex').slice(0, 12);
+      const apiKeyId = createHash('sha256').update(token).digest('hex').slice(0, 12);
       req.user = { username: 'api-key-user', authMethod: 'apiKey', apiKeyId };
       next();
       return;

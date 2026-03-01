@@ -75,7 +75,7 @@ beforeEach(() => {
 
   config.rateLimit.enabled = true;
   config.rateLimit.mode = 'enforce';
-  config.rateLimit.identity.useSessionScope = true;
+  config.rateLimit.identity.useSessionScope = false;
   config.rateLimit.identity.includeDatabaseScope = true;
   config.rateLimit.tiers.anonymous = 1;
   config.rateLimit.tiers.jwt = 1;
@@ -94,6 +94,7 @@ beforeEach(() => {
   config.rateLimit.queryConcurrency.anonymousMaxInFlight = 1;
   config.rateLimit.queryConcurrency.jwtMaxInFlight = 1;
   config.rateLimit.queryConcurrency.apiKeyMaxInFlight = 2;
+  config.rateLimit.queryConcurrency.staleEntryTtlMs = 300000;
 });
 
 afterEach(() => {
@@ -102,7 +103,22 @@ afterEach(() => {
 });
 
 describe('rateLimit identity', () => {
+  test('defaults JWT key to username scope (no jti)', () => {
+    const req = buildReq({
+      user: { username: 'admin', jti: 'session-a', authMethod: 'jwt' },
+      query: { db: 'tenant_a' },
+    });
+
+    const id = identifyClient(req);
+
+    expect(id.tier).toBe('jwt');
+    expect(id.key).toContain('user:admin');
+    expect(id.key).not.toContain('session:');
+  });
+
   test('uses username + session jti + db scope for logged in JWT users', () => {
+    config.rateLimit.identity.useSessionScope = true;
+
     const req1 = buildReq({
       user: { username: 'admin', jti: 'session-a', authMethod: 'jwt' },
       query: { db: 'tenant_a' },
@@ -141,6 +157,21 @@ describe('rateLimit weighted counters', () => {
 });
 
 describe('rateLimit modes', () => {
+  test('shadow mode does not mutate counters after would-block threshold', () => {
+    config.rateLimit.mode = 'shadow';
+    config.rateLimit.categories.read.maxRequests = 1;
+
+    const first = checkRateLimit('user:admin', 'read', 'jwt', 1, 1_000);
+    const second = checkRateLimit('user:admin', 'read', 'jwt', 1, 1_001);
+    const third = checkRateLimit('user:admin', 'read', 'jwt', 1, 1_002);
+
+    expect(first.wouldLimit).toBe(false);
+    expect(second.wouldLimit).toBe(true);
+    expect(third.wouldLimit).toBe(true);
+    expect(second.used).toBe(1);
+    expect(third.used).toBe(1);
+  });
+
   test('shadow mode sets would-block header but does not reject', () => {
     config.rateLimit.mode = 'shadow';
     config.rateLimit.categories.read.maxRequests = 1;

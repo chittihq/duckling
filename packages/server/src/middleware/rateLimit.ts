@@ -32,8 +32,13 @@ interface QueryConcurrencyResult {
   release: () => void;
 }
 
+interface QueryInFlightEntry {
+  count: number;
+  updatedAt: number;
+}
+
 const store = new Map<string, RateLimitBucket>();
-const queryInFlightStore = new Map<string, number>();
+const queryInFlightStore = new Map<string, QueryInFlightEntry>();
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
 function getRateLimitMode(): RateLimitMode {
@@ -227,7 +232,8 @@ export function checkRateLimit(
   const projectedCost = effectiveCost + cost;
   const wouldLimit = projectedCost > limit;
 
-  const shouldCount = !wouldLimit || mode === 'shadow';
+  // Shadow mode is read-only: observe "would block" without mutating counters.
+  const shouldCount = !wouldLimit;
   if (shouldCount) {
     bucket.currentCost += cost;
   }
@@ -264,7 +270,16 @@ function acquireQueryConcurrencySlot(clientKey: string, tier: ClientTier): Query
   const mode = getRateLimitMode();
   const maxInFlight = getQueryConcurrencyLimit(tier);
   const key = `${clientKey}:query`;
-  const current = queryInFlightStore.get(key) || 0;
+  const now = Date.now();
+  const staleTtlMs = config.rateLimit.queryConcurrency.staleEntryTtlMs;
+  const existing = queryInFlightStore.get(key);
+  const current =
+    existing && now - existing.updatedAt <= staleTtlMs
+      ? existing.count
+      : 0;
+  if (existing && current === 0) {
+    queryInFlightStore.delete(key);
+  }
   const wouldLimit = current >= maxInFlight;
 
   if (wouldLimit && mode === 'enforce') {
@@ -277,18 +292,19 @@ function acquireQueryConcurrencySlot(clientKey: string, tier: ClientTier): Query
     };
   }
 
-  queryInFlightStore.set(key, current + 1);
+  queryInFlightStore.set(key, { count: current + 1, updatedAt: now });
   let released = false;
   const release = () => {
     if (released) {
       return;
     }
     released = true;
-    const next = (queryInFlightStore.get(key) || 1) - 1;
+    const currentEntry = queryInFlightStore.get(key);
+    const next = (currentEntry?.count || 1) - 1;
     if (next <= 0) {
       queryInFlightStore.delete(key);
     } else {
-      queryInFlightStore.set(key, next);
+      queryInFlightStore.set(key, { count: next, updatedAt: Date.now() });
     }
   };
 
@@ -455,10 +471,12 @@ export function startRateLimitCleanup(): void {
   }
 
   const intervalMs = config.rateLimit.cleanupIntervalMs;
+  const staleInFlightTtlMs = config.rateLimit.queryConcurrency.staleEntryTtlMs;
 
   cleanupTimer = setInterval(() => {
     const now = Date.now();
-    let removed = 0;
+    let removedWindowBuckets = 0;
+    let removedInFlightSlots = 0;
 
     for (const [key, bucket] of store) {
       const category = key.split(':').pop() as RateLimitCategory;
@@ -466,12 +484,21 @@ export function startRateLimitCleanup(): void {
       const windowMs = categoryConfig?.windowMs ?? 60000;
       if (now - bucket.windowStart > windowMs * 2) {
         store.delete(key);
-        removed++;
+        removedWindowBuckets++;
       }
     }
 
-    if (removed > 0) {
-      logger.debug(`Rate limit cleanup: removed ${removed} stale entries, ${store.size} remaining`);
+    for (const [key, entry] of queryInFlightStore) {
+      if (entry.count <= 0 || now - entry.updatedAt > staleInFlightTtlMs) {
+        queryInFlightStore.delete(key);
+        removedInFlightSlots++;
+      }
+    }
+
+    if (removedWindowBuckets > 0 || removedInFlightSlots > 0) {
+      logger.debug(
+        `Rate limit cleanup: removed ${removedWindowBuckets} stale windows and ${removedInFlightSlots} stale in-flight slots; ${store.size} windows and ${queryInFlightStore.size} in-flight keys remain`
+      );
     }
   }, intervalMs);
 }

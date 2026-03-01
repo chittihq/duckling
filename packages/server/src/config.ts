@@ -167,7 +167,7 @@ export const config = {
       monitoring: Math.max(1, parseInt(process.env.RATE_LIMIT_COST_MONITORING || '1')),
     },
     identity: {
-      useSessionScope: process.env.RATE_LIMIT_USE_SESSION_SCOPE !== 'false',
+      useSessionScope: process.env.RATE_LIMIT_USE_SESSION_SCOPE === 'true',
       includeDatabaseScope: process.env.RATE_LIMIT_INCLUDE_DB_SCOPE === 'true',
     },
     queryConcurrency: {
@@ -175,6 +175,7 @@ export const config = {
       anonymousMaxInFlight: Math.max(1, parseInt(process.env.RATE_LIMIT_ANON_QUERY_MAX_IN_FLIGHT || '1')),
       jwtMaxInFlight: Math.max(1, parseInt(process.env.RATE_LIMIT_JWT_QUERY_MAX_IN_FLIGHT || '2')),
       apiKeyMaxInFlight: Math.max(1, parseInt(process.env.RATE_LIMIT_APIKEY_QUERY_MAX_IN_FLIGHT || '8')),
+      staleEntryTtlMs: Math.max(1000, parseInt(process.env.RATE_LIMIT_QUERY_INFLIGHT_TTL_MS || '300000')),
     },
     cleanupIntervalMs: parseInt(process.env.RATE_LIMIT_CLEANUP_INTERVAL_MS || '60000'),
   }
