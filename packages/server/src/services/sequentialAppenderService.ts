@@ -59,7 +59,6 @@ class SequentialAppenderService {
   private duckdb: DuckDBConnection;
   private static instances: Map<string, SequentialAppenderService> = new Map();
   private syncInProgress: boolean = false;
-  private syncQueue: Array<{ tableName?: string; resolve: (value: any) => void; reject: (error: any) => void }> = [];
 
   private constructor(mysql: MySQLConnection, duckdb: DuckDBConnection) {
     this.mysql = mysql;
@@ -603,7 +602,7 @@ class SequentialAppenderService {
         const CHECKPOINT_INTERVAL = 50000;
         let recordsSinceLastCommit = 0;
 
-        // Start transaction for inserts
+        // Perform batched inserts; explicit transaction handling is managed elsewhere (if applicable)
 
         for await (const fetchedBatch of this.mysql.streamTableData(tableName, fetchBatchSize)) {
           // Process fetched batch in smaller bulk inserts to avoid stack overflow
@@ -646,8 +645,6 @@ class SequentialAppenderService {
 
           logger.debug(`Bulk inserted ${fetchedBatch.length} records to ${tableName}, total: ${recordsProcessed}`);
         }
-
-        // Final commit
 
         // Get max ID for watermark (supports both numeric and string IDs)
         const primaryKeyColumn = await this.detectPrimaryKeyColumn(tableName, schema);
@@ -729,9 +726,9 @@ class SequentialAppenderService {
    * - No SQL parsing overhead
    * - 60,000+ rows/sec vs ~10,000 rows/sec with INSERT
    *
-   * Limitations (as of DuckDB 1.1.3):
-   * - JSON, BLOB, BINARY types not supported until DuckDB 1.2 (Jan 2025)
-   * - Falls back to syncTableSequential for complex types
+   * Notes:
+   * - Supports JSON, BLOB, and BINARY types on DuckDB 1.2+.
+   * - Falls back to syncTableSequential for complex or unsupported types when needed.
    */
   private async syncTableSequentialWithAppender(tableName: string): Promise<AppenderSyncResult> {
     const startTime = Date.now();
@@ -1383,26 +1380,13 @@ class SequentialAppenderService {
    * Detect primary key column from schema
    */
   private async detectPrimaryKeyColumn(tableName: string, schema: any[]): Promise<string | undefined> {
-    // Check schema for primary key
-    const pkColumn = schema.find(col => col.Key === 'PRI');
-    if (pkColumn) {
-      return pkColumn.Field;
-    }
-
-    // Check common ID patterns
-    const idPatterns = [
-      'id',
-      `${tableName.toLowerCase()}id`,
-      `${tableName.toLowerCase()}_id`,
-    ];
-
-    for (const pattern of idPatterns) {
-      const column = schema.find(col =>
-        col.Field.toLowerCase() === pattern
-      );
-      if (column) {
-        return column.Field;
-      }
+    // Only return a column when the table has a single-column primary key.
+    // Composite primary keys are not suitable for single-column MAX() watermarks,
+    // and guessing a non-PK column (e.g. 'id') creates questionable watermark behaviour.
+    // Tables without a single-column PK will rely on timestamp-based watermarks instead.
+    const pkColumns = schema.filter(col => col.Key === 'PRI');
+    if (pkColumns.length === 1) {
+      return pkColumns[0].Field;
     }
 
     return undefined;

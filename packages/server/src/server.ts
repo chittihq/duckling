@@ -18,7 +18,7 @@ import s3BackupService from './services/s3BackupService';
 import { diagnoseDatabase } from './services/diagnoseService';
 import { generateToken, verifyToken, extractTokenFromHeader } from './utils/jwtUtils';
 import { preAuthRateLimiter, postAuthRateLimiter, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
-import config from './config';
+import config, { getAuthSecurityIssues } from './config';
 import logger from './logger';
 
 class InvalidIdentifierError extends Error {
@@ -281,7 +281,7 @@ class DuckDBServer {
       // Only serve index.html if it's not an API route
       if (!req.path.startsWith('/api/') && !req.path.startsWith('/_nuxt/')) {
         const indexPath = path.join(__dirname, '..', 'public', 'index.html');
-        if (require('fs').existsSync(indexPath)) {
+        if (fs.existsSync(indexPath)) {
           res.sendFile(indexPath);
         } else {
           // In development, Nuxt runs separately, so just return 404
@@ -857,7 +857,7 @@ class DuckDBServer {
       const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
       const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
       // Trigger manual backup via automation service
-      await automationService['performBackup']();
+      await automationService.performBackup();
       res.json({
         success: true,
         message: 'Manual backup completed successfully'
@@ -896,7 +896,7 @@ class DuckDBServer {
       const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
       const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
       // Trigger manual cleanup via automation service
-      await automationService['performCleanup']();
+      await automationService.performCleanup();
       res.json({
         success: true,
         message: 'Manual cleanup completed successfully'
@@ -1802,6 +1802,15 @@ class DuckDBServer {
   async start(): Promise<void> {
     try {
       console.log('Starting DuckDB Server...');
+
+      const authSecurityIssues = getAuthSecurityIssues();
+      if (authSecurityIssues.length > 0) {
+        const authSecurityMessage = `Insecure auth config:\n${authSecurityIssues.map(i => `  - ${i}`).join('\n')}`;
+        if (config.env === 'production') {
+          throw new Error(authSecurityMessage);
+        }
+        logger.warn(authSecurityMessage);
+      }
 
       // Debug: Log configuration values
       console.log('=== Configuration Debug ===');

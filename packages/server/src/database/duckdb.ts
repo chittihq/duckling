@@ -15,6 +15,7 @@ class DuckDBConnection {
   // Persistent connection for queries — avoids creating/closing hundreds of connections
   // which exhausts DuckDB's internal connection resources
   private persistentConn: any = null;
+  private persistentConnPromise: Promise<any> | null = null;
 
   private constructor(dbPath: string) {
     this.dbPath = dbPath;
@@ -81,11 +82,18 @@ class DuckDBConnection {
    * when hundreds of connections are rapidly created/closed.
    */
   private async getPersistentConnection(): Promise<any> {
-    if (!this.persistentConn) {
-      const instance = await this.getDbInstance();
-      this.persistentConn = await instance.connect();
+    if (!this.persistentConnPromise) {
+      this.persistentConnPromise = (async () => {
+        const instance = await this.getDbInstance();
+        this.persistentConn = await instance.connect();
+        return this.persistentConn;
+      })().catch((error) => {
+        this.persistentConn = null;
+        this.persistentConnPromise = null;
+        throw error;
+      });
     }
-    return this.persistentConn;
+    return this.persistentConnPromise;
   }
 
   /**
@@ -96,6 +104,7 @@ class DuckDBConnection {
       try { this.persistentConn.closeSync(); } catch {}
       this.persistentConn = null;
     }
+    this.persistentConnPromise = null;
   }
 
   /**
