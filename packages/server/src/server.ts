@@ -1449,12 +1449,20 @@ class DuckDBServer {
       // List local backups
       const backupDir = config.paths.backups;
       if (fs.existsSync(backupDir)) {
+        const safeDatabaseId = databaseId.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const backupPrefix = `backup-${safeDatabaseId}-`;
+        const backupFileName = `duckling-${safeDatabaseId}.db`;
+        const isLegacyBackupDirectory = (entry: string): boolean => /^backup-\d{4}-\d{2}-\d{2}$/.test(entry);
+
         const entries = fs.readdirSync(backupDir);
         for (const entry of entries) {
           const entryPath = path.join(backupDir, entry);
           const stat = fs.statSync(entryPath);
-          if (stat.isDirectory() && entry.startsWith('backup-')) {
-            const dbFile = path.join(entryPath, 'duckling.db');
+          if (stat.isDirectory() && (entry.startsWith(backupPrefix) || (databaseId === 'default' && isLegacyBackupDirectory(entry)))) {
+            const scopedDbFile = path.join(entryPath, backupFileName);
+            const dbFile = fs.existsSync(scopedDbFile)
+              ? scopedDbFile
+              : path.join(entryPath, 'duckling.db');
             const size = fs.existsSync(dbFile) ? fs.statSync(dbFile).size : 0;
             backups.push({
               name: entry,

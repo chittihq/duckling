@@ -40,7 +40,7 @@ describe('AutomationService backups', () => {
 
     expect(fs.copyFileSync).toHaveBeenCalledWith(
       '/app/data/tenant.db',
-      expect.stringMatching(/backup-tenant-db-.*\/duckling\.db$/)
+      expect.stringMatching(/backup-tenant-db-.*\/duckling-tenant-db\.db$/)
     );
     expect(getDatabase).toHaveBeenCalledWith('tenant-db');
   });
@@ -57,7 +57,7 @@ describe('AutomationService backups', () => {
     const service = AutomationService.getInstance('tenant-db', {} as any, {} as any, {} as any);
     await (service as any).performBackup();
 
-    expect(fs.copyFileSync).toHaveBeenCalledWith('/custom/tenant.db', expect.stringMatching(/backup-tenant-db-.*\/duckling\.db$/));
+    expect(fs.copyFileSync).toHaveBeenCalledWith('/custom/tenant.db', expect.stringMatching(/backup-tenant-db-.*\/duckling-tenant-db\.db$/));
   });
 
   test('performBackup falls back to global duckdb path when database config is missing', async () => {
@@ -70,7 +70,7 @@ describe('AutomationService backups', () => {
     const service = AutomationService.getInstance('tenant-db', {} as any, {} as any, {} as any);
     await (service as any).performBackup();
 
-    expect(fs.copyFileSync).toHaveBeenCalledWith(fallbackPath, expect.stringMatching(/backup-tenant-db-.*\/duckling\.db$/));
+    expect(fs.copyFileSync).toHaveBeenCalledWith(fallbackPath, expect.stringMatching(/backup-tenant-db-.*\/duckling-tenant-db\.db$/));
   });
 
   test('performBackup writes distinct local backup targets for different database IDs', async () => {
@@ -97,11 +97,11 @@ describe('AutomationService backups', () => {
 
     expect(fs.copyFileSync).toHaveBeenCalledWith(
       '/app/data/tenant-a.db',
-      expect.stringMatching(/backup-tenant-db-a-.*\/duckling\.db$/)
+      expect.stringMatching(/backup-tenant-db-a-.*\/duckling-tenant-db-a\.db$/)
     );
     expect(fs.copyFileSync).toHaveBeenCalledWith(
       '/app/data/tenant-b.db',
-      expect.stringMatching(/backup-tenant-db-b-.*\/duckling\.db$/)
+      expect.stringMatching(/backup-tenant-db-b-.*\/duckling-tenant-db-b\.db$/)
     );
   });
 });
