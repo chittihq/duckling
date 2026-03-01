@@ -6,6 +6,13 @@ import { DuckDBTimestampValue, DuckDBTimeValue } from '@duckdb/node-api';
 import { randomUUID } from 'crypto';
 // Appender functionality now provided by unified DuckDBConnection class
 
+export class SyncAlreadyInProgressError extends Error {
+  constructor(message = 'Another sync operation is already in progress. Please wait for it to complete.') {
+    super(message);
+    this.name = 'SyncAlreadyInProgressError';
+  }
+}
+
 export interface AppenderSyncResult {
   table: string;
   recordsProcessed: number;
@@ -237,7 +244,7 @@ class SequentialAppenderService {
    */
   private acquireSyncLock(): void {
     if (this.syncInProgress) {
-      throw new Error('Another sync operation is already in progress. Please wait for it to complete.');
+      throw new SyncAlreadyInProgressError();
     }
     this.syncInProgress = true;
     logger.info('Sync lock acquired');

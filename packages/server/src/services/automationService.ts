@@ -1,6 +1,6 @@
 import config from '../config';
 import logger from '../logger';
-import SequentialAppenderService, { type AppenderSyncStats } from './sequentialAppenderService';
+import SequentialAppenderService, { type AppenderSyncStats, SyncAlreadyInProgressError } from './sequentialAppenderService';
 import DuckDBConnection from '../database/duckdb';
 import MySQLConnection from '../database/mysql';
 import { DatabaseConfigManager, S3Config } from '../database/databaseConfig';
@@ -116,7 +116,7 @@ class AutomationService {
   }
 
   private isSyncAlreadyInProgressError(error: unknown): boolean {
-    return error instanceof Error && error.message.includes('Another sync operation is already in progress');
+    return error instanceof SyncAlreadyInProgressError;
   }
 
   public static closeInstance(databaseId: string): void {

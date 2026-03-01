@@ -13,6 +13,7 @@ vi.mock('fs', () => {
 });
 
 import AutomationService from '../automationService';
+import { SyncAlreadyInProgressError } from '../sequentialAppenderService';
 import { DatabaseConfigManager } from '../../database/databaseConfig';
 import config from '../../config';
 import * as fs from 'fs';
@@ -372,7 +373,7 @@ describe('AutomationService scheduling guards', () => {
   test('performIncrementalSyncWithStats maps sync lock contention to skipped', async () => {
     const syncServiceMock = {
       incrementalSync: vi.fn().mockRejectedValue(
-        new Error('Another sync operation is already in progress. Please wait for it to complete.')
+        new SyncAlreadyInProgressError()
       ),
       fullSync: vi.fn(),
     };
