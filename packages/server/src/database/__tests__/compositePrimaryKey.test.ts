@@ -32,7 +32,7 @@ vi.mock('../../logger', () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Schema fixtures
+// Schema fixtures (DESCRIBE output format)
 // ---------------------------------------------------------------------------
 const singlePkSchema = [
   { Field: 'id', Key: 'PRI', Type: 'int(11)', Null: 'NO', Default: null, Extra: 'auto_increment' },
@@ -65,20 +65,36 @@ const threePkSchema = [
 ];
 
 // ---------------------------------------------------------------------------
-// Helper: create a MySQLConnection instance with a mocked execute method
-// that returns the desired schema when DESCRIBE is called.
+// SHOW INDEX fixtures (used by getPrimaryKeyColumns)
+// Maps from DESCRIBE schema → SHOW INDEX rows with correct Seq_in_index
 // ---------------------------------------------------------------------------
-function createMockedConnection(schema: any[]): MySQLConnection {
+function schemaToShowIndexRows(schema: any[]): any[] {
+  return schema
+    .filter(col => col.Key === 'PRI')
+    .map((col, idx) => ({
+      Key_name: 'PRIMARY',
+      Seq_in_index: idx + 1,
+      Column_name: col.Field,
+    }));
+}
+
+// ---------------------------------------------------------------------------
+// Helper: create a MySQLConnection instance with a mocked execute method
+// that returns the desired fixtures for DESCRIBE and SHOW INDEX queries.
+// ---------------------------------------------------------------------------
+function createMockedConnection(schema: any[], showIndexRows?: any[]): MySQLConnection {
   const conn = new MySQLConnection('mysql://mock:mock@localhost/test');
 
-  // Override execute to return our fixture schema for DESCRIBE queries
-  // and track other queries for assertion
+  const indexRows = showIndexRows ?? schemaToShowIndexRows(schema);
   const executedQueries: Array<{ query: string; params?: any[] }> = [];
 
   (conn as any).execute = vi.fn(async (query: string, params?: any[]) => {
     executedQueries.push({ query, params });
     if (query.startsWith('DESCRIBE')) {
       return schema;
+    }
+    if (query.startsWith('SHOW INDEX')) {
+      return indexRows;
     }
     return [];
   });
@@ -111,6 +127,23 @@ describe('MySQLConnection.getPrimaryKeyColumns', () => {
     const conn = createMockedConnection(noPkSchema);
     expect(await conn.getPrimaryKeyColumns('Data')).toEqual([]);
   });
+
+  test('returns PK columns in index order, not table-definition order', async () => {
+    // Table columns defined as (a, b) but PRIMARY KEY is (b, a)
+    const schema = [
+      { Field: 'a', Key: 'PRI', Type: 'int(11)', Null: 'NO', Default: null, Extra: '' },
+      { Field: 'b', Key: 'PRI', Type: 'int(11)', Null: 'NO', Default: null, Extra: '' },
+      { Field: 'value', Key: '', Type: 'varchar(255)', Null: 'YES', Default: null, Extra: '' },
+    ];
+    // SHOW INDEX returns index order: b first (Seq_in_index=1), a second (Seq_in_index=2)
+    const showIndexRows = [
+      { Key_name: 'PRIMARY', Seq_in_index: 1, Column_name: 'b' },
+      { Key_name: 'PRIMARY', Seq_in_index: 2, Column_name: 'a' },
+    ];
+    const conn = createMockedConnection(schema, showIndexRows);
+    // Should return [b, a] (index order), NOT [a, b] (table-definition order)
+    expect(await conn.getPrimaryKeyColumns('Swapped')).toEqual(['b', 'a']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -139,11 +172,13 @@ describe('MySQLConnection.getPrimaryKeyColumn', () => {
 describe('MySQLConnection.streamTableData', () => {
   test('uses keyset pagination with single PK', async () => {
     const conn = createMockedConnection(singlePkSchema);
+    const indexRows = schemaToShowIndexRows(singlePkSchema);
 
     // Mock: first batch returns data, second returns empty (end)
     let callCount = 0;
     (conn as any).execute = vi.fn(async (query: string, params?: any[]) => {
       if (query.startsWith('DESCRIBE')) return singlePkSchema;
+      if (query.startsWith('SHOW INDEX')) return indexRows;
       callCount++;
       if (callCount === 1) return [{ id: 1, name: 'Alice', email: 'a@test.com' }];
       return [];
@@ -163,11 +198,13 @@ describe('MySQLConnection.streamTableData', () => {
 
   test('uses composite tuple keyset pagination for composite PK', async () => {
     const conn = createMockedConnection(compositePkSchema);
+    const indexRows = schemaToShowIndexRows(compositePkSchema);
 
     // Mock: first batch returns data, second returns empty (end)
     let callCount = 0;
     (conn as any).execute = vi.fn(async (query: string, params?: any[]) => {
       if (query.startsWith('DESCRIBE')) return compositePkSchema;
+      if (query.startsWith('SHOW INDEX')) return indexRows;
       callCount++;
       if (callCount === 1) {
         return [
@@ -194,11 +231,13 @@ describe('MySQLConnection.streamTableData', () => {
 
   test('uses row-value tuple WHERE clause for composite PK on subsequent batches', async () => {
     const conn = createMockedConnection(compositePkSchema);
+    const indexRows = schemaToShowIndexRows(compositePkSchema);
 
     // Mock: first batch returns batchSize records, second batch returns less
     let callCount = 0;
     (conn as any).execute = vi.fn(async (query: string, params?: any[]) => {
       if (query.startsWith('DESCRIBE')) return compositePkSchema;
+      if (query.startsWith('SHOW INDEX')) return indexRows;
       callCount++;
       if (callCount === 1) {
         return [
@@ -230,6 +269,7 @@ describe('MySQLConnection.streamTableData', () => {
     let callCount = 0;
     (conn as any).execute = vi.fn(async (query: string, params?: any[]) => {
       if (query.startsWith('DESCRIBE')) return noPkSchema;
+      if (query.startsWith('SHOW INDEX')) return [];
       callCount++;
       if (callCount === 1) return [{ data: 'test', value: '1' }];
       return [];
@@ -256,11 +296,13 @@ describe('MySQLConnection.streamTableData', () => {
 describe('MySQLConnection.streamIncrementalData', () => {
   test('uses composite tuple tie-breaking for composite PK', async () => {
     const conn = createMockedConnection(compositePkSchema);
+    const indexRows = schemaToShowIndexRows(compositePkSchema);
 
     // Mock: first batch returns batchSize records (triggers second batch), second returns less
     let callCount = 0;
     (conn as any).execute = vi.fn(async (query: string, params?: any[]) => {
       if (query.startsWith('DESCRIBE')) return compositePkSchema;
+      if (query.startsWith('SHOW INDEX')) return indexRows;
       callCount++;
       if (callCount === 1) {
         return [

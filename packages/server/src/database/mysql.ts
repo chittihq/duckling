@@ -95,12 +95,19 @@ class MySQLConnection {
   }
 
   /**
-   * Get all primary key columns for a table
-   * Returns empty array if no primary key exists
+   * Get all primary key columns for a table in PRIMARY KEY index order.
+   * Uses SHOW INDEX to get columns ordered by SEQ_IN_INDEX, which matches
+   * the actual index definition and enables index-backed keyset pagination.
+   * Returns empty array if no primary key exists.
    */
   async getPrimaryKeyColumns(tableName: string): Promise<string[]> {
-    const schema = await this.getTableSchema(tableName);
-    return schema.filter(col => col.Key === 'PRI').map(col => col.Field);
+    const rows = await this.execute(
+      `SHOW INDEX FROM ${this.q(tableName)} WHERE Key_name = 'PRIMARY'`
+    );
+    // Sort by Seq_in_index to guarantee correct composite-key order
+    return rows
+      .sort((a: any, b: any) => a.Seq_in_index - b.Seq_in_index)
+      .map((row: any) => row.Column_name);
   }
 
   /**
