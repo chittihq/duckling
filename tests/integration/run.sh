@@ -61,6 +61,86 @@ pre_cleanup() {
   rm -rf data/ 2>/dev/null || true
 }
 
+protocol_smoke() {
+  log "[5/7] Running MySQL protocol smoke checks..."
+  docker compose exec -T duckling node - <<'EOJS'
+const mysql = require('mysql2/promise');
+
+const dbId = process.env.DUCKLING_TEST_DB_ID || 'integration';
+
+const queries = [
+  'SHOW DATABASES',
+  "SHOW DATABASES LIKE 'i%'",
+  "SELECT SCHEMA_NAME AS DatabaseName FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME NOT IN ('information_schema','mysql','performance_schema','sys') ORDER BY SCHEMA_NAME",
+  `SELECT ROUTINE_SCHEMA as function_schema,ROUTINE_NAME as function_name,ROUTINE_DEFINITION as create_statement,ROUTINE_TYPE as function_type FROM information_schema.routines where ROUTINE_SCHEMA='${dbId}'`,
+  `SELECT data_length AS data_size, index_length AS index_size, (data_length + index_length) AS total_size, table_comment AS comment FROM information_schema.TABLES WHERE table_schema = '${dbId}' AND table_name = 'users_with_timestamps'`,
+  `SELECT column_name as column_name FROM information_schema.statistics WHERE table_schema = '${dbId}' AND table_name = 'users_with_timestamps' AND index_name = 'PRIMARY' ORDER BY seq_in_index ASC`,
+  `SELECT table_name as table_name,column_name as column_name,column_type as column_type FROM information_schema.columns WHERE table_schema='${dbId}' AND table_name='users_with_timestamps' AND data_type='enum'`,
+  `SELECT ordinal_position as ordinal_position,column_name as column_name,column_type AS data_type,character_set_name as character_set,collation_name as collation,is_nullable as is_nullable,column_default as column_default,extra as extra,column_name AS foreign_key,column_comment AS comment FROM information_schema.columns WHERE table_schema='${dbId}' AND table_name='users_with_timestamps'`,
+  `SELECT * FROM \`${dbId}\`.\`users_with_timestamps\` LIMIT 3 OFFSET 0`,
+  `SELECT table_rows as count FROM information_schema.TABLES WHERE TABLE_SCHEMA='${dbId}' AND TABLE_NAME='users_with_timestamps'`,
+  `SELECT COUNT(*) as count FROM \`${dbId}\`.\`users_with_timestamps\``,
+];
+
+async function main() {
+  const conn = await mysql.createConnection({
+    host: '127.0.0.1',
+    port: 3307,
+    user: process.env.MYSQL_PROTOCOL_USER || 'duckling',
+    password: process.env.MYSQL_PROTOCOL_PASSWORD || process.env.DUCKLING_API_KEY || 'integration-test-key',
+    database: dbId,
+  });
+
+  try {
+    for (const sql of queries) {
+      const [rows] = await conn.query(sql);
+      const rowCount = Array.isArray(rows) ? rows.length : 0;
+      console.log(`[protocol-smoke] OK rows=${rowCount} sql=${sql.slice(0, 120)}`);
+    }
+  } finally {
+    await conn.end();
+  }
+}
+
+main().catch((error) => {
+  console.error(`[protocol-smoke] FAIL ${error && error.stack ? error.stack : error}`);
+  process.exit(1);
+});
+EOJS
+  ok "MySQL protocol smoke checks passed"
+}
+
+assert_no_protocol_regressions() {
+  log "[7/7] Checking logs for protocol regressions..."
+  local logs_file
+  logs_file="$(mktemp)"
+  docker compose logs duckling > "$logs_file" 2>&1 || true
+
+  local patterns=(
+    "Table with name routines does not exist"
+    "Table with name statistics does not exist"
+    "Referenced column \"table_rows\" not found"
+    "Referenced column \"column_type\" not found"
+    "syntax error at or near"
+    "packets out of order"
+    "stmt_prepare not supported"
+  )
+
+  local found=0
+  for pattern in "${patterns[@]}"; do
+    if grep -F "$pattern" "$logs_file" >/dev/null 2>&1; then
+      fail "Protocol regression detected in logs: $pattern"
+      found=1
+    fi
+  done
+  rm -f "$logs_file"
+
+  if [ "$found" -ne 0 ]; then
+    exit 1
+  fi
+  ok "No protocol regression patterns found"
+}
+
 # ===============================================================
 # MAIN
 # ===============================================================
@@ -75,7 +155,7 @@ check_deps
 pre_cleanup
 
 # ------- Step 1: Prepare environment -------
-log "[1/5] Preparing environment..."
+log "[1/7] Preparing environment..."
 mkdir -p data
 cat > data/databases.json << EOJSON
 [
@@ -92,7 +172,7 @@ EOJSON
 ok "Environment ready"
 
 # ------- Step 2: Start MySQL & seed data -------
-log "[2/5] Starting MySQL..."
+log "[2/7] Starting MySQL..."
 docker compose up -d mysql
 echo -n "  Waiting for MySQL health check"
 mysql_wait=0
@@ -230,7 +310,7 @@ EOSQL
 ok "Seed data inserted"
 
 # ------- Step 3: Start Duckling -------
-log "[3/5] Starting Duckling server..."
+log "[3/7] Starting Duckling server..."
 docker compose up -d --build duckling
 echo -n "  Waiting for Duckling health check"
 duckling_wait=0
@@ -248,11 +328,17 @@ echo ""
 ok "Duckling is ready"
 
 # ------- Step 4: Install test dependencies -------
-log "[4/5] Installing test dependencies..."
+log "[4/7] Installing test dependencies..."
 (cd "$SCRIPT_DIR" && pnpm install --frozen-lockfile 2>/dev/null || pnpm install)
 ok "Dependencies installed"
 
-# ------- Step 5: Run vitest -------
-log "[5/5] Running test suites via vitest..."
+# ------- Step 5: MySQL protocol smoke -------
+protocol_smoke
+
+# ------- Step 6: Run vitest -------
+log "[6/7] Running test suites via vitest..."
 echo ""
 pnpm test
+
+# ------- Step 7: Scan logs for protocol regressions -------
+assert_no_protocol_regressions
