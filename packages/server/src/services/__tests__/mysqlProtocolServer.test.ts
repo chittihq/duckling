@@ -1,15 +1,13 @@
 import { describe, test, expect } from 'vitest';
-import { __testHelpers } from '../mysqlProtocolServer';
-
-const {
-  sha1,
-  xor,
-  doubleSha1,
-  verifyToken,
-  formatCapabilityFlags,
-  describeCapabilityFlags,
+import {
   compactSqlForLog,
-} = __testHelpers;
+  describeCapabilityFlags,
+  doubleSha1,
+  formatCapabilityFlags,
+  sha1,
+  verifyToken,
+  xor,
+} from '../mysqlProtocolUtils';
 
 // =====================================================================
 // Crypto helpers (MySQL AUTH_41)
