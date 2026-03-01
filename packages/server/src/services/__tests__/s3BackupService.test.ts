@@ -41,7 +41,7 @@ describe('s3BackupService downloadAndDecrypt', () => {
   test('verifies HMAC before decryption and rejects tampered ciphertext', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'duckling-s3-test-'));
     tempDirs.push(dir);
-    const targetPath = dir;
+    const targetPath = path.join(dir, 'restore.db');
     const { payload } = createEncryptedPayload(Buffer.from('safe content'), s3Config.encryptionKey);
     const backupKey = 'db/backup.db';
 
@@ -62,6 +62,39 @@ describe('s3BackupService downloadAndDecrypt', () => {
         s3Config
       )
     ).rejects.toThrow('HMAC verification failed');
+    expect(fs.existsSync(targetPath)).toBe(false);
+    expect(fs.existsSync(`${targetPath}.tmp`)).toBe(false);
+  });
+
+  test('rejects restore when .mac companion is missing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'duckling-s3-test-'));
+    tempDirs.push(dir);
+    const targetPath = path.join(dir, 'restore.db');
+    const { payload } = createEncryptedPayload(Buffer.from('safe content'), s3Config.encryptionKey);
+    const backupKey = 'db/backup.db';
+
+    const fakeClient = {
+      send: vi.fn(async (command: any) => {
+        if (command.input.Key !== `${backupKey}.mac`) {
+          throw new Error(`Unexpected key: ${command.input.Key}`);
+        }
+        const err: any = new Error('NoSuchKey');
+        err.name = 'NoSuchKey';
+        throw err;
+      }),
+    };
+
+    await expect(
+      (s3BackupService as any).downloadAndDecrypt(
+        fakeClient,
+        Readable.from([payload]),
+        backupKey,
+        targetPath,
+        s3Config
+      )
+    ).rejects.toThrow('Missing HMAC companion');
+    expect(fs.existsSync(targetPath)).toBe(false);
+    expect(fs.existsSync(`${targetPath}.tmp`)).toBe(false);
   });
 
   test('decrypts backup only after successful HMAC verification', async () => {

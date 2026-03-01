@@ -194,6 +194,7 @@ class S3BackupService {
   ): Promise<void> {
     const encKey = this.parseEncryptionKey(s3Config.encryptionKey!);
     const encTempPath = `${targetPath}.enc`;
+    const restoreTempPath = `${targetPath}.tmp`;
 
     try {
       // Step 1: download encrypted blob to temp file
@@ -208,46 +209,54 @@ class S3BackupService {
         await fd.close();
       }
 
-      // Step 3: verify HMAC against companion .mac object before any decryption
-      const hmac = crypto.createHmac('sha256', encKey);
-      hmac.update(iv);
-      for await (const chunk of fs.createReadStream(encTempPath, { start: 16 })) {
-        hmac.update(chunk as Buffer);
-      }
-      const hmacResult = hmac.digest('hex');
-
-      // Step 4: fetch and compare .mac companion
+      // Step 3: fetch .mac companion (required for client-side encrypted restores)
+      let expectedHmac = '';
       try {
         const macResponse = await client.send(
           new GetObjectCommand({ Bucket: s3Config.bucket, Key: `${backupKey}.mac` })
         );
         const chunks: Buffer[] = [];
         for await (const chunk of macResponse.Body as Readable) chunks.push(Buffer.from(chunk));
-        const expectedHmac = Buffer.concat(chunks).toString('utf8').trim();
-
-        if (hmacResult !== expectedHmac) {
-          throw new Error('HMAC verification failed: backup is corrupted or has been tampered with');
-        }
-        logger.info('HMAC verified: backup integrity confirmed');
+        expectedHmac = Buffer.concat(chunks).toString('utf8').trim();
       } catch (macErr: any) {
         if (macErr.name === 'NoSuchKey') {
-          // Older backup uploaded without HMAC companion — proceed without verification
-          logger.warn(`No .mac companion for ${backupKey} — skipping integrity check`);
+          throw new Error(`Missing HMAC companion for ${backupKey} (.mac object not found)`);
         } else {
           throw macErr;
         }
       }
 
-      // Step 5: stream-decrypt (skip first 16 bytes) only after integrity check passes
+      // Step 4: single pass over encrypted data to decrypt + compute HMAC
+      const hmac = crypto.createHmac('sha256', encKey);
+      hmac.update(iv);
+      let hmacResult = '';
+      const hmacAccumulator = new Transform({
+        transform(chunk: Buffer, _enc, cb) { hmac.update(chunk); cb(null, chunk); },
+        flush(cb) { hmacResult = hmac.digest('hex'); cb(); },
+      });
       const decipher = crypto.createDecipheriv('aes-256-ctr', encKey, iv);
       await pipeline(
         fs.createReadStream(encTempPath, { start: 16 }),
+        hmacAccumulator,
         decipher,
-        fs.createWriteStream(targetPath)
+        fs.createWriteStream(restoreTempPath)
       );
+
+      // Step 5: verify HMAC before promoting decrypted file to final target
+      if (hmacResult !== expectedHmac) {
+        if (fs.existsSync(restoreTempPath)) {
+          try { fs.unlinkSync(restoreTempPath); } catch {}
+        }
+        throw new Error('HMAC verification failed: backup is corrupted or has been tampered with');
+      }
+      logger.info('HMAC verified: backup integrity confirmed');
+      fs.renameSync(restoreTempPath, targetPath);
     } finally {
       if (fs.existsSync(encTempPath)) {
         try { fs.unlinkSync(encTempPath); } catch {}
+      }
+      if (fs.existsSync(restoreTempPath)) {
+        try { fs.unlinkSync(restoreTempPath); } catch {}
       }
     }
   }
