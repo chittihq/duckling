@@ -19,17 +19,17 @@ describe('getAuthSecurityIssues', () => {
 
   it('reports empty admin credentials', () => {
     const issues = getAuthSecurityIssues(secureAuth({ adminUsername: ' ', adminPassword: '' }));
-    expect(issues).toContain('ADMIN_USERNAME and ADMIN_PASSWORD must both be set to non-empty values.');
+    expect(issues).toContain('ADMIN_USERNAME and ADMIN_PASSWORD must each be set to a non-empty value.');
   });
 
   it('reports missing admin password when username is set', () => {
     const issues = getAuthSecurityIssues(secureAuth({ adminPassword: '' }));
-    expect(issues).toContain('ADMIN_USERNAME and ADMIN_PASSWORD must both be set to non-empty values.');
+    expect(issues).toContain('ADMIN_USERNAME and ADMIN_PASSWORD must each be set to a non-empty value.');
   });
 
   it('reports missing admin username when password is set', () => {
     const issues = getAuthSecurityIssues(secureAuth({ adminUsername: ' ' }));
-    expect(issues).toContain('ADMIN_USERNAME and ADMIN_PASSWORD must both be set to non-empty values.');
+    expect(issues).toContain('ADMIN_USERNAME and ADMIN_PASSWORD must each be set to a non-empty value.');
   });
   it('returns no issues for secure auth config', () => {
     expect(getAuthSecurityIssues(secureAuth())).toEqual([]);
