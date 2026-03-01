@@ -263,11 +263,6 @@ export async function diagnoseDatabase(
         unsupportedColumns: unsupported,
         charset: tableStatuses.get(table) || 'unknown',
       });
-      reportProgress({
-        name: `Table ${table}`,
-        status: unsupported.length > 0 || !primaryKey || !ts.column || ts.quality === 'append-only' ? 'warn' : 'pass',
-        detail: `~${rowCounts.get(table) || 0} rows`,
-      });
     } catch (err) {
       logger.warn(`Diagnose failed for table ${table}:`, err);
       tableDiagnoses.push({
@@ -278,11 +273,6 @@ export async function diagnoseDatabase(
         timestampQuality: 'none',
         unsupportedColumns: [],
         charset: 'error',
-      });
-      reportProgress({
-        name: `Table ${table}`,
-        status: 'fail',
-        detail: 'Failed to inspect table',
       });
     }
   }
