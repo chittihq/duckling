@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 import { BaseSequencer } from 'vitest/node';
 
 class AlphabeticalSequencer extends BaseSequencer {
-  async sort(files) {
+  async sort(files: Parameters<BaseSequencer['sort']>[0]) {
     return [...files].sort((a, b) => a.moduleId.localeCompare(b.moduleId));
   }
 }
