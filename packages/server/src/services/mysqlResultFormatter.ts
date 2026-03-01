@@ -150,9 +150,23 @@ export function buildColumnDefinition(
  * Returns null for SQL NULL, string for everything else.
  */
 export function formatValue(value: any): string | null {
+  return formatValueByType(value);
+}
+
+function baseDuckDBType(duckdbType?: string): string {
+  if (!duckdbType) return '';
+  return duckdbType.replace(/\(.*\)/, '').trim().toUpperCase();
+}
+
+/**
+ * Convert a single DuckDB value to a MySQL text-protocol value.
+ * `duckdbType` is optional but improves date/time fidelity for client decoders.
+ */
+export function formatValueByType(value: any, duckdbType?: string): string | null {
   if (value === null || value === undefined) {
     return null;
   }
+  const type = baseDuckDBType(duckdbType);
   if (typeof value === 'boolean') {
     return value ? '1' : '0';
   }
@@ -163,6 +177,12 @@ export function formatValue(value: any): string | null {
     return Buffer.from(value).toString('hex');
   }
   if (value instanceof Date) {
+    if (type === 'DATE') {
+      return value.toISOString().slice(0, 10);
+    }
+    if (type === 'TIME') {
+      return value.toISOString().slice(11, 19);
+    }
     return value.toISOString().replace('T', ' ').replace('Z', '');
   }
   // DuckDB TIME/TIMESTAMP objects with a .toString()
@@ -170,7 +190,10 @@ export function formatValue(value: any): string | null {
     return value.toString();
   }
   if (typeof value === 'object') {
-    return JSON.stringify(value);
+    return JSON.stringify(
+      value,
+      (_key, innerValue) => (typeof innerValue === 'bigint' ? innerValue.toString() : innerValue),
+    );
   }
   return String(value);
 }
@@ -189,7 +212,7 @@ export function formatResultSet(
     buildColumnDefinition(name, columnTypes[i], table),
   );
   const formattedRows = rows.map(row =>
-    row.map(val => formatValue(val)),
+    row.map((val, i) => formatValueByType(val, columnTypes[i])),
   );
   return { columns, rows: formattedRows };
 }

@@ -14,7 +14,7 @@ import { DatabaseConfigManager } from '../database/databaseConfig';
 import { routeQuery } from './mysqlQueryRouter';
 import {
   buildColumnDefinition,
-  formatValue,
+  formatValueByType,
   type MySQLColumnDefinition,
 } from './mysqlResultFormatter';
 import config from '../config';
@@ -611,7 +611,7 @@ export class MySQLProtocolServer {
 
     // Format rows: convert each value to string|null
     const formattedRows = rows.map((row: any[]) =>
-      row.map((val: any) => formatValue(val)),
+      row.map((val: any, i: number) => formatValueByType(val, columnTypes[i])),
     );
 
     this.writeResultSet(conn, columns, formattedRows);
