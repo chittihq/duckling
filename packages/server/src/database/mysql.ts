@@ -249,7 +249,11 @@ class MySQLConnection {
           // First batch - no WHERE clause needed
           query = `SELECT * FROM ${this.q(tableName)} ORDER BY ${orderByClause} LIMIT ${batchSize}`;
         } else {
-          // Subsequent batches - use row-value tuple comparison for keyset pagination
+          // Subsequent batches - use row-value tuple comparison for keyset pagination.
+          // MySQL row-value syntax: (col1, col2) > (val1, val2) compares tuples
+          // lexicographically (left-to-right), equivalent to:
+          //   col1 > val1 OR (col1 = val1 AND col2 > val2)
+          // Requires MySQL 5.7+.  Enables O(1) keyset pagination for composite PKs.
           const tupleCols = `(${pkColumns.map(pk => this.q(pk)).join(', ')})`;
           const tuplePlaceholders = `(${pkColumns.map(() => '?').join(', ')})`;
           query = `SELECT * FROM ${this.q(tableName)} WHERE ${tupleCols} > ${tuplePlaceholders} ORDER BY ${orderByClause} LIMIT ${batchSize}`;
@@ -314,7 +318,11 @@ class MySQLConnection {
           query = `SELECT * FROM ${this.q(tableName)} WHERE ${this.q(watermarkColumn)} >= ? ORDER BY ${this.q(watermarkColumn)} ASC, ${pkOrderByClause} LIMIT ${batchSize}`;
           params = [watermarkValue];
         } else {
-          // Subsequent batches - handle tie-breaking with primary key(s)
+          // Subsequent batches - handle tie-breaking with primary key(s).
+          // Fetches rows where: watermark > lastWatermark (next time-window)
+          //   OR watermark = lastWatermark AND (pk tuple) > (last pk values)
+          // The tuple comparison handles composite PKs correctly, paginating
+          // across rows that share the same watermark value.
           const tupleCols = `(${pkColumns.map(pk => this.q(pk)).join(', ')})`;
           const tuplePlaceholders = `(${pkColumns.map(() => '?').join(', ')})`;
           query = `SELECT * FROM ${this.q(tableName)} WHERE (${this.q(watermarkColumn)} > ?) OR (${this.q(watermarkColumn)} = ? AND ${tupleCols} > ${tuplePlaceholders}) ORDER BY ${this.q(watermarkColumn)} ASC, ${pkOrderByClause} LIMIT ${batchSize}`;
