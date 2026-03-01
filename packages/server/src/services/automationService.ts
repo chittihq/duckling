@@ -183,14 +183,14 @@ class AutomationService {
       logger.info('🔄 Running scheduled full sync...');
       const stats = await this.syncService.fullSync();
 
+      // Checkpoint after sync to merge WAL into main database file
+      // This ensures fast restart and minimal WAL size
+      await this.duckdb.checkpoint();
+
       this.lastSuccessfulSync = new Date();
       this.restartAttempts = 0;
 
       logger.info(`✅ Scheduled full sync completed: ${stats.successfulTables}/${stats.totalTables} tables, ${stats.totalRecords} records`);
-
-      // Checkpoint after sync to merge WAL into main database file
-      // This ensures fast restart and minimal WAL size
-      await this.duckdb.checkpoint();
     } catch (error) {
       logger.error('Scheduled full sync failed:', error);
     } finally {
@@ -201,14 +201,14 @@ class AutomationService {
   /**
    * Perform incremental sync
    */
-  private async performIncrementalSync(): Promise<void> {
+  private async performIncrementalSync(): Promise<boolean> {
     if (this.isBackupInProgress) {
       logger.warn('Skipping scheduled incremental sync: backup is currently in progress');
-      return;
+      return false;
     }
     if (this.isSyncInProgress) {
       logger.warn('Skipping scheduled incremental sync: another sync is already in progress');
-      return;
+      return false;
     }
 
     this.isSyncInProgress = true;
@@ -216,16 +216,18 @@ class AutomationService {
       logger.info('🔄 Running scheduled incremental sync...');
       const stats = await this.syncService.incrementalSync();
 
+      // Checkpoint after sync to merge WAL into main database file
+      // This ensures fast restart and minimal WAL size
+      await this.duckdb.checkpoint();
+
       this.lastSuccessfulSync = new Date();
       this.restartAttempts = 0;
 
       logger.info(`✅ Scheduled incremental sync completed: ${stats.successfulTables}/${stats.totalTables} tables, ${stats.totalRecords} records`);
-
-      // Checkpoint after sync to merge WAL into main database file
-      // This ensures fast restart and minimal WAL size
-      await this.duckdb.checkpoint();
+      return true;
     } catch (error) {
       logger.error('Scheduled incremental sync failed:', error);
+      return false;
     } finally {
       this.isSyncInProgress = false;
     }
@@ -612,10 +614,10 @@ class AutomationService {
 
       // Try to trigger a sync to verify recovery
       logger.info('Testing sync after recovery...');
-      await this.syncService.incrementalSync();
-
-      this.lastSuccessfulSync = new Date();
-      this.restartAttempts = 0;
+      const syncRecovered = await this.performIncrementalSync();
+      if (!syncRecovered) {
+        throw new Error('Recovery sync did not complete successfully');
+      }
 
       logger.info('✅ Recovery successful');
     } catch (error) {
