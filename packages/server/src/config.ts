@@ -144,7 +144,7 @@ export function getAuthSecurityIssues(auth = config.auth): string[] {
     issues.push('JWT_SECRET is using the insecure default value.');
   }
   if (!auth.adminUsername.trim() || !auth.adminPassword.trim()) {
-    issues.push('ADMIN_USERNAME and ADMIN_PASSWORD must both be set to non-empty values.');
+    issues.push('ADMIN_USERNAME and ADMIN_PASSWORD must each be set to a non-empty value.');
   }
   return issues;
 }
