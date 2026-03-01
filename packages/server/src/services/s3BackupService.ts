@@ -229,10 +229,24 @@ class S3BackupService {
       // Step 4: single pass over encrypted data to decrypt + compute HMAC
       const hmac = crypto.createHmac('sha256', encKey);
       hmac.update(iv);
-      let hmacResult = '';
+      let hmacResult: string | null = null;
       const hmacAccumulator = new Transform({
-        transform(chunk: Buffer, _enc, cb) { hmac.update(chunk); cb(null, chunk); },
-        flush(cb) { hmacResult = hmac.digest('hex'); cb(); },
+        transform(chunk: Buffer, _encoding, cb) {
+          try {
+            hmac.update(chunk);
+            cb(null, chunk);
+          } catch (error) {
+            cb(new Error(`Failed to update HMAC during restore: ${(error as Error).message}`));
+          }
+        },
+        flush(cb) {
+          try {
+            hmacResult = hmac.digest('hex');
+            cb();
+          } catch (error) {
+            cb(new Error(`Failed to finalize HMAC during restore: ${(error as Error).message}`));
+          }
+        },
       });
       const decipher = crypto.createDecipheriv('aes-256-ctr', encKey, iv);
       await pipeline(
@@ -243,20 +257,25 @@ class S3BackupService {
       );
 
       // Step 5: verify HMAC before promoting decrypted file to final target
+      if (!hmacResult) {
+        throw new Error('HMAC verification failed: could not compute digest during restore');
+      }
       if (hmacResult !== expectedHmac) {
-        if (fs.existsSync(restoreTempPath)) {
-          try { fs.unlinkSync(restoreTempPath); } catch {}
-        }
         throw new Error('HMAC verification failed: backup is corrupted or has been tampered with');
       }
       logger.info('HMAC verified: backup integrity confirmed');
-      fs.renameSync(restoreTempPath, targetPath);
+      await fs.promises.rename(restoreTempPath, targetPath);
     } finally {
       if (fs.existsSync(encTempPath)) {
-        try { fs.unlinkSync(encTempPath); } catch {}
+        try { fs.unlinkSync(encTempPath); } catch (cleanupErr) {
+          logger.warn(`Failed to delete temporary encrypted file: ${encTempPath}`, cleanupErr);
+        }
       }
       if (fs.existsSync(restoreTempPath)) {
-        try { fs.unlinkSync(restoreTempPath); } catch {}
+        // Best-effort cleanup for failures before rename (e.g. stream/write errors).
+        try { fs.unlinkSync(restoreTempPath); } catch (cleanupErr) {
+          logger.warn(`Failed to delete temporary restore file: ${restoreTempPath}`, cleanupErr);
+        }
       }
     }
   }
