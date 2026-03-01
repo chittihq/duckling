@@ -132,6 +132,51 @@ function parseColumnExpr(expr: string): { valueExpr: string; columnName: string 
   return { valueExpr: trimmed, columnName: unquoteIdent(trimmed) };
 }
 
+function extractWhereString(norm: string, key: string): string | null {
+  const m = norm.match(new RegExp(`\\b${escapeRegex(key)}\\b\\s*=\\s*(['"])(.*?)\\1`, 'i'));
+  return m ? m[2] : null;
+}
+
+function buildEmptyProjectedResult(norm: string): InterceptedResult {
+  const selectMatch = norm.match(/^SELECT\s+(.+?)\s+FROM\s+/i);
+  const selectClause = (selectMatch ? selectMatch[1] : '').trim();
+  if (!selectClause) {
+    const r = emptyResult(['result']);
+    return { type: 'intercepted', ...r };
+  }
+  if (selectClause === '*') {
+    const r = emptyResult([]);
+    return { type: 'intercepted', ...r };
+  }
+  const expressions = splitSelectExpressions(selectClause);
+  const columns = expressions.map(expr => buildColumnDefinition(parseColumnExpr(expr).columnName));
+  return { type: 'intercepted', columns, rows: [] };
+}
+
+function rewriteForDuckDB(norm: string, currentDatabase: string): string {
+  let rewritten = norm;
+
+  // DuckDB uses double-quoted identifiers; MySQL clients send backticks.
+  rewritten = rewritten.replace(/`([^`]+)`/g, '"$1"');
+
+  // Drop MySQL db qualifier in table references, e.g. "lms"."Activity" -> "Activity".
+  const currentDbEsc = escapeRegex(currentDatabase);
+  rewritten = rewritten.replace(
+    new RegExp(`"${currentDbEsc}"\\s*\\.\\s*"([^"]+)"`, 'gi'),
+    '"$1"',
+  );
+  rewritten = rewritten.replace(
+    new RegExp(`\\b${currentDbEsc}\\b\\s*\\.\\s*([A-Za-z_][\\w$]*)`, 'gi'),
+    '$1',
+  );
+
+  // DuckDB information_schema schema name is "main".
+  rewritten = rewritten.replace(/\bTABLE_SCHEMA\s*=\s*'[^']*'/ig, "TABLE_SCHEMA = 'main'");
+  rewritten = rewritten.replace(/\bROUTINE_SCHEMA\s*=\s*'[^']*'/ig, "ROUTINE_SCHEMA = 'main'");
+
+  return rewritten;
+}
+
 function resolveSchemataValue(valueExpr: string, databaseId: string): string | null {
   const normalized = valueExpr
     .trim()
@@ -303,6 +348,80 @@ export function routeQuery(
     return buildSchemataResult(norm, databases);
   }
 
+  // INFORMATION_SCHEMA.ROUTINES does not exist in DuckDB; return an empty projected result.
+  if (/FROM\s+[`"]?INFORMATION_SCHEMA[`"]?\.[`"]?ROUTINES[`"]?/i.test(norm)) {
+    return buildEmptyProjectedResult(norm);
+  }
+
+  // INFORMATION_SCHEMA.STATISTICS emulation (primary-key columns only).
+  if (/FROM\s+[`"]?INFORMATION_SCHEMA[`"]?\.[`"]?STATISTICS[`"]?/i.test(norm)) {
+    const tableName = extractWhereString(norm, 'table_name');
+    const indexName = extractWhereString(norm, 'index_name');
+    if (
+      tableName &&
+      indexName &&
+      indexName.toUpperCase() === 'PRIMARY' &&
+      /\bCOLUMN_NAME\b/i.test(upper)
+    ) {
+      return {
+        type: 'forward',
+        sql:
+          `SELECT kcu.column_name AS column_name ` +
+          `FROM information_schema.table_constraints tc ` +
+          `JOIN information_schema.key_column_usage kcu ` +
+          `ON tc.constraint_name = kcu.constraint_name ` +
+          `AND tc.table_schema = kcu.table_schema ` +
+          `AND tc.table_name = kcu.table_name ` +
+          `WHERE tc.constraint_type = 'PRIMARY KEY' ` +
+          `AND kcu.table_schema = 'main' ` +
+          `AND kcu.table_name = '${tableName}' ` +
+          `ORDER BY kcu.ordinal_position`,
+      };
+    }
+    return buildEmptyProjectedResult(norm);
+  }
+
+  // INFORMATION_SCHEMA.COLUMNS compatibility aliases expected by MySQL clients.
+  if (/FROM\s+[`"]?INFORMATION_SCHEMA[`"]?\.[`"]?COLUMNS[`"]?/i.test(norm)) {
+    let rewrittenColumnsSql = rewriteForDuckDB(norm, currentDatabase);
+    rewrittenColumnsSql = rewrittenColumnsSql
+      .replace(/\bcolumn_type\b/ig, 'data_type')
+      .replace(/\bcharacter_set_name\b/ig, "''")
+      .replace(/\bcolumn_comment\b/ig, "''")
+      .replace(/\bextra\b/ig, "''");
+    return { type: 'forward', sql: rewrittenColumnsSql };
+  }
+
+  // INFORMATION_SCHEMA.TABLES compatibility columns expected by GUI clients.
+  if (
+    /FROM\s+[`"]?INFORMATION_SCHEMA[`"]?\.[`"]?TABLES[`"]?/i.test(norm) &&
+    /\bTABLE_ROWS\b/i.test(upper)
+  ) {
+    const tableName = extractWhereString(norm, 'table_name');
+    if (tableName) {
+      return { type: 'forward', sql: `SELECT COUNT(*) AS count FROM "${tableName}"` };
+    }
+    const r = singleValueResult('count', '0', 'BIGINT');
+    return { type: 'intercepted', ...r };
+  }
+  if (
+    /FROM\s+[`"]?INFORMATION_SCHEMA[`"]?\.[`"]?TABLES[`"]?/i.test(norm) &&
+    (/\bDATA_LENGTH\b/i.test(upper) || /\bINDEX_LENGTH\b/i.test(upper) || /\bTABLE_COMMENT\b/i.test(upper))
+  ) {
+    const selectMatch = norm.match(/^SELECT\s+(.+?)\s+FROM\s+/i);
+    const selectClause = (selectMatch ? selectMatch[1] : '').trim();
+    const expressions = selectClause ? splitSelectExpressions(selectClause) : [];
+    const parsed = expressions.map(parseColumnExpr);
+    const columns = parsed.map(expr => buildColumnDefinition(expr.columnName));
+    const row = parsed.map(expr => {
+      const valueExpr = expr.valueExpr.toUpperCase();
+      if (valueExpr.includes('DATA_LENGTH') || valueExpr.includes('INDEX_LENGTH')) return '0';
+      if (valueExpr.includes('TABLE_COMMENT')) return '';
+      return null;
+    });
+    return { type: 'intercepted', columns, rows: [row] };
+  }
+
   // -------- Write operations → error --------
   if (
     upper.startsWith('INSERT ') ||
@@ -413,11 +532,11 @@ export function routeQuery(
 
   // EXPLAIN <query> — forward with DuckDB's EXPLAIN
   if (upper.startsWith('EXPLAIN ')) {
-    return { type: 'forward', sql: norm };
+    return { type: 'forward', sql: rewriteForDuckDB(norm, currentDatabase) };
   }
 
   // -------- Category C: Forward to DuckDB --------
-  return { type: 'forward', sql: norm };
+  return { type: 'forward', sql: rewriteForDuckDB(norm, currentDatabase) };
 }
 
 /* ------------------------------------------------------------------ */

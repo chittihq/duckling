@@ -395,7 +395,7 @@ export class MySQLProtocolServer {
 
     // Prepared statements are not yet supported by this protocol adapter.
     conn.on('stmt_prepare', (sql: string) => {
-      logger.warn(
+      logger.debug(
         `MySQL protocol: stmt_prepare not supported ` +
         `(connId=${connectionId}, db=${this.connections.get(connectionId)?.databaseId || 'n/a'}, ` +
         `sql="${compactSqlForLog(sql)}")`,
@@ -409,7 +409,7 @@ export class MySQLProtocolServer {
       } catch (_) { /* ignore */ }
     });
     conn.on('stmt_execute', (stmtId: number, _flags: any, _iterationCount: any, _values: any) => {
-      logger.warn(
+      logger.debug(
         `MySQL protocol: stmt_execute not supported ` +
         `(connId=${connectionId}, stmtId=${String(stmtId)})`,
       );
