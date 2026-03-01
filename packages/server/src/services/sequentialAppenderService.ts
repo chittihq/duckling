@@ -936,6 +936,12 @@ class SequentialAppenderService {
           await this.dropTableIfExists(stagingTable, `post-swap cleanup for ${tableName}`);
         }
 
+        // Force CHECKPOINT to flush WAL and ensure data durability
+        // Use checkpoint() to flush WAL and fail sync if durability checkpoint fails
+        logger.debug(`${tableName}: Running CHECKPOINT to flush WAL...`);
+        await this.duckdb.checkpoint();
+        logger.info(`${tableName}: CHECKPOINT completed, data persisted successfully`);
+
         // Get max ID for watermark (supports both numeric and string IDs)
         const primaryKeyColumn = await this.detectPrimaryKeyColumn(tableName, schema);
         let maxId: string | number | undefined = undefined;
