@@ -96,6 +96,16 @@ class AutomationService {
     return AutomationService.instances.get(databaseId);
   }
 
+  /**
+   * Check if a sync or backup is currently in progress.
+   * Returns null if clear, or a reason string if blocked.
+   */
+  public getSyncBlockReason(): string | null {
+    if (this.isBackupInProgress) return 'backup is currently in progress';
+    if (this.isSyncInProgress) return 'another sync is already in progress';
+    return null;
+  }
+
   public static closeInstance(databaseId: string): void {
     const instance = AutomationService.instances.get(databaseId);
     if (instance) {

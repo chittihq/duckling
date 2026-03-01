@@ -425,15 +425,11 @@ class DuckDBServer {
     try {
       const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
 
-      // Use AutomationService guards if an instance exists to prevent sync/backup overlap
+      // Check overlap guards if automation is running for this database
       const automation = AutomationService.getExistingInstance(databaseId);
-      if (automation) {
-        const result = await automation.performFullSync();
-        if (result === 'skipped') {
-          res.status(409).json({ error: 'Sync skipped: another sync or backup is currently in progress' });
-          return;
-        }
-        res.json({ success: result === 'completed' });
+      const blockReason = automation?.getSyncBlockReason();
+      if (blockReason) {
+        res.status(409).json({ error: `Sync skipped: ${blockReason}` });
         return;
       }
 
@@ -452,15 +448,11 @@ class DuckDBServer {
     try {
       const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
 
-      // Use AutomationService guards if an instance exists to prevent sync/backup overlap
+      // Check overlap guards if automation is running for this database
       const automation = AutomationService.getExistingInstance(databaseId);
-      if (automation) {
-        const result = await automation.performIncrementalSync();
-        if (result === 'skipped') {
-          res.status(409).json({ error: 'Sync skipped: another sync or backup is currently in progress' });
-          return;
-        }
-        res.json({ success: result === 'completed' });
+      const blockReason = automation?.getSyncBlockReason();
+      if (blockReason) {
+        res.status(409).json({ error: `Sync skipped: ${blockReason}` });
         return;
       }
 
