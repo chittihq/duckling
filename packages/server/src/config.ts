@@ -131,6 +131,7 @@ export const config = {
 
   rateLimit: {
     enabled: process.env.RATE_LIMIT_ENABLED !== 'false',
+    mode: process.env.RATE_LIMIT_MODE === 'shadow' ? 'shadow' : 'enforce',
     categories: {
       auth: {
         windowMs: parseInt(process.env.RATE_LIMIT_AUTH_WINDOW_MS || '60000'),
@@ -157,6 +158,23 @@ export const config = {
       anonymous: 1,
       jwt: parseInt(process.env.RATE_LIMIT_JWT_MULTIPLIER || '2'),
       apiKey: parseInt(process.env.RATE_LIMIT_APIKEY_MULTIPLIER || '5'),
+    },
+    costs: {
+      auth: Math.max(1, parseInt(process.env.RATE_LIMIT_COST_AUTH || '1')),
+      read: Math.max(1, parseInt(process.env.RATE_LIMIT_COST_READ || '1')),
+      query: Math.max(1, parseInt(process.env.RATE_LIMIT_COST_QUERY || '5')),
+      write: Math.max(1, parseInt(process.env.RATE_LIMIT_COST_WRITE || '3')),
+      monitoring: Math.max(1, parseInt(process.env.RATE_LIMIT_COST_MONITORING || '1')),
+    },
+    identity: {
+      useSessionScope: process.env.RATE_LIMIT_USE_SESSION_SCOPE !== 'false',
+      includeDatabaseScope: process.env.RATE_LIMIT_INCLUDE_DB_SCOPE === 'true',
+    },
+    queryConcurrency: {
+      enabled: process.env.RATE_LIMIT_QUERY_CONCURRENCY_ENABLED !== 'false',
+      anonymousMaxInFlight: Math.max(1, parseInt(process.env.RATE_LIMIT_ANON_QUERY_MAX_IN_FLIGHT || '1')),
+      jwtMaxInFlight: Math.max(1, parseInt(process.env.RATE_LIMIT_JWT_QUERY_MAX_IN_FLIGHT || '2')),
+      apiKeyMaxInFlight: Math.max(1, parseInt(process.env.RATE_LIMIT_APIKEY_QUERY_MAX_IN_FLIGHT || '8')),
     },
     cleanupIntervalMs: parseInt(process.env.RATE_LIMIT_CLEANUP_INTERVAL_MS || '60000'),
   }

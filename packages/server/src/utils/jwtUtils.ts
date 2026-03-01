@@ -1,9 +1,11 @@
 import jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
 import config from '../config';
 import logger from '../logger';
 
 export interface JwtPayload {
   username: string;
+  jti?: string;
   iat?: number;
   exp?: number;
 }
@@ -13,7 +15,7 @@ export interface JwtPayload {
  */
 export function generateToken(username: string): string {
   try {
-    const payload: JwtPayload = { username };
+    const payload: JwtPayload = { username, jti: randomUUID() };
     const token = jwt.sign(
       payload,
       config.auth.jwtSecret,

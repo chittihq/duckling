@@ -8,6 +8,9 @@ declare global {
     interface Request {
       user?: {
         username: string;
+        jti?: string;
+        authMethod?: 'jwt' | 'apiKey';
+        apiKeyId?: string;
       };
     }
   }
@@ -41,7 +44,7 @@ export const verifyJWT = (req: Request, res: Response, next: NextFunction): void
   }
 
   // Attach user info to request
-  req.user = { username: decoded.username };
+  req.user = { username: decoded.username, jti: decoded.jti, authMethod: 'jwt' };
   next();
 };
 
@@ -65,7 +68,7 @@ export const requireAuth = (req: Request, res: Response, next: NextFunction): vo
 
   // Check if it's an API key
   if (config.auth.apiKey && token === config.auth.apiKey) {
-    req.user = { username: 'api-key-user' };
+    req.user = { username: 'api-key-user', authMethod: 'apiKey' };
     next();
     return;
   }
@@ -73,7 +76,7 @@ export const requireAuth = (req: Request, res: Response, next: NextFunction): vo
   // Try JWT verification
   const decoded = verifyToken(token);
   if (decoded) {
-    req.user = { username: decoded.username };
+    req.user = { username: decoded.username, jti: decoded.jti, authMethod: 'jwt' };
     next();
     return;
   }

@@ -4,6 +4,7 @@ import cors from 'cors';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as http from 'http';
+import * as crypto from 'crypto';
 import DuckDBConnection from './database/duckdb';
 import MySQLConnection from './database/mysql';
 import SequentialAppenderService from './services/sequentialAppenderService';
@@ -71,6 +72,9 @@ declare global {
     interface Request {
       user?: {
         username: string;
+        jti?: string;
+        authMethod?: 'jwt' | 'apiKey';
+        apiKeyId?: string;
       };
     }
   }
@@ -158,7 +162,8 @@ class DuckDBServer {
 
     // Try API key first (exact match)
     if (config.auth.apiKey && token === config.auth.apiKey) {
-      req.user = { username: 'api-key-user' };
+      const apiKeyId = crypto.createHash('sha256').update(token).digest('hex').slice(0, 12);
+      req.user = { username: 'api-key-user', authMethod: 'apiKey', apiKeyId };
       next();
       return;
     }
@@ -166,7 +171,7 @@ class DuckDBServer {
     // Try JWT verification
     const decoded = verifyToken(token);
     if (decoded) {
-      req.user = { username: decoded.username };
+      req.user = { username: decoded.username, jti: decoded.jti, authMethod: 'jwt' };
       next();
       return;
     }

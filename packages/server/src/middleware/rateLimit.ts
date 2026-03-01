@@ -2,34 +2,70 @@ import { Request, Response, NextFunction } from 'express';
 import config from '../config';
 import logger from '../logger';
 
-// --- Types ---
-
 type RateLimitCategory = 'auth' | 'read' | 'query' | 'write' | 'monitoring';
 type ClientTier = 'anonymous' | 'jwt' | 'apiKey';
+type RateLimitMode = 'shadow' | 'enforce';
 
 interface RateLimitBucket {
-  currentCount: number;
-  previousCount: number;
+  currentCost: number;
+  previousCost: number;
   windowStart: number;
 }
 
 interface RateLimitResult {
   limited: boolean;
+  wouldLimit: boolean;
+  shadow: boolean;
   limit: number;
+  used: number;
   remaining: number;
-  resetAt: number;    // Unix timestamp (seconds)
+  resetAt: number;
   retryAfterSec: number;
+  cost: number;
 }
 
-// --- In-memory store ---
+interface QueryConcurrencyResult {
+  limited: boolean;
+  shadow: boolean;
+  maxInFlight: number;
+  inFlight: number;
+  release: () => void;
+}
 
 const store = new Map<string, RateLimitBucket>();
+const queryInFlightStore = new Map<string, number>();
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+function getRateLimitMode(): RateLimitMode {
+  return config.rateLimit.mode === 'shadow' ? 'shadow' : 'enforce';
+}
+
+function sanitizeKeyPart(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'unknown';
+}
+
+function getRequestDatabaseScope(req: Request): string | null {
+  if (!config.rateLimit.identity.includeDatabaseScope) {
+    return null;
+  }
+
+  const queryDb = typeof req.query?.db === 'string' ? req.query.db : null;
+  const paramDb = typeof req.params?.id === 'string' ? req.params.id : null;
+  const headerDb = typeof req.headers['x-database-id'] === 'string' ? req.headers['x-database-id'] : null;
+  const db = queryDb || paramDb || headerDb;
+  if (!db) {
+    return null;
+  }
+  return sanitizeKeyPart(db);
+}
+
+function getClientIp(req: Request): string {
+  return (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
+}
 
 // --- Endpoint classification ---
 
 export function classifyEndpoint(method: string, path: string): RateLimitCategory | null {
-  // Exempt paths
   if (
     path.startsWith('/_nuxt/') ||
     path === '/openapi.json' ||
@@ -49,7 +85,6 @@ export function classifyEndpoint(method: string, path: string): RateLimitCategor
 
   const upperMethod = method.toUpperCase();
 
-  // Auth endpoints
   if (
     path === '/api/login' ||
     path === '/api/logout' ||
@@ -58,7 +93,6 @@ export function classifyEndpoint(method: string, path: string): RateLimitCategor
     return 'auth';
   }
 
-  // Monitoring endpoints
   if (
     path === '/health' ||
     path === '/status' ||
@@ -67,7 +101,6 @@ export function classifyEndpoint(method: string, path: string): RateLimitCategor
     return 'monitoring';
   }
 
-  // Query endpoints (POST only)
   if (
     upperMethod === 'POST' &&
     (path === '/api/query' || path === '/api/validation/table-details')
@@ -75,7 +108,6 @@ export function classifyEndpoint(method: string, path: string): RateLimitCategor
     return 'query';
   }
 
-  // Read endpoints (GET requests to data paths)
   if (upperMethod === 'GET') {
     if (
       path.startsWith('/api/tables') ||
@@ -92,7 +124,6 @@ export function classifyEndpoint(method: string, path: string): RateLimitCategor
     }
   }
 
-  // Write endpoints (POST/PUT/DELETE to mutating paths)
   if (upperMethod === 'POST' || upperMethod === 'PUT' || upperMethod === 'DELETE') {
     if (
       path.startsWith('/sync/') ||
@@ -106,86 +137,167 @@ export function classifyEndpoint(method: string, path: string): RateLimitCategor
     }
   }
 
-  // Not rate-limited (SPA catch-all, unknown routes)
   return null;
 }
 
 // --- Client identification ---
 
 export function identifyClient(req: Request): { key: string; tier: ClientTier } {
-  // If user is authenticated, use identity-based key
+  let key: string;
+  let tier: ClientTier;
+
   if (req.user?.username) {
-    const tier: ClientTier = req.user.username === 'api-key-user' ? 'apiKey' : 'jwt';
-    return { key: `user:${req.user.username}`, tier };
+    if (req.user.authMethod === 'apiKey' || req.user.username === 'api-key-user') {
+      const apiKeyId = sanitizeKeyPart(req.user.apiKeyId || 'default');
+      key = `apiKey:${apiKeyId}`;
+      tier = 'apiKey';
+    } else {
+      const username = sanitizeKeyPart(req.user.username);
+      const sessionScope = config.rateLimit.identity.useSessionScope
+        ? `:session:${sanitizeKeyPart(req.user.jti || 'legacy')}`
+        : '';
+      key = `user:${username}${sessionScope}`;
+      tier = 'jwt';
+    }
+  } else {
+    key = `ip:${sanitizeKeyPart(getClientIp(req))}`;
+    tier = 'anonymous';
   }
 
-  // Fall back to IP-based key
-  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
-  return { key: `ip:${ip}`, tier: 'anonymous' };
+  const dbScope = getRequestDatabaseScope(req);
+  if (dbScope) {
+    key = `${key}:db:${dbScope}`;
+  }
+
+  return { key, tier };
 }
 
-// --- Sliding window counter ---
+function resolveRequestCost(category: RateLimitCategory, req: Request): number {
+  let cost = config.rateLimit.costs[category] || 1;
 
-export function checkRateLimit(clientKey: string, category: RateLimitCategory, tier: ClientTier): RateLimitResult {
+  if (category === 'query') {
+    const sql = typeof req.body?.sql === 'string' ? req.body.sql : '';
+    if (sql.length > 5000) {
+      cost += 2;
+    } else if (sql.length > 2000) {
+      cost += 1;
+    }
+  }
+
+  return Math.max(1, cost);
+}
+
+// --- Sliding window with weighted costs ---
+
+export function checkRateLimit(
+  clientKey: string,
+  category: RateLimitCategory,
+  tier: ClientTier,
+  cost: number,
+  now: number = Date.now()
+): RateLimitResult {
   const categoryConfig = config.rateLimit.categories[category];
   const windowMs = categoryConfig.windowMs;
   const baseMax = categoryConfig.maxRequests;
   const multiplier = config.rateLimit.tiers[tier];
-  const limit = Math.floor(baseMax * multiplier);
-
-  const now = Date.now();
+  const limit = Math.max(1, Math.floor(baseMax * multiplier));
+  const mode = getRateLimitMode();
   const bucketKey = `${clientKey}:${category}`;
 
   let bucket = store.get(bucketKey);
-
   if (!bucket) {
-    bucket = { currentCount: 0, previousCount: 0, windowStart: now };
+    bucket = { currentCost: 0, previousCost: 0, windowStart: now };
     store.set(bucketKey, bucket);
   }
 
-  // Check if we've moved into a new window
   const elapsed = now - bucket.windowStart;
-
   if (elapsed >= windowMs * 2) {
-    // More than 2 windows have passed — reset completely
-    bucket.previousCount = 0;
-    bucket.currentCount = 0;
+    bucket.previousCost = 0;
+    bucket.currentCost = 0;
     bucket.windowStart = now;
   } else if (elapsed >= windowMs) {
-    // Rolled into a new window
-    bucket.previousCount = bucket.currentCount;
-    bucket.currentCount = 0;
+    bucket.previousCost = bucket.currentCost;
+    bucket.currentCost = 0;
     bucket.windowStart = bucket.windowStart + windowMs;
   }
 
-  // Interpolated effective count
   const elapsedInWindow = now - bucket.windowStart;
-  const elapsedFraction = elapsedInWindow / windowMs;
-  const effectiveCount = bucket.previousCount * (1 - elapsedFraction) + bucket.currentCount;
+  const elapsedFraction = Math.max(0, Math.min(1, elapsedInWindow / windowMs));
+  const effectiveCost = bucket.previousCost * (1 - elapsedFraction) + bucket.currentCost;
+  const projectedCost = effectiveCost + cost;
+  const wouldLimit = projectedCost > limit;
 
+  const shouldCount = !wouldLimit || mode === 'shadow';
+  if (shouldCount) {
+    bucket.currentCost += cost;
+  }
+
+  const used = shouldCount ? projectedCost : effectiveCost;
+  const remaining = Math.max(0, Math.floor(limit - used));
   const resetAt = Math.ceil((bucket.windowStart + windowMs) / 1000);
-  const remaining = Math.max(0, Math.floor(limit - effectiveCount));
+  const retryAfterSec = Math.max(1, Math.ceil((bucket.windowStart + windowMs - now) / 1000));
 
-  if (effectiveCount >= limit) {
-    const retryAfterSec = Math.ceil((bucket.windowStart + windowMs - now) / 1000);
+  return {
+    limited: mode === 'enforce' && wouldLimit,
+    wouldLimit,
+    shadow: mode === 'shadow' && wouldLimit,
+    limit,
+    used,
+    remaining,
+    resetAt,
+    retryAfterSec,
+    cost,
+  };
+}
+
+function getQueryConcurrencyLimit(tier: ClientTier): number {
+  if (tier === 'apiKey') {
+    return config.rateLimit.queryConcurrency.apiKeyMaxInFlight;
+  }
+  if (tier === 'jwt') {
+    return config.rateLimit.queryConcurrency.jwtMaxInFlight;
+  }
+  return config.rateLimit.queryConcurrency.anonymousMaxInFlight;
+}
+
+function acquireQueryConcurrencySlot(clientKey: string, tier: ClientTier): QueryConcurrencyResult {
+  const mode = getRateLimitMode();
+  const maxInFlight = getQueryConcurrencyLimit(tier);
+  const key = `${clientKey}:query`;
+  const current = queryInFlightStore.get(key) || 0;
+  const wouldLimit = current >= maxInFlight;
+
+  if (wouldLimit && mode === 'enforce') {
     return {
       limited: true,
-      limit,
-      remaining: 0,
-      resetAt,
-      retryAfterSec: Math.max(1, retryAfterSec),
+      shadow: false,
+      maxInFlight,
+      inFlight: current,
+      release: () => {},
     };
   }
 
-  // Allow the request — increment current window
-  bucket.currentCount++;
+  queryInFlightStore.set(key, current + 1);
+  let released = false;
+  const release = () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    const next = (queryInFlightStore.get(key) || 1) - 1;
+    if (next <= 0) {
+      queryInFlightStore.delete(key);
+    } else {
+      queryInFlightStore.set(key, next);
+    }
+  };
 
   return {
-    limited: false,
-    limit,
-    remaining: Math.max(0, remaining - 1),
-    resetAt,
-    retryAfterSec: 0,
+    limited: mode === 'enforce' && wouldLimit,
+    shadow: mode === 'shadow' && wouldLimit,
+    maxInFlight,
+    inFlight: current + 1,
+    release,
   };
 }
 
@@ -195,12 +307,40 @@ export function setRateLimitHeaders(res: Response, info: RateLimitResult): void 
   res.setHeader('X-RateLimit-Limit', info.limit);
   res.setHeader('X-RateLimit-Remaining', info.remaining);
   res.setHeader('X-RateLimit-Reset', info.resetAt);
+  res.setHeader('X-RateLimit-Cost', info.cost);
+
+  // RFC-style headers for clients that support them
+  res.setHeader('RateLimit-Limit', info.limit);
+  res.setHeader('RateLimit-Remaining', info.remaining);
+  res.setHeader('RateLimit-Reset', info.resetAt);
+
+  if (info.shadow) {
+    res.setHeader('X-RateLimit-Shadow-Would-Block', 'true');
+  }
+
   if (info.limited) {
     res.setHeader('Retry-After', info.retryAfterSec);
   }
 }
 
-// --- Pre-auth middleware (IP-based, for auth + monitoring) ---
+function send429(
+  res: Response,
+  result: RateLimitResult,
+  category: RateLimitCategory,
+  extra: Record<string, unknown> = {}
+): void {
+  res.status(429).json({
+    error: 'Too Many Requests',
+    message: `Rate limit exceeded. Try again in ${result.retryAfterSec} seconds.`,
+    retryAfter: result.retryAfterSec,
+    limit: result.limit,
+    category,
+    cost: result.cost,
+    ...extra,
+  });
+}
+
+// --- Pre-auth middleware ---
 
 export function preAuthRateLimiter(req: Request, res: Response, next: NextFunction): void {
   if (!config.rateLimit.enabled) {
@@ -209,42 +349,35 @@ export function preAuthRateLimiter(req: Request, res: Response, next: NextFuncti
   }
 
   const category = classifyEndpoint(req.method, req.path);
-
-  // Only handle auth and monitoring here (IP-based, before auth runs)
   if (category !== 'auth' && category !== 'monitoring') {
     next();
     return;
   }
 
-  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
-  const clientKey = `ip:${ip}`;
-
-  // For pre-auth, always use anonymous tier
-  const result = checkRateLimit(clientKey, category, 'anonymous');
+  const clientKey = `ip:${sanitizeKeyPart(getClientIp(req))}`;
+  const cost = resolveRequestCost(category, req);
+  const result = checkRateLimit(clientKey, category, 'anonymous', cost);
   setRateLimitHeaders(res, result);
 
-  if (result.limited) {
-    logger.warn(`Rate limit exceeded: ${clientKey} on ${category}`, {
-      ip,
+  if (result.wouldLimit) {
+    logger.warn(`Rate limit threshold reached: ${clientKey} on ${category}`, {
       path: req.path,
       category,
       limit: result.limit,
+      mode: getRateLimitMode(),
+      shadow: result.shadow,
     });
+  }
 
-    res.status(429).json({
-      error: 'Too Many Requests',
-      message: `Rate limit exceeded. Try again in ${result.retryAfterSec} seconds.`,
-      retryAfter: result.retryAfterSec,
-      limit: result.limit,
-      category,
-    });
+  if (result.limited) {
+    send429(res, result, category);
     return;
   }
 
   next();
 }
 
-// --- Post-auth middleware (identity-based, for read/query/write) ---
+// --- Post-auth middleware ---
 
 export function postAuthRateLimiter(req: Request, res: Response, next: NextFunction): void {
   if (!config.rateLimit.enabled) {
@@ -253,41 +386,74 @@ export function postAuthRateLimiter(req: Request, res: Response, next: NextFunct
   }
 
   const category = classifyEndpoint(req.method, req.path);
-
-  // Skip categories already handled by preAuth, and exempt routes
   if (!category || category === 'auth' || category === 'monitoring') {
     next();
     return;
   }
 
   const { key, tier } = identifyClient(req);
-  const result = checkRateLimit(key, category, tier);
+  const cost = resolveRequestCost(category, req);
+  const result = checkRateLimit(key, category, tier, cost);
   setRateLimitHeaders(res, result);
 
-  if (result.limited) {
-    logger.warn(`Rate limit exceeded: ${key} on ${category}`, {
+  if (result.wouldLimit) {
+    logger.warn(`Rate limit threshold reached: ${key} on ${category}`, {
       path: req.path,
       category,
       tier,
       limit: result.limit,
+      mode: getRateLimitMode(),
+      shadow: result.shadow,
     });
+  }
 
-    res.status(429).json({
-      error: 'Too Many Requests',
-      message: `Rate limit exceeded. Try again in ${result.retryAfterSec} seconds.`,
-      retryAfter: result.retryAfterSec,
-      limit: result.limit,
-      category,
-    });
+  if (result.limited) {
+    send429(res, result, category, { tier });
     return;
+  }
+
+  if (category === 'query' && config.rateLimit.queryConcurrency.enabled) {
+    const slot = acquireQueryConcurrencySlot(key, tier);
+    if (slot.shadow) {
+      res.setHeader('X-RateLimit-Shadow-Query-Concurrency-Would-Block', 'true');
+      logger.warn(`Query concurrency threshold reached (shadow): ${key}`, {
+        path: req.path,
+        tier,
+        inFlight: slot.inFlight,
+        limit: slot.maxInFlight,
+      });
+    }
+
+    if (slot.limited) {
+      res.setHeader('Retry-After', 1);
+      res.status(429).json({
+        error: 'Too Many Requests',
+        message: 'Too many concurrent queries. Please retry shortly.',
+        category: 'query',
+        concurrencyLimit: slot.maxInFlight,
+      });
+      return;
+    }
+
+    const release = () => {
+      slot.release();
+      res.off('finish', release);
+      res.off('close', release);
+    };
+    res.on('finish', release);
+    res.on('close', release);
   }
 
   next();
 }
 
-// --- Cleanup stale entries ---
+// --- Cleanup ---
 
 export function startRateLimitCleanup(): void {
+  if (cleanupTimer) {
+    return;
+  }
+
   const intervalMs = config.rateLimit.cleanupIntervalMs;
 
   cleanupTimer = setInterval(() => {
@@ -295,13 +461,9 @@ export function startRateLimitCleanup(): void {
     let removed = 0;
 
     for (const [key, bucket] of store) {
-      // Determine the window size from the category embedded in the key
-      // Key format: "ip:xxx:category" or "user:xxx:category"
       const category = key.split(':').pop() as RateLimitCategory;
       const categoryConfig = config.rateLimit.categories[category];
       const windowMs = categoryConfig?.windowMs ?? 60000;
-
-      // Remove if older than 2 full windows
       if (now - bucket.windowStart > windowMs * 2) {
         store.delete(key);
         removed++;
@@ -320,4 +482,11 @@ export function stopRateLimitCleanup(): void {
     cleanupTimer = null;
   }
   store.clear();
+  queryInFlightStore.clear();
+}
+
+// Test helper
+export function __resetRateLimitStateForTests(): void {
+  store.clear();
+  queryInFlightStore.clear();
 }
