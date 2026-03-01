@@ -125,3 +125,65 @@ describe('s3BackupService downloadAndDecrypt', () => {
     expect(fs.readFileSync(targetPath)).toEqual(plaintext);
   });
 });
+
+describe('s3BackupService downloadBackup (public API)', () => {
+  test('downloads encrypted backup and restores plaintext when .mac matches', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'duckling-s3-test-'));
+    tempDirs.push(dir);
+    const targetPath = path.join(dir, 'restore.db');
+    const plaintext = Buffer.from('public-api restore content');
+    const { payload, mac } = createEncryptedPayload(plaintext, s3Config.encryptionKey);
+    const backupKey = 'db/public-backup.db';
+
+    const fakeClient = {
+      send: vi.fn(async (command: any) => {
+        if (command.input.Key === backupKey) {
+          return { Body: Readable.from([payload]) };
+        }
+        if (command.input.Key === `${backupKey}.mac`) {
+          return { Body: Readable.from([mac]) };
+        }
+        throw new Error(`Unexpected key: ${command.input.Key}`);
+      }),
+    };
+
+    vi.spyOn(s3BackupService as any, 'getClient').mockReturnValue(fakeClient);
+
+    await s3BackupService.downloadBackup(backupKey, targetPath, s3Config as any);
+
+    expect(fs.readFileSync(targetPath)).toEqual(plaintext);
+    expect(fakeClient.send).toHaveBeenCalledTimes(2);
+  });
+
+  test('rejects public restore when .mac companion is missing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'duckling-s3-test-'));
+    tempDirs.push(dir);
+    const targetPath = path.join(dir, 'restore.db');
+    const { payload } = createEncryptedPayload(Buffer.from('missing-mac-content'), s3Config.encryptionKey);
+    const backupKey = 'db/public-backup.db';
+
+    const fakeClient = {
+      send: vi.fn(async (command: any) => {
+        if (command.input.Key === backupKey) {
+          return { Body: Readable.from([payload]) };
+        }
+        if (command.input.Key === `${backupKey}.mac`) {
+          const err: any = new Error('NoSuchKey');
+          err.name = 'NoSuchKey';
+          throw err;
+        }
+        throw new Error(`Unexpected key: ${command.input.Key}`);
+      }),
+    };
+
+    vi.spyOn(s3BackupService as any, 'getClient').mockReturnValue(fakeClient);
+
+    await expect(
+      s3BackupService.downloadBackup(backupKey, targetPath, s3Config as any)
+    ).rejects.toThrow('Missing HMAC companion');
+
+    expect(fs.existsSync(targetPath)).toBe(false);
+    expect(fs.existsSync(`${targetPath}.tmp`)).toBe(false);
+    expect(fs.existsSync(`${targetPath}.enc`)).toBe(false);
+  });
+});
