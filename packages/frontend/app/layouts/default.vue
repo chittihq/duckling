@@ -227,8 +227,9 @@ const handleLogout = async () => {
 
 const formatRelative = (value: string | null) => {
   if (!value) return 'never'
-  const target = new Date(value).getTime()
-  if (Number.isNaN(target)) return 'unknown'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'unknown'
+  const target = date.getTime()
   const diffMs = target - Date.now()
   const absMinutes = Math.max(1, Math.round(Math.abs(diffMs) / 60000))
   if (diffMs >= 0) return `${absMinutes}m`

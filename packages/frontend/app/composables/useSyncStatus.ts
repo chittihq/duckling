@@ -111,7 +111,7 @@ export function useSyncStatus() {
 
   watch(selectedDatabaseId, () => {
     if (process.client) {
-      refresh()
+      void refresh()
     }
   })
 
