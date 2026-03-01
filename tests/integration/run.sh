@@ -95,9 +95,15 @@ ok "Environment ready"
 log "[2/5] Starting MySQL..."
 docker compose up -d mysql
 echo -n "  Waiting for MySQL health check"
+mysql_wait=0
 until docker compose exec -T mysql mysqladmin ping -h 127.0.0.1 -uroot -prootpass --silent 2>/dev/null; do
   echo -n "."
   sleep 2
+  mysql_wait=$((mysql_wait + 2))
+  if [ "$mysql_wait" -ge "$TIMEOUT_STARTUP" ]; then
+    fail "MySQL failed to start within ${TIMEOUT_STARTUP}s"
+    exit 1
+  fi
 done
 echo ""
 ok "MySQL is ready"
