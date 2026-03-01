@@ -242,6 +242,12 @@ interface ConnectionState {
   idleTimer: ReturnType<typeof setTimeout> | null;
 }
 
+function compactSqlForLog(sql: string, maxLen = 300): string {
+  const compact = sql.replace(/\s+/g, ' ').trim();
+  if (compact.length <= maxLen) return compact;
+  return `${compact.substring(0, maxLen)}...`;
+}
+
 /* ------------------------------------------------------------------ */
 /*  MySQLProtocolServer                                                */
 /* ------------------------------------------------------------------ */
@@ -337,6 +343,8 @@ export class MySQLProtocolServer {
 
   private handleConnection(conn: any): void {
     const connectionId = this.nextConnectionId++;
+    const remote = conn?.stream?.remoteAddress || 'unknown';
+    logger.debug(`MySQL protocol: incoming connection ${connectionId} from ${remote}`);
 
     // Enforce connection limit
     if (this.connections.size >= this.maxConnections) {
@@ -383,6 +391,35 @@ export class MySQLProtocolServer {
     // Query handler
     conn.on('query', (sql: string) => {
       this.handleQuery(conn, connectionId, sql);
+    });
+
+    // Prepared statements are not yet supported by this protocol adapter.
+    conn.on('stmt_prepare', (sql: string) => {
+      logger.warn(
+        `MySQL protocol: stmt_prepare not supported ` +
+        `(connId=${connectionId}, db=${this.connections.get(connectionId)?.databaseId || 'n/a'}, ` +
+        `sql="${compactSqlForLog(sql)}")`,
+      );
+      try {
+        conn.writeError({
+          code: 1295, // ER_UNSUPPORTED_PS
+          message: 'Prepared statements are not supported by Duckling MySQL protocol',
+        });
+        this.resetCommandSequence(conn);
+      } catch (_) { /* ignore */ }
+    });
+    conn.on('stmt_execute', (stmtId: number, _flags: any, _iterationCount: any, _values: any) => {
+      logger.warn(
+        `MySQL protocol: stmt_execute not supported ` +
+        `(connId=${connectionId}, stmtId=${String(stmtId)})`,
+      );
+      try {
+        conn.writeError({
+          code: 1295, // ER_UNSUPPORTED_PS
+          message: 'Prepared statements are not supported by Duckling MySQL protocol',
+        });
+        this.resetCommandSequence(conn);
+      } catch (_) { /* ignore */ }
     });
 
     // USE <database>
@@ -491,8 +528,17 @@ export class MySQLProtocolServer {
     const dbManager = DatabaseConfigManager.getInstance();
     const databases = dbManager.getAllDatabases().map(d => d.id);
 
+    logger.debug(
+      `MySQL protocol query received ` +
+      `(connId=${connectionId}, db=${state.databaseId}, sql="${compactSqlForLog(sql)}")`,
+    );
+
     try {
       const result = routeQuery(sql, connectionId, state.databaseId, state.user, databases);
+      logger.debug(
+        `MySQL protocol query routed ` +
+        `(connId=${connectionId}, db=${state.databaseId}, route=${result.type})`,
+      );
 
       switch (result.type) {
         case 'ok':
@@ -507,10 +553,18 @@ export class MySQLProtocolServer {
 
         case 'intercepted':
           this.writeResultSet(conn, result.columns, result.rows);
+          logger.debug(
+            `MySQL protocol intercepted result ` +
+            `(connId=${connectionId}, cols=${result.columns.length}, rows=${result.rows.length})`,
+          );
           break;
 
         case 'forward':
           await this.executeDuckDBQuery(conn, state, result.sql);
+          logger.debug(
+            `MySQL protocol forwarded query executed ` +
+            `(connId=${connectionId}, db=${state.databaseId})`,
+          );
           break;
       }
     } catch (err: any) {
@@ -545,6 +599,10 @@ export class MySQLProtocolServer {
     const duckdb = DuckDBConnection.getInstance(state.databaseId, resolvedDuckdbPath);
 
     const { rows, columnNames, columnTypes } = await duckdb.executeWithMetadata(sql);
+    logger.debug(
+      `MySQL protocol DuckDB query result ` +
+      `(db=${state.databaseId}, cols=${columnNames.length}, rows=${rows.length}, sql="${compactSqlForLog(sql)}")`,
+    );
 
     // Build MySQL column definitions
     const columns = columnNames.map((name: string, i: number) =>
@@ -565,6 +623,10 @@ export class MySQLProtocolServer {
 
   private handleInitDb(conn: any, connectionId: number, schemaName: string): void {
     this.touchConnection(connectionId);
+    logger.debug(
+      `MySQL protocol init_db requested ` +
+      `(connId=${connectionId}, schema="${schemaName}")`,
+    );
 
     const state = this.connections.get(connectionId);
     if (!state) {

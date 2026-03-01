@@ -75,6 +75,125 @@ function sanitiseIdent(id: string): string | null {
   return clean;
 }
 
+/** Escape regex metacharacters. */
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Convert SQL LIKE pattern to JS RegExp (% => .*, _ => .). */
+function likePatternToRegex(pattern: string): RegExp {
+  let expr = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === '%') {
+      expr += '.*';
+    } else if (ch === '_') {
+      expr += '.';
+    } else {
+      expr += escapeRegex(ch);
+    }
+  }
+  return new RegExp(`^${expr}$`, 'i');
+}
+
+/** Split simple comma-separated SELECT expressions (sufficient for schemata introspection queries). */
+function splitSelectExpressions(selectClause: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let quote: '"' | '\'' | '`' | null = null;
+  for (let i = 0; i < selectClause.length; i++) {
+    const ch = selectClause[i];
+    if ((ch === '"' || ch === '\'' || ch === '`')) {
+      if (quote === ch) {
+        quote = null;
+      } else if (!quote) {
+        quote = ch as '"' | '\'' | '`';
+      }
+      current += ch;
+      continue;
+    }
+    if (ch === ',' && !quote) {
+      if (current.trim()) parts.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+function parseColumnExpr(expr: string): { valueExpr: string; columnName: string } {
+  const trimmed = expr.replace(/^DISTINCT\s+/i, '').trim();
+  const asMatch = trimmed.match(/^(.*?)\s+AS\s+(.+)$/i);
+  if (asMatch) {
+    return { valueExpr: asMatch[1].trim(), columnName: unquoteIdent(asMatch[2].trim()) };
+  }
+  return { valueExpr: trimmed, columnName: unquoteIdent(trimmed) };
+}
+
+function resolveSchemataValue(valueExpr: string, databaseId: string): string | null {
+  const normalized = valueExpr
+    .trim()
+    .replace(/[`"]/g, '')
+    .replace(/^INFORMATION_SCHEMA\./i, '')
+    .replace(/^SCHEMATA\./i, '')
+    .toUpperCase();
+
+  switch (normalized) {
+    case '*':
+      return null;
+    case 'CATALOG_NAME':
+      return 'def';
+    case 'SCHEMA_NAME':
+      return databaseId;
+    case 'DEFAULT_CHARACTER_SET_NAME':
+      return 'utf8mb4';
+    case 'DEFAULT_COLLATION_NAME':
+      return 'utf8mb4_general_ci';
+    case 'SQL_PATH':
+      return null;
+    case 'DEFAULT_ENCRYPTION':
+      return 'NO';
+    default:
+      return null;
+  }
+}
+
+function buildSchemataResult(norm: string, databases: string[]): InterceptedResult {
+  const sortedDatabases = [...databases].sort();
+  const selectMatch = norm.match(/^SELECT\s+(.+?)\s+FROM\s+/i);
+  const selectClause = (selectMatch ? selectMatch[1] : 'SCHEMA_NAME').trim();
+
+  if (selectClause === '*') {
+    const columns = [
+      buildColumnDefinition('CATALOG_NAME'),
+      buildColumnDefinition('SCHEMA_NAME'),
+      buildColumnDefinition('DEFAULT_CHARACTER_SET_NAME'),
+      buildColumnDefinition('DEFAULT_COLLATION_NAME'),
+      buildColumnDefinition('SQL_PATH'),
+      buildColumnDefinition('DEFAULT_ENCRYPTION'),
+    ];
+    const rows = sortedDatabases.map(db => [
+      'def',
+      db,
+      'utf8mb4',
+      'utf8mb4_general_ci',
+      null,
+      'NO',
+    ]);
+    return { type: 'intercepted', columns, rows };
+  }
+
+  const expressions = splitSelectExpressions(selectClause);
+  const parsed = expressions.map(parseColumnExpr);
+  const columns = parsed.map(expr => buildColumnDefinition(expr.columnName));
+  const rows = sortedDatabases.map(db =>
+    parsed.map(expr => resolveSchemataValue(expr.valueExpr, db)),
+  );
+  return { type: 'intercepted', columns, rows };
+}
+
 /* ------------------------------------------------------------------ */
 /*  Router                                                             */
 /* ------------------------------------------------------------------ */
@@ -179,6 +298,11 @@ export function routeQuery(
     return { type: 'intercepted', ...r };
   }
 
+  // INFORMATION_SCHEMA.SCHEMATA introspection (used by some GUI clients)
+  if (/FROM\s+[`"]?INFORMATION_SCHEMA[`"]?\.[`"]?SCHEMATA[`"]?/i.test(norm)) {
+    return buildSchemataResult(norm, databases);
+  }
+
   // -------- Write operations → error --------
   if (
     upper.startsWith('INSERT ') ||
@@ -200,11 +324,15 @@ export function routeQuery(
 
   // -------- Category B: Translate to DuckDB --------
 
-  // SHOW DATABASES
-  if (upper === 'SHOW DATABASES' || upper === 'SHOW SCHEMAS') {
+  // SHOW DATABASES / SHOW SCHEMAS (+ LIKE filter)
+  if (upper.startsWith('SHOW DATABASES') || upper.startsWith('SHOW SCHEMAS')) {
+    const likeMatch = norm.match(/\bLIKE\s+(['"])(.*?)\1/i);
+    const filteredDatabases = likeMatch
+      ? databases.filter(db => likePatternToRegex(likeMatch[2]).test(db))
+      : databases;
     const r = {
       columns: [buildColumnDefinition('Database')],
-      rows: databases.map(db => [db]),
+      rows: filteredDatabases.sort().map(db => [db]),
     };
     return { type: 'intercepted', ...r };
   }
