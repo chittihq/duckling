@@ -96,14 +96,15 @@ function likePatternToRegex(pattern: string): RegExp {
   return new RegExp(`^${expr}$`, 'i');
 }
 
-/** Split simple comma-separated SELECT expressions (sufficient for schemata introspection queries). */
+/** Split comma-separated SELECT expressions, respecting quotes and parentheses. */
 function splitSelectExpressions(selectClause: string): string[] {
   const parts: string[] = [];
   let current = '';
   let quote: '"' | '\'' | '`' | null = null;
+  let parenDepth = 0;
   for (let i = 0; i < selectClause.length; i++) {
     const ch = selectClause[i];
-    if ((ch === '"' || ch === '\'' || ch === '`')) {
+    if ((ch === '"' || ch === '\'' || ch === '`') && parenDepth === 0) {
       if (quote === ch) {
         quote = null;
       } else if (!quote) {
@@ -112,7 +113,11 @@ function splitSelectExpressions(selectClause: string): string[] {
       current += ch;
       continue;
     }
-    if (ch === ',' && !quote) {
+    if (!quote) {
+      if (ch === '(') { parenDepth++; current += ch; continue; }
+      if (ch === ')') { parenDepth = Math.max(0, parenDepth - 1); current += ch; continue; }
+    }
+    if (ch === ',' && !quote && parenDepth === 0) {
       if (current.trim()) parts.push(current.trim());
       current = '';
       continue;
@@ -355,7 +360,7 @@ export function routeQuery(
 
   // INFORMATION_SCHEMA.STATISTICS emulation (primary-key columns only).
   if (/FROM\s+[`"]?INFORMATION_SCHEMA[`"]?\.[`"]?STATISTICS[`"]?/i.test(norm)) {
-    const tableName = extractWhereString(norm, 'table_name');
+    const tableName = sanitiseIdent(extractWhereString(norm, 'table_name') || '');
     const indexName = extractWhereString(norm, 'index_name');
     if (
       tableName &&
@@ -393,33 +398,29 @@ export function routeQuery(
   }
 
   // INFORMATION_SCHEMA.TABLES compatibility columns expected by GUI clients.
-  if (
-    /FROM\s+[`"]?INFORMATION_SCHEMA[`"]?\.[`"]?TABLES[`"]?/i.test(norm) &&
-    /\bTABLE_ROWS\b/i.test(upper)
-  ) {
-    const tableName = extractWhereString(norm, 'table_name');
-    if (tableName) {
-      return { type: 'forward', sql: `SELECT COUNT(*) AS count FROM "${tableName}"` };
+  if (/FROM\s+[`"]?INFORMATION_SCHEMA[`"]?\.[`"]?TABLES[`"]?/i.test(norm)) {
+    if (/\bTABLE_ROWS\b/i.test(upper)) {
+      const tableName = sanitiseIdent(extractWhereString(norm, 'table_name') || '');
+      if (tableName) {
+        return { type: 'forward', sql: `SELECT COUNT(*) AS count FROM "${tableName}"` };
+      }
+      const r = singleValueResult('count', '0', 'BIGINT');
+      return { type: 'intercepted', ...r };
     }
-    const r = singleValueResult('count', '0', 'BIGINT');
-    return { type: 'intercepted', ...r };
-  }
-  if (
-    /FROM\s+[`"]?INFORMATION_SCHEMA[`"]?\.[`"]?TABLES[`"]?/i.test(norm) &&
-    (/\bDATA_LENGTH\b/i.test(upper) || /\bINDEX_LENGTH\b/i.test(upper) || /\bTABLE_COMMENT\b/i.test(upper))
-  ) {
-    const selectMatch = norm.match(/^SELECT\s+(.+?)\s+FROM\s+/i);
-    const selectClause = (selectMatch ? selectMatch[1] : '').trim();
-    const expressions = selectClause ? splitSelectExpressions(selectClause) : [];
-    const parsed = expressions.map(parseColumnExpr);
-    const columns = parsed.map(expr => buildColumnDefinition(expr.columnName));
-    const row = parsed.map(expr => {
-      const valueExpr = expr.valueExpr.toUpperCase();
-      if (valueExpr.includes('DATA_LENGTH') || valueExpr.includes('INDEX_LENGTH')) return '0';
-      if (valueExpr.includes('TABLE_COMMENT')) return '';
-      return null;
-    });
-    return { type: 'intercepted', columns, rows: [row] };
+    if (/\bDATA_LENGTH\b/i.test(upper) || /\bINDEX_LENGTH\b/i.test(upper) || /\bTABLE_COMMENT\b/i.test(upper)) {
+      const selectMatch = norm.match(/^SELECT\s+(.+?)\s+FROM\s+/i);
+      const selectClause = (selectMatch ? selectMatch[1] : '').trim();
+      const expressions = selectClause ? splitSelectExpressions(selectClause) : [];
+      const parsed = expressions.map(parseColumnExpr);
+      const columns = parsed.map(expr => buildColumnDefinition(expr.columnName));
+      const row = parsed.map(expr => {
+        const valueExpr = expr.valueExpr.toUpperCase();
+        if (valueExpr.includes('DATA_LENGTH') || valueExpr.includes('INDEX_LENGTH')) return '0';
+        if (valueExpr.includes('TABLE_COMMENT')) return '';
+        return null;
+      });
+      return { type: 'intercepted', columns, rows: [row] };
+    }
   }
 
   // -------- Write operations → error --------

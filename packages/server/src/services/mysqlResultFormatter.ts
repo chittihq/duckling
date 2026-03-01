@@ -145,14 +145,6 @@ export function buildColumnDefinition(
   };
 }
 
-/**
- * Convert a single DuckDB value to a string suitable for the MySQL text protocol.
- * Returns null for SQL NULL, string for everything else.
- */
-export function formatValue(value: any): string | null {
-  return formatValueByType(value);
-}
-
 function baseDuckDBType(duckdbType?: string): string {
   if (!duckdbType) return '';
   return duckdbType.replace(/\(.*\)/, '').trim().toUpperCase();

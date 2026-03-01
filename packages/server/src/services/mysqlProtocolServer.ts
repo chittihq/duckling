@@ -102,26 +102,11 @@ try {
     try {
       return origFromPacket.call(this, packet);
     } catch (error) {
-      const offset = typeof packet?.offset === 'number'
-        ? packet.offset - payloadStart
-        : null;
-      const remaining = typeof packet?.offset === 'number'
-        ? Math.max(payloadEnd - packet.offset, 0)
-        : null;
-      const nextByte = typeof packet?.offset === 'number' &&
-        packet?.buffer &&
-        packet.offset >= 0 &&
-        packet.offset < packet.buffer.length
-        ? packet.buffer[packet.offset]
-        : null;
-
       logger.error(
         `MySQL protocol handshake parse failure: ` +
         `${error instanceof Error ? error.message : String(error)} ` +
-        `(payloadBytes=${payloadBytes}, offset=${offset ?? 'n/a'}, ` +
-        `remaining=${remaining ?? 'n/a'}, nextByte=${nextByte ?? 'n/a'}, ` +
-        `flags=${flags === null ? 'n/a' : formatCapabilityFlags(flags)}, ` +
-        `sanitizedFlags=${sanitizedFlags === null ? 'n/a' : formatCapabilityFlags(sanitizedFlags)})`,
+        `(payloadBytes=${payloadBytes}, ` +
+        `flags=${flags === null ? 'n/a' : formatCapabilityFlags(flags)})`,
       );
       throw error;
     }
@@ -192,7 +177,6 @@ const CLIENT_LONG_FLAG = 0x00000004;
 const CLIENT_CONNECT_WITH_DB = 0x00000008;
 const CLIENT_NO_SCHEMA = 0x00000010;
 const CLIENT_PROTOCOL_41 = 0x00000200;
-const CLIENT_SSL = 0x00000800;
 const CLIENT_TRANSACTIONS = 0x00002000;
 const CLIENT_SECURE_CONNECTION = 0x00008000;
 const CLIENT_MULTI_RESULTS = 0x00020000;
@@ -214,7 +198,6 @@ function describeCapabilityFlags(flags: number): string[] {
     ['CONNECT_WITH_DB', CLIENT_CONNECT_WITH_DB],
     ['NO_SCHEMA', CLIENT_NO_SCHEMA],
     ['PROTOCOL_41', CLIENT_PROTOCOL_41],
-    ['SSL', CLIENT_SSL],
     ['TRANSACTIONS', CLIENT_TRANSACTIONS],
     ['SECURE_CONNECTION', CLIENT_SECURE_CONNECTION],
     ['MULTI_RESULTS', CLIENT_MULTI_RESULTS],
@@ -349,13 +332,7 @@ export class MySQLProtocolServer {
     // Enforce connection limit
     if (this.connections.size >= this.maxConnections) {
       logger.warn(`MySQL protocol: connection limit reached (${this.maxConnections})`);
-      try {
-        conn.writeError({
-          code: 1040,
-          message: 'Too many connections',
-        });
-        this.resetCommandSequence(conn);
-      } catch (_) { /* ignore */ }
+      this.safeWriteError(conn, 1040, 'Too many connections');
       try { conn.close(); } catch (_) { /* ignore */ }
       return;
     }
@@ -394,32 +371,15 @@ export class MySQLProtocolServer {
     });
 
     // Prepared statements are not yet supported by this protocol adapter.
+    const rejectPreparedStmt = (event: string, detail: string) => {
+      logger.debug(`MySQL protocol: ${event} not supported (connId=${connectionId}, ${detail})`);
+      this.safeWriteError(conn, 1295, 'Prepared statements are not supported by Duckling MySQL protocol');
+    };
     conn.on('stmt_prepare', (sql: string) => {
-      logger.debug(
-        `MySQL protocol: stmt_prepare not supported ` +
-        `(connId=${connectionId}, db=${this.connections.get(connectionId)?.databaseId || 'n/a'}, ` +
-        `sql="${compactSqlForLog(sql)}")`,
-      );
-      try {
-        conn.writeError({
-          code: 1295, // ER_UNSUPPORTED_PS
-          message: 'Prepared statements are not supported by Duckling MySQL protocol',
-        });
-        this.resetCommandSequence(conn);
-      } catch (_) { /* ignore */ }
+      rejectPreparedStmt('stmt_prepare', `db=${this.connections.get(connectionId)?.databaseId || 'n/a'}, sql="${compactSqlForLog(sql)}"`);
     });
-    conn.on('stmt_execute', (stmtId: number, _flags: any, _iterationCount: any, _values: any) => {
-      logger.debug(
-        `MySQL protocol: stmt_execute not supported ` +
-        `(connId=${connectionId}, stmtId=${String(stmtId)})`,
-      );
-      try {
-        conn.writeError({
-          code: 1295, // ER_UNSUPPORTED_PS
-          message: 'Prepared statements are not supported by Duckling MySQL protocol',
-        });
-        this.resetCommandSequence(conn);
-      } catch (_) { /* ignore */ }
+    conn.on('stmt_execute', (stmtId: number) => {
+      rejectPreparedStmt('stmt_execute', `stmtId=${String(stmtId)}`);
     });
 
     // USE <database>
@@ -430,10 +390,7 @@ export class MySQLProtocolServer {
     // PING → OK
     conn.on('ping', () => {
       this.touchConnection(connectionId);
-      try {
-        conn.writeOk();
-        this.resetCommandSequence(conn);
-      } catch (_) { /* ignore */ }
+      this.safeWriteOk(conn);
     });
 
     // Connection closed
@@ -518,10 +475,7 @@ export class MySQLProtocolServer {
 
     const state = this.connections.get(connectionId);
     if (!state) {
-      try {
-        conn.writeError({ code: 1053, message: 'Server shutdown in progress' });
-        this.resetCommandSequence(conn);
-      } catch (_) { /* ignore */ }
+      this.safeWriteError(conn, 1053, 'Server shutdown in progress');
       return;
     }
 
@@ -529,42 +483,27 @@ export class MySQLProtocolServer {
     const databases = dbManager.getAllDatabases().map(d => d.id);
 
     logger.debug(
-      `MySQL protocol query received ` +
-      `(connId=${connectionId}, db=${state.databaseId}, sql="${compactSqlForLog(sql)}")`,
+      `MySQL protocol query (connId=${connectionId}, db=${state.databaseId}, sql="${compactSqlForLog(sql)}")`,
     );
 
     try {
       const result = routeQuery(sql, connectionId, state.databaseId, state.user, databases);
-      logger.debug(
-        `MySQL protocol query routed ` +
-        `(connId=${connectionId}, db=${state.databaseId}, route=${result.type})`,
-      );
 
       switch (result.type) {
         case 'ok':
-          conn.writeOk();
-          this.resetCommandSequence(conn);
+          this.safeWriteOk(conn);
           break;
 
         case 'error':
-          conn.writeError({ code: result.code, message: result.message });
-          this.resetCommandSequence(conn);
+          this.safeWriteError(conn, result.code, result.message);
           break;
 
         case 'intercepted':
           this.writeResultSet(conn, result.columns, result.rows);
-          logger.debug(
-            `MySQL protocol intercepted result ` +
-            `(connId=${connectionId}, cols=${result.columns.length}, rows=${result.rows.length})`,
-          );
           break;
 
         case 'forward':
           await this.executeDuckDBQuery(conn, state, result.sql);
-          logger.debug(
-            `MySQL protocol forwarded query executed ` +
-            `(connId=${connectionId}, db=${state.databaseId})`,
-          );
           break;
       }
     } catch (err: any) {
@@ -572,21 +511,14 @@ export class MySQLProtocolServer {
         sql: sql.substring(0, 200),
         error: err.message,
       });
-      try {
-        conn.writeError({
-          code: 1105, // ER_UNKNOWN_ERROR
-          message: err.message || 'Internal error',
-        });
-        this.resetCommandSequence(conn);
-      } catch (_) { /* ignore */ }
+      this.safeWriteError(conn, 1105, err.message || 'Internal error');
     }
   }
 
   private async executeDuckDBQuery(conn: any, state: ConnectionState, sql: string): Promise<void> {
     const dbConfig = DatabaseConfigManager.getInstance().getDatabase(state.databaseId);
     if (!dbConfig) {
-      conn.writeError({ code: 1049, message: `Unknown database '${state.databaseId}'` });
-      this.resetCommandSequence(conn);
+      this.safeWriteError(conn, 1049, `Unknown database '${state.databaseId}'`);
       return;
     }
 
@@ -599,10 +531,6 @@ export class MySQLProtocolServer {
     const duckdb = DuckDBConnection.getInstance(state.databaseId, resolvedDuckdbPath);
 
     const { rows, columnNames, columnTypes } = await duckdb.executeWithMetadata(sql);
-    logger.debug(
-      `MySQL protocol DuckDB query result ` +
-      `(db=${state.databaseId}, cols=${columnNames.length}, rows=${rows.length}, sql="${compactSqlForLog(sql)}")`,
-    );
 
     // Build MySQL column definitions
     const columns = columnNames.map((name: string, i: number) =>
@@ -623,49 +551,49 @@ export class MySQLProtocolServer {
 
   private handleInitDb(conn: any, connectionId: number, schemaName: string): void {
     this.touchConnection(connectionId);
-    logger.debug(
-      `MySQL protocol init_db requested ` +
-      `(connId=${connectionId}, schema="${schemaName}")`,
-    );
+    logger.debug(`MySQL protocol init_db (connId=${connectionId}, schema="${schemaName}")`);
 
     const state = this.connections.get(connectionId);
     if (!state) {
-      try {
-        conn.writeError({ code: 1053, message: 'Server shutdown in progress' });
-        this.resetCommandSequence(conn);
-      } catch (_) { /* ignore */ }
+      this.safeWriteError(conn, 1053, 'Server shutdown in progress');
       return;
     }
 
     const dbConfig = DatabaseConfigManager.getInstance().getDatabase(schemaName);
     if (!dbConfig) {
-      try {
-        conn.writeError({ code: 1049, message: `Unknown database '${schemaName}'` });
-        this.resetCommandSequence(conn);
-      } catch (_) { /* ignore */ }
+      this.safeWriteError(conn, 1049, `Unknown database '${schemaName}'`);
       return;
     }
 
     state.databaseId = schemaName;
     logger.debug(`MySQL protocol: connection ${connectionId} switched to database '${schemaName}'`);
+    this.safeWriteOk(conn);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  Safe protocol write helpers (always reset sequence after write)  */
+  /* ---------------------------------------------------------------- */
+
+  private safeWriteOk(conn: any): void {
     try {
       conn.writeOk();
       this.resetCommandSequence(conn);
     } catch (_) { /* ignore */ }
   }
 
-  /* ---------------------------------------------------------------- */
-  /*  Result writing helpers                                           */
-  /* ---------------------------------------------------------------- */
+  private safeWriteError(conn: any, code: number, message: string): void {
+    try {
+      conn.writeError({ code, message });
+      this.resetCommandSequence(conn);
+    } catch (_) { /* ignore */ }
+  }
 
   private writeResultSet(
     conn: any,
     columns: MySQLColumnDefinition[],
     rows: (string | null)[][],
   ): void {
-    // Write column definitions
     conn.writeColumns(columns);
-    // Write each row
     for (const row of rows) {
       conn.writeTextRow(row);
     }
@@ -695,11 +623,8 @@ export class MySQLProtocolServer {
     state.idleTimer = setTimeout(() => {
       logger.info(`MySQL protocol: closing idle connection ${connectionId}`);
       this.removeConnection(connectionId);
-      try {
-        conn.writeError({ code: 1205, message: 'Connection idle timeout' });
-        this.resetCommandSequence(conn);
-        conn.close();
-      } catch (_) { /* ignore */ }
+      this.safeWriteError(conn, 1205, 'Connection idle timeout');
+      try { conn.close(); } catch (_) { /* ignore */ }
     }, timeoutMs);
   }
 
