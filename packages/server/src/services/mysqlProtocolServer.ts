@@ -670,3 +670,14 @@ export class MySQLProtocolServer {
 }
 
 export default MySQLProtocolServer;
+
+// Test-only exports for unit testing pure helper functions
+export const __testHelpers = {
+  sha1,
+  xor,
+  doubleSha1,
+  verifyToken,
+  formatCapabilityFlags,
+  describeCapabilityFlags,
+  compactSqlForLog,
+};

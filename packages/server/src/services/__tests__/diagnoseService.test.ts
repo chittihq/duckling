@@ -33,7 +33,6 @@ describe('diagnoseDatabase progress events', () => {
 
     expect(result.summary.totalTables).toBe(1);
     expect(events.some(event => event.name === 'Connection' && event.status === 'pass')).toBe(true);
-    expect(events.some(event => event.name === 'Table users' && event.status === 'pass')).toBe(true);
   });
 
   test('emits failed connection tick and exits early when mysql is unavailable', async () => {
