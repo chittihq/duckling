@@ -541,25 +541,6 @@ class DuckDBConnection {
     }
   }
 
-
-  async logSync(
-    tableName: string,
-    syncType: string,
-    recordsProcessed: number,
-    durationMs: number,
-    status: string,
-    errorMessage?: string
-  ): Promise<void> {
-    try {
-      await this.run(`
-        INSERT INTO sync_log (id, table_name, sync_type, records_processed, duration_ms, status, error_message)
-        VALUES (nextval('sync_log_id_seq'), ?, ?, ?, ?, ?, ?)
-      `, [tableName, syncType, recordsProcessed, durationMs, status, errorMessage || null]);
-    } catch (error) {
-      logger.error('Failed to log sync entry:', error);
-    }
-  }
-
   async getTables(): Promise<string[]> {
     try {
       const result = await this.execute(`
