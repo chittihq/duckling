@@ -50,6 +50,17 @@ export interface TableWatermark {
   updatedAt: Date;
 }
 
+export interface SyncProgressStatus {
+  inProgress: boolean;
+  type: 'full' | 'incremental' | null;
+  tablesCompleted: number;
+  tablesTotal: number;
+  currentTable: string | null;
+  recordsProcessed: number;
+  startedAt: string | null;
+  lastError: string | null;
+}
+
 /**
  * Sequential Appender Service
  *
@@ -69,6 +80,16 @@ class SequentialAppenderService {
   private static instances: Map<string, SequentialAppenderService> = new Map();
   private tableSyncLocks: Set<string> = new Set();
   private syncQueue: Array<{ tableName?: string; resolve: (value: any) => void; reject: (error: any) => void }> = [];
+  private syncProgress: SyncProgressStatus = {
+    inProgress: false,
+    type: null,
+    tablesCompleted: 0,
+    tablesTotal: 0,
+    currentTable: null,
+    recordsProcessed: 0,
+    startedAt: null,
+    lastError: null
+  };
 
   private constructor(mysql: MySQLConnection, duckdb: DuckDBConnection) {
     this.mysql = mysql;
@@ -245,6 +266,10 @@ class SequentialAppenderService {
     return this.tableSyncLocks.has(tableName);
   }
 
+  getSyncProgress(): SyncProgressStatus {
+    return { ...this.syncProgress };
+  }
+
   /**
    * Try to acquire per-table sync lock.
    * Returns false if the table is already being synced.
@@ -298,6 +323,16 @@ class SequentialAppenderService {
     try {
       const tables = await this.mysql.getTables();
       stats.totalTables = tables.length;
+      this.syncProgress = {
+        inProgress: true,
+        type: 'full',
+        tablesCompleted: 0,
+        tablesTotal: tables.length,
+        currentTable: null,
+        recordsProcessed: 0,
+        startedAt: new Date().toISOString(),
+        lastError: null
+      };
 
       // Clean up tables that were deleted from MySQL
       await this.cleanupDeletedTables(tables);
@@ -306,12 +341,16 @@ class SequentialAppenderService {
         // Acquire per-table lock so single-table syncs cannot race this table
         if (!this.tryAcquireTableLock(table)) {
           logger.info(`Skipping table ${table}: sync already in progress`);
+          this.syncProgress.tablesCompleted += 1;
           continue;
         }
         try {
+          this.syncProgress.currentTable = table;
           // Use Appender API for full sync (6-10x faster than INSERT)
           // Falls back to INSERT automatically on any Appender error
           const result = await this.syncTableSequentialWithAppender(table);
+          this.syncProgress.tablesCompleted += 1;
+          this.syncProgress.recordsProcessed += result.recordsProcessed;
 
           if (result.status === 'success') {
             stats.successfulTables++;
@@ -338,7 +377,12 @@ class SequentialAppenderService {
     } catch (error) {
       logger.error('Sequential full sync failed:', error);
       stats.errors.push(error instanceof Error ? error.message : 'Unknown error');
+      this.syncProgress.lastError = error instanceof Error ? error.message : 'Unknown error';
       throw error;
+    } finally {
+      this.syncProgress.inProgress = false;
+      this.syncProgress.currentTable = null;
+      this.syncProgress.type = null;
     }
   }
 
@@ -365,6 +409,16 @@ class SequentialAppenderService {
     try {
       const tables = await this.mysql.getTables();
       stats.totalTables = tables.length;
+      this.syncProgress = {
+        inProgress: true,
+        type: 'incremental',
+        tablesCompleted: 0,
+        tablesTotal: tables.length,
+        currentTable: null,
+        recordsProcessed: 0,
+        startedAt: new Date().toISOString(),
+        lastError: null
+      };
 
       // Clean up tables that were deleted from MySQL
       await this.cleanupDeletedTables(tables);
@@ -374,13 +428,17 @@ class SequentialAppenderService {
         // Acquire per-table lock so single-table syncs cannot race this table
         if (!this.tryAcquireTableLock(table)) {
           logger.info(`[${i + 1}/${tables.length}] Skipping table ${table}: sync already in progress`);
+          this.syncProgress.tablesCompleted += 1;
           continue;
         }
         try {
+          this.syncProgress.currentTable = table;
           // Log table-level progress
           logger.info(`[${i + 1}/${tables.length}] Syncing table: ${table}...`);
 
           const result = await this.syncTableWatermark(table);
+          this.syncProgress.tablesCompleted += 1;
+          this.syncProgress.recordsProcessed += result.recordsProcessed;
 
           if (result.status === 'success') {
             stats.successfulTables++;
@@ -413,7 +471,12 @@ class SequentialAppenderService {
     } catch (error) {
       logger.error('Incremental sync failed:', error);
       stats.errors.push(error instanceof Error ? error.message : 'Unknown error');
+      this.syncProgress.lastError = error instanceof Error ? error.message : 'Unknown error';
       throw error;
+    } finally {
+      this.syncProgress.inProgress = false;
+      this.syncProgress.currentTable = null;
+      this.syncProgress.type = null;
     }
   }
 

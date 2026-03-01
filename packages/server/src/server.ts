@@ -282,6 +282,7 @@ class DuckDBServer {
     this.app.post('/sync/incremental', attachDatabaseContext, this.incrementalSync.bind(this));
     this.app.post('/sync/table/:tableName', attachDatabaseContext, this.syncSingleTable.bind(this));
     this.app.get('/sync/status', attachDatabaseContext, this.getSyncStatus.bind(this));
+    this.app.get('/sync/progress', attachDatabaseContext, this.getSyncProgress.bind(this));
     this.app.get('/sync/validate', attachDatabaseContext, this.validateSync.bind(this));
     this.app.delete('/sync/clear-all', attachDatabaseContext, this.clearAllData.bind(this));
 
@@ -539,6 +540,20 @@ class DuckDBServer {
       res.json(this.serializeBigInt(status));
     } catch (error) {
       logger.error('Get sync status failed:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  private async getSyncProgress(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const progress = syncService.getSyncProgress();
+      res.json(this.serializeBigInt(progress));
+    } catch (error) {
+      logger.error('Get sync progress failed:', error);
       res.status(500).json({
         error: error instanceof Error ? error.message : 'Unknown error'
       });

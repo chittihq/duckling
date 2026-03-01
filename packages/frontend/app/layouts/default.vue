@@ -145,19 +145,51 @@
 
     <!-- Main Content -->
     <main class="flex-1 overflow-hidden flex flex-col">
-      <!-- Database Selector -->
-      <div class="border-b bg-card px-4 py-2 flex items-center gap-3">
-        <span class="text-sm text-muted-foreground">Database:</span>
-        <Select :model-value="selectedDatabaseId" @update:model-value="setDatabase">
-          <SelectTrigger class="w-64">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem v-for="db in databases" :key="db.id" :value="db.id">
-              {{ db.name }}
-            </SelectItem>
-          </SelectContent>
-        </Select>
+      <!-- Database Selector + Sync Status -->
+      <div class="border-b bg-card px-4 py-2 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <span class="text-sm text-muted-foreground">Database:</span>
+          <Select :model-value="selectedDatabaseId" @update:model-value="setDatabase">
+            <SelectTrigger class="w-64">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem v-for="db in databases" :key="db.id" :value="db.id">
+                {{ db.name }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div class="flex items-center gap-2 text-sm">
+          <template v-if="statusType === 'syncing'">
+            <svg class="animate-spin text-primary" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+            </svg>
+            <span>
+              Syncing {{ syncState.tablesProcessed }}/{{ syncState.totalTables }} tables<span v-if="syncState.currentTable"> ({{ syncState.currentTable }})</span>...
+            </span>
+          </template>
+          <template v-else-if="statusType === 'error'">
+            <button type="button" class="flex items-center gap-2 text-destructive" @click="showSyncError = !showSyncError">
+              <span class="h-2 w-2 rounded-full bg-red-500" />
+              <span>Sync failed</span>
+            </button>
+            <span v-if="showSyncError && syncState.lastError" class="text-xs text-muted-foreground max-w-md truncate" :title="syncState.lastError">
+              {{ syncState.lastError }}
+            </span>
+          </template>
+          <template v-else-if="statusType === 'scheduled'">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-muted-foreground">
+              <circle cx="12" cy="12" r="10" />
+              <polyline points="12 6 12 12 16 14" />
+            </svg>
+            <span class="text-muted-foreground">Next sync in {{ formatRelative(syncState.nextSync) }}</span>
+          </template>
+          <template v-else>
+            <span class="h-2 w-2 rounded-full bg-green-500" />
+            <span class="text-muted-foreground">Last sync: {{ formatRelative(syncState.lastSync) }}</span>
+          </template>
+        </div>
       </div>
 
       <!-- Page Content -->
@@ -177,8 +209,10 @@ import { ref } from 'vue'
 const router = useRouter()
 const { username, logout } = useAuth()
 const { selectedDatabaseId, databases, setDatabase, loadDatabases } = useDatabase()
+const { syncState, statusType, startPolling, stopPolling } = useSyncStatus()
 
 const showProfileMenu = ref(false)
+const showSyncError = ref(false)
 
 const userInitials = computed(() => {
   if (!username.value) return 'U'
@@ -189,6 +223,17 @@ const handleLogout = async () => {
   showProfileMenu.value = false
   await logout()
   router.push('/login')
+}
+
+const formatRelative = (value: string | null) => {
+  if (!value) return 'never'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'unknown'
+  const target = date.getTime()
+  const diffMs = target - Date.now()
+  const absMinutes = Math.max(1, Math.round(Math.abs(diffMs) / 60000))
+  if (diffMs >= 0) return `${absMinutes}m`
+  return `${absMinutes}m ago`
 }
 
 // Close dropdown when clicking outside
@@ -202,6 +247,7 @@ const closeProfileMenu = (event: MouseEvent) => {
 // Load databases on mount
 onMounted(() => {
   loadDatabases()
+  startPolling()
 
   // Add click outside listener
   if (process.client) {
@@ -210,6 +256,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  stopPolling()
   if (process.client) {
     document.removeEventListener('click', closeProfileMenu)
   }
