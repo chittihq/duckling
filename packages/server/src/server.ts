@@ -234,6 +234,10 @@ class DuckDBServer {
       ) || req.path === '/health' || req.path === '/status';
 
       if (requiresAuth) {
+        // EventSource cannot send custom headers; accept ?token= for SSE path
+        if (!req.headers.authorization && req.query.token && req.path === '/sync/events') {
+          req.headers.authorization = `Bearer ${req.query.token}`;
+        }
         return this.checkApiKeyOrSession(req, res, next);
       }
 
@@ -285,6 +289,7 @@ class DuckDBServer {
     this.app.get('/sync/progress', attachDatabaseContext, this.getSyncProgress.bind(this));
     this.app.get('/sync/validate', attachDatabaseContext, this.validateSync.bind(this));
     this.app.delete('/sync/clear-all', attachDatabaseContext, this.clearAllData.bind(this));
+    this.app.get('/sync/events', attachDatabaseContext, this.syncEvents.bind(this));
 
     // Automation & Recovery endpoints (with database context)
     this.app.get('/automation/status', attachDatabaseContext, this.getAutomationStatus.bind(this));
@@ -557,6 +562,67 @@ class DuckDBServer {
       res.status(500).json({
         error: error instanceof Error ? error.message : 'Unknown error'
       });
+    }
+  }
+
+  private async syncEvents(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+
+      // SSE headers
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      });
+
+      // Build and send full state (includes async syncStatus from DB)
+      const sendFullState = async () => {
+        const [syncStatus] = await Promise.all([syncService.getSyncStatus()]);
+        const data = JSON.stringify(this.serializeBigInt({
+          progress: syncService.getSyncProgress(),
+          syncStatus,
+          autoStatus: automationService.getStatus()
+        }));
+        res.write(`data: ${data}\n\n`);
+      };
+
+      // Send lightweight progress-only update (no DB query)
+      const sendProgress = () => {
+        const data = JSON.stringify(this.serializeBigInt({
+          progress: syncService.getSyncProgress(),
+          autoStatus: automationService.getStatus()
+        }));
+        res.write(`data: ${data}\n\n`);
+      };
+
+      // Send full state on initial connection
+      await sendFullState();
+
+      // On progress changes, send lightweight update
+      const listener = () => sendProgress();
+      syncService.on('syncProgress', listener);
+
+      // 30s heartbeat to keep connection alive
+      const heartbeat = setInterval(() => {
+        res.write(': heartbeat\n\n');
+      }, 30_000);
+
+      // Cleanup on disconnect
+      req.on('close', () => {
+        syncService.removeListener('syncProgress', listener);
+        clearInterval(heartbeat);
+      });
+    } catch (error) {
+      logger.error('SSE sync events failed:', error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
     }
   }
 

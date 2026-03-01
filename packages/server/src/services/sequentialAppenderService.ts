@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import DuckDBConnection from '../database/duckdb';
 import MySQLConnection from '../database/mysql';
 import config from '../config';
@@ -74,7 +75,7 @@ export interface SyncProgressStatus {
  * - Perfect ordering (records processed in exact MySQL order)
  * - Watermark-based incremental sync (efficient updates)
  */
-class SequentialAppenderService {
+class SequentialAppenderService extends EventEmitter {
   private mysql: MySQLConnection;
   private duckdb: DuckDBConnection;
   private static instances: Map<string, SequentialAppenderService> = new Map();
@@ -92,6 +93,7 @@ class SequentialAppenderService {
   };
 
   private constructor(mysql: MySQLConnection, duckdb: DuckDBConnection) {
+    super();
     this.mysql = mysql;
     this.duckdb = duckdb;
   }
@@ -333,6 +335,7 @@ class SequentialAppenderService {
         startedAt: new Date().toISOString(),
         lastError: null
       };
+      this.emit('syncProgress');
 
       // Clean up tables that were deleted from MySQL
       await this.cleanupDeletedTables(tables);
@@ -342,15 +345,18 @@ class SequentialAppenderService {
         if (!this.tryAcquireTableLock(table)) {
           logger.info(`Skipping table ${table}: sync already in progress`);
           this.syncProgress.tablesCompleted += 1;
+          this.emit('syncProgress');
           continue;
         }
         try {
           this.syncProgress.currentTable = table;
+          this.emit('syncProgress');
           // Use Appender API for full sync (6-10x faster than INSERT)
           // Falls back to INSERT automatically on any Appender error
           const result = await this.syncTableSequentialWithAppender(table);
           this.syncProgress.tablesCompleted += 1;
           this.syncProgress.recordsProcessed += result.recordsProcessed;
+          this.emit('syncProgress');
 
           if (result.status === 'success') {
             stats.successfulTables++;
@@ -378,11 +384,13 @@ class SequentialAppenderService {
       logger.error('Sequential full sync failed:', error);
       stats.errors.push(error instanceof Error ? error.message : 'Unknown error');
       this.syncProgress.lastError = error instanceof Error ? error.message : 'Unknown error';
+      this.emit('syncProgress');
       throw error;
     } finally {
       this.syncProgress.inProgress = false;
       this.syncProgress.currentTable = null;
       this.syncProgress.type = null;
+      this.emit('syncProgress');
     }
   }
 
@@ -419,6 +427,7 @@ class SequentialAppenderService {
         startedAt: new Date().toISOString(),
         lastError: null
       };
+      this.emit('syncProgress');
 
       // Clean up tables that were deleted from MySQL
       await this.cleanupDeletedTables(tables);
@@ -429,16 +438,19 @@ class SequentialAppenderService {
         if (!this.tryAcquireTableLock(table)) {
           logger.info(`[${i + 1}/${tables.length}] Skipping table ${table}: sync already in progress`);
           this.syncProgress.tablesCompleted += 1;
+          this.emit('syncProgress');
           continue;
         }
         try {
           this.syncProgress.currentTable = table;
+          this.emit('syncProgress');
           // Log table-level progress
           logger.info(`[${i + 1}/${tables.length}] Syncing table: ${table}...`);
 
           const result = await this.syncTableWatermark(table);
           this.syncProgress.tablesCompleted += 1;
           this.syncProgress.recordsProcessed += result.recordsProcessed;
+          this.emit('syncProgress');
 
           if (result.status === 'success') {
             stats.successfulTables++;
@@ -472,11 +484,13 @@ class SequentialAppenderService {
       logger.error('Incremental sync failed:', error);
       stats.errors.push(error instanceof Error ? error.message : 'Unknown error');
       this.syncProgress.lastError = error instanceof Error ? error.message : 'Unknown error';
+      this.emit('syncProgress');
       throw error;
     } finally {
       this.syncProgress.inProgress = false;
       this.syncProgress.currentTable = null;
       this.syncProgress.type = null;
+      this.emit('syncProgress');
     }
   }
 
