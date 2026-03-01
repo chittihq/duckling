@@ -124,12 +124,60 @@ describe('SequentialAppenderService full sync transaction safety', () => {
 
     const result = await service.syncTableSequentialWithAppender('users');
     const queries = runMock.mock.calls.map(([query]) => query);
+    const createAppenderTable = duckdb.createAppender.mock.calls[0][0] as string;
 
     expect(result.status).toBe('success');
+    expect(createAppenderTable).toMatch(/^__full_sync_staging_users_[a-f0-9]{32}$/);
     expect(queries).toContain('BEGIN TRANSACTION');
     expect(queries).toContain('COMMIT');
     expect(queries).toContain('DELETE FROM "users"');
-    expect(queries).toContain('INSERT INTO "users" SELECT * FROM "__full_sync_staging_users"');
-    expect(queries).toContain('DROP TABLE IF EXISTS "__full_sync_staging_users"');
+    expect(queries).toContain(`INSERT INTO "users" SELECT * FROM "${createAppenderTable}"`);
+    expect(queries).toContain(`DROP TABLE IF EXISTS "${createAppenderTable}"`);
+  });
+
+  test('does not fail sync when staging cleanup drop fails after commit', async () => {
+    const runMock = vi.fn().mockImplementation(async (query: string) => {
+      if (query.startsWith('DROP TABLE IF EXISTS "__full_sync_staging_users_')) {
+        throw new Error('drop failed');
+      }
+    });
+    const appender = {
+      flushSync: vi.fn(),
+      closeSync: vi.fn(),
+      endRow: vi.fn()
+    };
+    const duckdb: any = {
+      run: runMock,
+      execute: vi.fn().mockResolvedValue([{ max_id: 1 }]),
+      checkpoint: vi.fn().mockResolvedValue(undefined),
+      createAppender: vi.fn().mockResolvedValue({
+        appender,
+        connection: { closeSync: vi.fn() }
+      })
+    };
+    const mysql: any = {
+      getTableRowCountFast: vi.fn().mockResolvedValue(1),
+      streamTableData: vi.fn().mockReturnValue(streamBatches([[{ id: 1, name: 'Alice' }]]))
+    };
+
+    const service = SequentialAppenderService.getInstance('tx-test-appender', mysql, duckdb) as any;
+    vi.spyOn(service, 'getSchemaOrCleanup').mockResolvedValue([
+      { Field: 'id', Type: 'int', Key: 'PRI' },
+      { Field: 'name', Type: 'varchar(255)', Key: '' }
+    ]);
+    vi.spyOn(service, 'ensureTableExists').mockResolvedValue(undefined);
+    vi.spyOn(service, 'createTable').mockResolvedValue(undefined);
+    vi.spyOn(service, 'appendValueByType').mockImplementation(() => undefined);
+    vi.spyOn(service, 'getTableWatermark').mockResolvedValue(undefined);
+    vi.spyOn(service, 'detectPrimaryKeyColumn').mockResolvedValue('id');
+    vi.spyOn(service, 'detectTimestampColumn').mockResolvedValue('updatedAt');
+    vi.spyOn(service, 'updateWatermark').mockResolvedValue(undefined);
+    vi.spyOn(service, 'logSyncOperation').mockResolvedValue(undefined);
+
+    const result = await service.syncTableSequentialWithAppender('users');
+    const queries = runMock.mock.calls.map(([query]) => query);
+
+    expect(result.status).toBe('success');
+    expect(queries).toContain('COMMIT');
   });
 });

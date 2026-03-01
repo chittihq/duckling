@@ -3,6 +3,7 @@ import MySQLConnection from '../database/mysql';
 import config from '../config';
 import logger from '../logger';
 import { DuckDBTimestampValue, DuckDBTimeValue } from '@duckdb/node-api';
+import { randomUUID } from 'crypto';
 // Appender functionality now provided by unified DuckDBConnection class
 
 export interface AppenderSyncResult {
@@ -69,6 +70,26 @@ class SequentialAppenderService {
   /** Double-quote a DuckDB identifier, escaping embedded double-quotes. */
   private q(name: string): string {
     return '"' + name.replace(/"/g, '""') + '"';
+  }
+
+  /** Build a unique staging table name for crash-safe full sync swaps. */
+  private buildStagingTableName(tableName: string): string {
+    const tablePrefix = tableName
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 24) || 'table';
+    return `__full_sync_staging_${tablePrefix}_${randomUUID().replace(/-/g, '')}`;
+  }
+
+  /** Best-effort table cleanup that never masks the original sync outcome. */
+  private async dropTableIfExists(tableName: string, context: string): Promise<void> {
+    try {
+      await this.duckdb.run(`DROP TABLE IF EXISTS ${this.q(tableName)}`);
+    } catch (error) {
+      logger.warn(`Failed to drop ${tableName} during ${context}:`, error);
+    }
   }
 
   static getInstance(databaseId: string, mysql: MySQLConnection, duckdb: DuckDBConnection): SequentialAppenderService {
@@ -603,12 +624,6 @@ class SequentialAppenderService {
 
         logger.info(`${tableName}: columns=${columnCount}, fetchBatchSize=${fetchBatchSize}, insertBatchSize=${insertBatchSize} (max safe: ${maxSafeBatchSize})`);
 
-        // Commit every 50k records to prevent huge WAL file on crash
-        const CHECKPOINT_INTERVAL = 50000;
-        let recordsSinceLastCommit = 0;
-
-        // Start transaction for inserts
-
         for await (const fetchedBatch of this.mysql.streamTableData(tableName, fetchBatchSize)) {
           // Process fetched batch in smaller bulk inserts to avoid stack overflow
           for (let i = 0; i < fetchedBatch.length; i += insertBatchSize) {
@@ -632,13 +647,6 @@ class SequentialAppenderService {
             await this.duckdb.run(bulkInsertQuery, allValues);
 
             recordsProcessed += batch.length;
-            recordsSinceLastCommit += batch.length;
-
-            // Periodic commit to keep WAL file small (prevents slow rollback on crash)
-            if (recordsSinceLastCommit >= CHECKPOINT_INTERVAL) {
-              logger.info(`${tableName}: Checkpoint at ${recordsProcessed.toLocaleString()} records (WAL flushed)`);
-              recordsSinceLastCommit = 0;
-            }
 
             // Log progress for large tables
             if (totalRecords >= PROGRESS_LOG_INTERVAL && recordsProcessed - lastLoggedAt >= PROGRESS_LOG_INTERVAL) {
@@ -781,8 +789,7 @@ class SequentialAppenderService {
       let lastLoggedAt = 0;
       const PROGRESS_LOG_INTERVAL = 10000;
 
-      const stagingTable = `__full_sync_staging_${tableName}`;
-      await this.duckdb.run(`DROP TABLE IF EXISTS ${this.q(stagingTable)}`);
+      const stagingTable = this.buildStagingTableName(tableName);
       await this.createTable(stagingTable, schema);
 
       logger.info(`${tableName}: Starting Appender-based insert into staging table ${stagingTable}`);
@@ -890,7 +897,7 @@ class SequentialAppenderService {
           }
           throw swapError;
         } finally {
-          await this.duckdb.run(`DROP TABLE IF EXISTS ${this.q(stagingTable)}`);
+          await this.dropTableIfExists(stagingTable, `post-swap cleanup for ${tableName}`);
         }
 
         // Get max ID for watermark (supports both numeric and string IDs)
@@ -930,7 +937,7 @@ class SequentialAppenderService {
       } catch (error) {
         if (_appender) { try { _appender.closeSync(); } catch {} }
         if (_conn) { try { _conn.closeSync(); } catch {} }
-        await this.duckdb.run(`DROP TABLE IF EXISTS ${this.q(stagingTable)}`);
+        await this.dropTableIfExists(stagingTable, `error cleanup for ${tableName}`);
         logger.error(`Appender sync failed for ${tableName}, error:`, error);
         throw error;
       }
