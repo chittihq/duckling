@@ -5,6 +5,7 @@ import * as path from 'path';
 import config from '../config';
 import logger from '../logger';
 import QueryMetricsService from '../services/queryMetricsService';
+import { getQueryGovernor, QueryPriority } from '../services/queryGovernor';
 
 export function sanitizeLogParams(params?: any[]): any[] | undefined {
   if (!params) return params;
@@ -435,14 +436,18 @@ class DuckDBConnection {
     }
   }
 
-  async execute(query: string, params?: any[]): Promise<any[]> {
+  async execute(query: string, params?: any[], priority?: QueryPriority): Promise<any[]> {
     await this.ensureInitialized();
+    const governor = getQueryGovernor();
     const metrics = QueryMetricsService.getInstance();
     const id = crypto.randomUUID();
     const start = Date.now();
     metrics.trackStart(id, query, this.databaseId);
     try {
-      const result = await this.executeRaw(query, params, false);
+      const result = await governor.execute(
+        () => this.executeRaw(query, params, false),
+        { sql: query, priority: priority ?? 'normal' }
+      );
       metrics.trackEnd(id, Date.now() - start);
       return result;
     } catch (err: any) {
@@ -481,10 +486,15 @@ class DuckDBConnection {
   /**
    * Execute query for internal operations (sync, etc.)
    * Returns raw arrays without conversion for better memory efficiency
+   * Uses 'high' priority by default since sync operations are critical
    */
-  async executeInternal(query: string, params?: any[]): Promise<any[]> {
+  async executeInternal(query: string, params?: any[], priority?: QueryPriority): Promise<any[]> {
     await this.ensureInitialized();
-    return this.executeRaw(query, params, true); // Skip conversion for performance
+    const governor = getQueryGovernor();
+    return governor.execute(
+      () => this.executeRaw(query, params, true),
+      { sql: query, priority: priority ?? 'high' }
+    );
   }
 
   /**
@@ -549,9 +559,13 @@ class DuckDBConnection {
     }
   }
 
-  async run(query: string, params?: any[]): Promise<void> {
+  async run(query: string, params?: any[], priority?: QueryPriority): Promise<void> {
     await this.ensureInitialized();
-    return this.runRaw(query, params);
+    const governor = getQueryGovernor();
+    return governor.execute(
+      () => this.runRaw(query, params),
+      { sql: query, priority: priority ?? 'high' }
+    );
   }
 
   async testConnection(): Promise<boolean> {
@@ -605,8 +619,8 @@ class DuckDBConnection {
     }
   }
 
-  async query(sql: string, params?: any[]): Promise<any[]> {
-    return this.execute(sql, params);
+  async query(sql: string, params?: any[], priority?: QueryPriority): Promise<any[]> {
+    return this.execute(sql, params, priority);
   }
 
   /**

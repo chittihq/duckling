@@ -114,6 +114,21 @@ export const config = {
     password: process.env.MYSQL_PROTOCOL_PASSWORD || process.env.DUCKLING_API_KEY || '',
   },
 
+  governor: {
+    maxConcurrentQueries: parseInt(process.env.MAX_CONCURRENT_QUERIES || '10'),
+    queryTimeoutMs: parseInt(process.env.QUERY_TIMEOUT_MS || '30000'),
+    queryQueueMax: parseInt(process.env.QUERY_QUEUE_MAX || '50'),
+  },
+
+  workers: {
+    threads: parseInt(process.env.WORKER_THREADS || '0'), // 0 = auto (cpus - 1, min 1)
+  },
+
+  readReplica: {
+    enabled: process.env.READ_REPLICA_ENABLED === 'true',
+    refreshInterval: parseInt(process.env.REPLICA_REFRESH_INTERVAL || '300'),
+  },
+
   rateLimit: {
     enabled: process.env.RATE_LIMIT_ENABLED !== 'false',
     categories: {

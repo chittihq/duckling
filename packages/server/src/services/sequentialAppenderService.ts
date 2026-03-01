@@ -4,6 +4,7 @@ import config from '../config';
 import logger from '../logger';
 import { DuckDBTimestampValue, DuckDBTimeValue } from '@duckdb/node-api';
 import { randomUUID } from 'crypto';
+import { WorkerPool } from '../workers/workerPool';
 // Appender functionality now provided by unified DuckDBConnection class
 
 export class SyncAlreadyInProgressError extends Error {
@@ -700,11 +701,28 @@ class SequentialAppenderService {
             const allPlaceholders = batch.map(() => rowPlaceholders).join(', ');
             const bulkInsertQuery = `INSERT INTO ${this.q(tableName)} (${quotedColumns}) VALUES ${allPlaceholders}`;
 
-            // Flatten all values into single array for bulk insert
-            const allValues: any[] = [];
-            for (const record of batch) {
-              for (const col of columns) {
-                allValues.push(this.sanitizeValue(record[col], columnTypes.get(col) || ''));
+            // Offload sanitization to worker thread pool
+            let allValues: any[];
+            try {
+              const pool = WorkerPool.getInstance();
+              const columnTypesObj: Record<string, string> = {};
+              for (const [k, v] of columnTypes) columnTypesObj[k] = v;
+              const sanitizedRows = await pool.sanitizeBatch(batch, columns, columnTypesObj);
+              // Flatten sanitized rows into single array for bulk insert
+              allValues = [];
+              for (const row of sanitizedRows) {
+                for (const val of row) {
+                  allValues.push(val);
+                }
+              }
+            } catch (workerErr) {
+              // Fallback to main-thread sanitization if worker pool fails
+              logger.warn(`${tableName}: Worker pool sanitization failed, falling back to main thread:`, workerErr);
+              allValues = [];
+              for (const record of batch) {
+                for (const col of columns) {
+                  allValues.push(this.sanitizeValue(record[col], columnTypes.get(col) || ''));
+                }
               }
             }
 
@@ -882,18 +900,33 @@ class SequentialAppenderService {
         logger.info(`${tableName}: fetchBatchSize=${fetchBatchSize}, flushInterval=${FLUSH_INTERVAL}, using Appender API`);
 
         for await (const fetchedBatch of this.mysql.streamTableData(tableName, fetchBatchSize)) {
-          // Append each row using Appender API
-          for (const record of fetchedBatch) {
-            // Append each column value using appropriate method based on MySQL type
-            for (const col of columns) {
-              const value = this.sanitizeValue(record[col], columnTypes.get(col) || '');
-              const mysqlType = columnTypes.get(col) || '';
+          // Offload sanitization to worker thread pool, then append on main thread
+          // (Appender API methods must run on main thread with DuckDB connection)
+          let sanitizedRows: any[][];
+          try {
+            const pool = WorkerPool.getInstance();
+            const columnTypesObj: Record<string, string> = {};
+            for (const [k, v] of columnTypes) columnTypesObj[k] = v;
+            sanitizedRows = await pool.sanitizeBatch(fetchedBatch, columns, columnTypesObj);
+          } catch (workerErr) {
+            // Fallback to main-thread sanitization if worker pool fails
+            logger.warn(`${tableName}: Worker pool sanitization failed, falling back to main thread:`, workerErr);
+            sanitizedRows = fetchedBatch.map(record =>
+              columns.map(col => this.sanitizeValue(record[col], columnTypes.get(col) || ''))
+            );
+          }
 
-              // Append value based on MySQL type
+          // Append each pre-sanitized row using Appender API
+          for (let r = 0; r < sanitizedRows.length; r++) {
+            const sanitizedRow = sanitizedRows[r];
+            for (let c = 0; c < columns.length; c++) {
+              const value = sanitizedRow[c];
+              const mysqlType = columnTypes.get(columns[c]) || '';
+
               try {
                 this.appendValueByType(appender, value, mysqlType);
               } catch (appendErr: any) {
-                logger.error(`Appender column error: table=${tableName} col=${col} mysqlType=${mysqlType} value=${JSON.stringify(value)}: ${appendErr.message}`);
+                logger.error(`Appender column error: table=${tableName} col=${columns[c]} mysqlType=${mysqlType} value=${JSON.stringify(value)}: ${appendErr.message}`);
                 throw appendErr;
               }
             }
@@ -1148,11 +1181,27 @@ class SequentialAppenderService {
             const allPlaceholders = batch.map(() => rowPlaceholders).join(', ');
             const bulkInsertQuery = `INSERT OR REPLACE INTO ${this.q(tableName)} (${columns.map(c => this.q(c)).join(', ')}) VALUES ${allPlaceholders}`;
 
-            // Flatten all values into single array for bulk insert
-            const allValues: any[] = [];
-            for (const record of batch) {
-              for (const col of columns) {
-                allValues.push(this.sanitizeValue(record[col], columnTypes.get(col) || ''));
+            // Offload sanitization to worker thread pool
+            let allValues: any[];
+            try {
+              const pool = WorkerPool.getInstance();
+              const columnTypesObj: Record<string, string> = {};
+              for (const [k, v] of columnTypes) columnTypesObj[k] = v;
+              const sanitizedRows = await pool.sanitizeBatch(batch, columns, columnTypesObj);
+              allValues = [];
+              for (const row of sanitizedRows) {
+                for (const val of row) {
+                  allValues.push(val);
+                }
+              }
+            } catch (workerErr) {
+              // Fallback to main-thread sanitization if worker pool fails
+              logger.warn(`${tableName}: Worker pool sanitization failed (incremental), falling back to main thread:`, workerErr);
+              allValues = [];
+              for (const record of batch) {
+                for (const col of columns) {
+                  allValues.push(this.sanitizeValue(record[col], columnTypes.get(col) || ''));
+                }
               }
             }
 
