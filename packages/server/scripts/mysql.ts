@@ -69,18 +69,45 @@ async function connectWithFallback(cfg: ConnectionConfig): Promise<mysql.Connect
   }
 }
 
+function getQueriesFromArgs(args: string[]): string[] {
+  if (args.length > 0) {
+    return [args.join(' ')];
+  }
+
+  return [
+    'SELECT 1 AS ok',
+    'SELECT DATABASE() AS current_database',
+    'SHOW TABLES',
+  ];
+}
+
+async function executeQuery(connection: mysql.Connection, sql: string): Promise<unknown> {
+  const [rows] = await connection.query(sql);
+  return JSON.parse(
+    JSON.stringify(rows, (_k, value) => (typeof value === 'bigint' ? value.toString() : value))
+  );
+}
+
 async function run(): Promise<void> {
-  const sql = process.argv.slice(2).join(' ') || 'SELECT VERSION() AS version, DATABASE() AS current_database';
+  const queries = getQueriesFromArgs(process.argv.slice(2));
   const cfg = getConnectionConfig();
 
   let connection: mysql.Connection | null = null;
   try {
     connection = await connectWithFallback(cfg);
 
-    const [rows] = await connection.query(sql);
-    const serialized = JSON.parse(
-      JSON.stringify(rows, (_k, value) => (typeof value === 'bigint' ? value.toString() : value))
-    );
+    const results: Array<{ sql: string; rows?: unknown; error?: string }> = [];
+    for (const sql of queries) {
+      try {
+        const rows = await executeQuery(connection, sql);
+        results.push({ sql, rows });
+      } catch (error) {
+        results.push({
+          sql,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     console.log(JSON.stringify({
       connected: true,
@@ -88,8 +115,7 @@ async function run(): Promise<void> {
       port: cfg.port,
       user: cfg.user,
       database: cfg.database ?? null,
-      sql,
-      rows: serialized,
+      results,
     }, null, 2));
   } finally {
     if (connection) {
