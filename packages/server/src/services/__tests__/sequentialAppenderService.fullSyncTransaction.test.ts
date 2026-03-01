@@ -180,4 +180,52 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     expect(result.status).toBe('success');
     expect(queries).toContain('COMMIT');
   });
+
+  test('cleans orphan staging tables left by previous crashes before sync', async () => {
+    const staleTable = '__full_sync_staging_users_deadbeefdeadbeefdeadbeefdeadbeef';
+    const runMock = vi.fn().mockResolvedValue(undefined);
+    const appender = {
+      flushSync: vi.fn(),
+      closeSync: vi.fn(),
+      endRow: vi.fn()
+    };
+    const duckdb: any = {
+      run: runMock,
+      execute: vi.fn().mockImplementation(async (query: string) => {
+        if (query.includes('FROM information_schema.tables')) {
+          return [{ table_name: staleTable }];
+        }
+        return [{ max_id: 1 }];
+      }),
+      checkpoint: vi.fn().mockResolvedValue(undefined),
+      createAppender: vi.fn().mockResolvedValue({
+        appender,
+        connection: { closeSync: vi.fn() }
+      })
+    };
+    const mysql: any = {
+      getTableRowCountFast: vi.fn().mockResolvedValue(1),
+      streamTableData: vi.fn().mockReturnValue(streamBatches([[{ id: 1, name: 'Alice' }]]))
+    };
+
+    const service = SequentialAppenderService.getInstance('tx-test-appender', mysql, duckdb) as any;
+    vi.spyOn(service, 'getSchemaOrCleanup').mockResolvedValue([
+      { Field: 'id', Type: 'int', Key: 'PRI' },
+      { Field: 'name', Type: 'varchar(255)', Key: '' }
+    ]);
+    vi.spyOn(service, 'ensureTableExists').mockResolvedValue(undefined);
+    vi.spyOn(service, 'createTable').mockResolvedValue(undefined);
+    vi.spyOn(service, 'appendValueByType').mockImplementation(() => undefined);
+    vi.spyOn(service, 'getTableWatermark').mockResolvedValue(undefined);
+    vi.spyOn(service, 'detectPrimaryKeyColumn').mockResolvedValue('id');
+    vi.spyOn(service, 'detectTimestampColumn').mockResolvedValue('updatedAt');
+    vi.spyOn(service, 'updateWatermark').mockResolvedValue(undefined);
+    vi.spyOn(service, 'logSyncOperation').mockResolvedValue(undefined);
+
+    const result = await service.syncTableSequentialWithAppender('users');
+    const queries = runMock.mock.calls.map(([query]) => query);
+
+    expect(result.status).toBe('success');
+    expect(queries).toContain(`DROP TABLE IF EXISTS "${staleTable}"`);
+  });
 });

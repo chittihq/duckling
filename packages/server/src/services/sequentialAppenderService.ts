@@ -73,14 +73,19 @@ class SequentialAppenderService {
   }
 
   /** Build a unique staging table name for crash-safe full sync swaps. */
-  private buildStagingTableName(tableName: string): string {
+  private getStagingTablePrefix(tableName: string): string {
     const tablePrefix = tableName
       .toLowerCase()
       .replace(/[^a-z0-9_]/g, '_')
       .replace(/_+/g, '_')
       .replace(/^_+|_+$/g, '')
       .slice(0, 24) || 'table';
-    return `__full_sync_staging_${tablePrefix}_${randomUUID().replace(/-/g, '')}`;
+    return `__full_sync_staging_${tablePrefix}_`;
+  }
+
+  /** Build a unique staging table name for crash-safe full sync swaps. */
+  private buildStagingTableName(tableName: string): string {
+    return `${this.getStagingTablePrefix(tableName)}${randomUUID().replace(/-/g, '')}`;
   }
 
   /** Best-effort table cleanup that never masks the original sync outcome. */
@@ -89,6 +94,37 @@ class SequentialAppenderService {
       await this.duckdb.run(`DROP TABLE IF EXISTS ${this.q(tableName)}`);
     } catch (error) {
       logger.warn(`Failed to drop ${tableName} during ${context}:`, error);
+    }
+  }
+
+  /**
+   * Drop stale staging tables left by previous crashed/aborted full syncs.
+   * Cleanup is table-scoped and best-effort to avoid affecting active sync flow.
+   */
+  private async cleanupOrphanStagingTables(tableName: string): Promise<void> {
+    const stagingPrefix = this.getStagingTablePrefix(tableName);
+
+    try {
+      const rows = await this.duckdb.execute(`
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'main'
+          AND substr(table_name, 1, ${stagingPrefix.length}) = '${stagingPrefix}'
+      `);
+
+      let cleaned = 0;
+      for (const row of rows) {
+        const staleTableName = typeof row?.table_name === 'string' ? row.table_name : null;
+        if (!staleTableName) continue;
+        await this.dropTableIfExists(staleTableName, `orphan staging cleanup for ${tableName}`);
+        cleaned += 1;
+      }
+
+      if (cleaned > 0) {
+        logger.info(`${tableName}: Cleaned ${cleaned} orphan staging table(s) before full sync`);
+      }
+    } catch (error) {
+      logger.warn(`${tableName}: Failed to list orphan staging tables`, error);
     }
   }
 
@@ -789,6 +825,7 @@ class SequentialAppenderService {
       let lastLoggedAt = 0;
       const PROGRESS_LOG_INTERVAL = 10000;
 
+      await this.cleanupOrphanStagingTables(tableName);
       const stagingTable = this.buildStagingTableName(tableName);
       await this.createTable(stagingTable, schema);
 
