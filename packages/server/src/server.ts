@@ -67,6 +67,10 @@ function sendError(res: express.Response, error: unknown): void {
 
 type DatabaseUpdatePayload = Partial<Pick<DatabaseConfig, 'name' | 'mysqlConnectionString'>>;
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
 export function validateDatabaseUpdatePayload(body: unknown): { updates?: DatabaseUpdatePayload; error?: string } {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return { error: 'Request body must be an object' };
@@ -85,14 +89,14 @@ export function validateDatabaseUpdatePayload(body: unknown): { updates?: Databa
   const updates: DatabaseUpdatePayload = {};
 
   if ('name' in payload) {
-    if (typeof payload.name !== 'string' || payload.name.trim().length === 0) {
+    if (!isNonEmptyString(payload.name)) {
       return { error: 'name must be a non-empty string' };
     }
     updates.name = payload.name;
   }
 
   if ('mysqlConnectionString' in payload) {
-    if (typeof payload.mysqlConnectionString !== 'string' || payload.mysqlConnectionString.trim().length === 0) {
+    if (!isNonEmptyString(payload.mysqlConnectionString)) {
       return { error: 'mysqlConnectionString must be a non-empty string' };
     }
     updates.mysqlConnectionString = payload.mysqlConnectionString;
