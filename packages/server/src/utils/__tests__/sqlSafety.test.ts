@@ -23,10 +23,21 @@ describe('isReadOnlyMySQLQuery', () => {
 
   test('rejects multiple statements', () => {
     expect(isReadOnlyMySQLQuery('SELECT 1; DROP TABLE users')).toBe(false);
+    expect(isReadOnlyMySQLQuery('SELECT 1; /* comment */ DROP TABLE users')).toBe(false);
   });
 
   test('allows semicolons in string literals', () => {
     expect(isReadOnlyMySQLQuery("SELECT ';' AS value")).toBe(true);
+  });
+
+  test('allows semicolons in comments and trailing commented semicolon', () => {
+    expect(isReadOnlyMySQLQuery('SELECT 1 /* ; inside comment */')).toBe(true);
+    expect(isReadOnlyMySQLQuery('SELECT 1; -- trailing comment')).toBe(true);
+  });
+
+  test('rejects EXPLAIN ANALYZE', () => {
+    expect(isReadOnlyMySQLQuery('EXPLAIN ANALYZE SELECT 1')).toBe(false);
+    expect(isReadOnlyMySQLQuery('EXPLAIN ANALYZE DELETE FROM users')).toBe(false);
   });
 
   test('rejects cte queries to avoid write-capable WITH statements', () => {
