@@ -819,6 +819,10 @@ class AutomationService {
         maxAttempts: config.automation.maxRestartAttempts,
         lastSuccessfulSync: this.lastSuccessfulSync,
       },
+      sync: {
+        enabled: config.automation.autoStartSync,
+        intervalMinutes: config.sync.intervalMinutes,
+      },
     };
   }
 }

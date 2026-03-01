@@ -16,6 +16,8 @@ describe('SequentialAppenderService lock behavior', () => {
     SequentialAppenderService.closeInstance('lock-test-full');
     SequentialAppenderService.closeInstance('lock-test-incremental');
     SequentialAppenderService.closeInstance('lock-test-race');
+    SequentialAppenderService.closeInstance('lock-test-progress');
+    SequentialAppenderService.closeInstance('lock-test-progress-error');
     vi.restoreAllMocks();
   });
 
@@ -87,5 +89,73 @@ describe('SequentialAppenderService lock behavior', () => {
     expect(syncSpy).toHaveBeenCalledTimes(1);
     expect(stats.successfulTables).toBe(1);
     expect(service.isTableSyncInProgress('users')).toBe(false);
+  });
+
+  test('fullSync exposes in-flight progress and clears it after completion', async () => {
+    const mysql: any = {
+      getTables: vi.fn().mockResolvedValue(['users', 'orders']),
+    };
+    const duckdb: any = {};
+    const service = SequentialAppenderService.getInstance('lock-test-progress', mysql, duckdb) as any;
+
+    vi.spyOn(service, 'cleanupDeletedTables').mockResolvedValue(undefined);
+
+    let releaseFirstTable!: () => void;
+    const firstTableGate = new Promise<void>((resolve) => {
+      releaseFirstTable = resolve;
+    });
+
+    vi
+      .spyOn(service, 'syncTableSequentialWithAppender')
+      .mockImplementation(async (tableName: string) => {
+        if (tableName === 'users') {
+          await firstTableGate;
+        }
+        return successResult(tableName, 5, 'sequential');
+      });
+
+    const syncPromise = service.fullSync();
+    await Promise.resolve();
+
+    expect(service.getSyncProgress()).toMatchObject({
+      inProgress: true,
+      type: 'full',
+      tablesCompleted: 0,
+      tablesTotal: 2,
+      recordsProcessed: 0,
+    });
+
+    releaseFirstTable();
+    await syncPromise;
+
+    expect(service.getSyncProgress()).toMatchObject({
+      inProgress: false,
+      type: null,
+      currentTable: null,
+      tablesCompleted: 2,
+      tablesTotal: 2,
+      recordsProcessed: 10,
+      lastError: null,
+    });
+  });
+
+  test('fullSync stores lastError when sync fails', async () => {
+    const mysql: any = {
+      getTables: vi.fn().mockResolvedValue(['users']),
+    };
+    const duckdb: any = {};
+    const service = SequentialAppenderService.getInstance('lock-test-progress-error', mysql, duckdb) as any;
+
+    vi.spyOn(service, 'cleanupDeletedTables').mockResolvedValue(undefined);
+    vi.spyOn(service, 'syncTableSequentialWithAppender').mockRejectedValue(new Error('progress failure'));
+
+    await expect(service.fullSync()).rejects.toThrow('progress failure');
+
+    expect(service.getSyncProgress()).toMatchObject({
+      inProgress: false,
+      type: null,
+      currentTable: null,
+      lastError: 'progress failure',
+    });
   });
 });
