@@ -308,4 +308,88 @@ describe('AutomationService scheduling guards', () => {
     expect(performIncrementalSyncSpy).toHaveBeenCalledTimes(1);
     expect(syncServiceMock.incrementalSync).not.toHaveBeenCalled();
   });
+
+  test('performFullSyncWithStats returns stats on success and clears in-progress flag', async () => {
+    const syncStats = {
+      successfulTables: 2,
+      totalTables: 2,
+      totalRecords: 25,
+      failedTables: 0,
+      totalDuration: 42,
+      errors: [],
+      syncDetails: {
+        sequential: 2,
+        watermark: 0,
+      },
+    };
+
+    const syncServiceMock = {
+      incrementalSync: vi.fn(),
+      fullSync: vi.fn().mockResolvedValue(syncStats),
+    };
+
+    const duckdbMock = {
+      checkpoint: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const service = AutomationService.getInstance(
+      databaseId,
+      syncServiceMock as any,
+      duckdbMock as any,
+      { query: vi.fn() } as any
+    );
+
+    const result = await (service as any).performFullSyncWithStats();
+
+    expect(result).toEqual({ status: 'completed', stats: syncStats });
+    expect(duckdbMock.checkpoint).toHaveBeenCalledTimes(1);
+    expect((service as any).isSyncInProgress).toBe(false);
+  });
+
+  test('performIncrementalSyncWithStats returns skip reason while backup is in progress', async () => {
+    const syncServiceMock = {
+      incrementalSync: vi.fn(),
+      fullSync: vi.fn(),
+    };
+
+    const service = AutomationService.getInstance(
+      databaseId,
+      syncServiceMock as any,
+      { checkpoint: vi.fn() } as any,
+      { query: vi.fn() } as any
+    );
+
+    (service as any).isBackupInProgress = true;
+    const result = await (service as any).performIncrementalSyncWithStats();
+
+    expect(result).toEqual({
+      status: 'skipped',
+      reason: 'backup is currently in progress',
+    });
+    expect(syncServiceMock.incrementalSync).not.toHaveBeenCalled();
+  });
+
+  test('performIncrementalSyncWithStats maps sync lock contention to skipped', async () => {
+    const syncServiceMock = {
+      incrementalSync: vi.fn().mockRejectedValue(
+        new Error('Another sync operation is already in progress. Please wait for it to complete.')
+      ),
+      fullSync: vi.fn(),
+    };
+
+    const service = AutomationService.getInstance(
+      databaseId,
+      syncServiceMock as any,
+      { checkpoint: vi.fn() } as any,
+      { query: vi.fn() } as any
+    );
+
+    const result = await (service as any).performIncrementalSyncWithStats();
+
+    expect(result).toEqual({
+      status: 'skipped',
+      reason: 'another sync is already in progress',
+    });
+    expect((service as any).isSyncInProgress).toBe(false);
+  });
 });

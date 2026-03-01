@@ -1,6 +1,6 @@
 import config from '../config';
 import logger from '../logger';
-import SequentialAppenderService from './sequentialAppenderService';
+import SequentialAppenderService, { type AppenderSyncStats } from './sequentialAppenderService';
 import DuckDBConnection from '../database/duckdb';
 import MySQLConnection from '../database/mysql';
 import { DatabaseConfigManager, S3Config } from '../database/databaseConfig';
@@ -11,6 +11,11 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
+
+export type GuardedSyncResult =
+  | { status: 'completed'; stats: AppenderSyncStats }
+  | { status: 'skipped'; reason: string }
+  | { status: 'failed'; error: Error };
 
 class AutomationService {
   private static instances: Map<string, AutomationService> = new Map();
@@ -104,6 +109,14 @@ class AutomationService {
     if (this.isBackupInProgress) return 'backup is currently in progress';
     if (this.isSyncInProgress) return 'another sync is already in progress';
     return null;
+  }
+
+  private toError(error: unknown): Error {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+
+  private isSyncAlreadyInProgressError(error: unknown): boolean {
+    return error instanceof Error && error.message.includes('Another sync operation is already in progress');
   }
 
   public static closeInstance(databaseId: string): void {
@@ -218,22 +231,16 @@ class AutomationService {
     }, intervalMs);
   }
 
-  /**
-   * Perform full sync with overlap guards.
-   */
-  public async performFullSync(): Promise<'completed' | 'skipped' | false> {
-    if (this.isBackupInProgress) {
-      logger.warn('Skipping full sync: backup is currently in progress');
-      return 'skipped';
-    }
-    if (this.isSyncInProgress) {
-      logger.warn('Skipping full sync: another sync is already in progress');
-      return 'skipped';
+  public async performFullSyncWithStats(): Promise<GuardedSyncResult> {
+    const blockReason = this.getSyncBlockReason();
+    if (blockReason) {
+      logger.warn(`Skipping full sync: ${blockReason}`);
+      return { status: 'skipped', reason: blockReason };
     }
 
     this.isSyncInProgress = true;
     try {
-      logger.info('🔄 Running scheduled full sync...');
+      logger.info('🔄 Running full sync...');
       const stats = await this.syncService.fullSync();
 
       // Checkpoint after sync to merge WAL into main database file
@@ -244,10 +251,64 @@ class AutomationService {
       this.restartAttempts = 0;
 
       logger.info(`✅ Full sync completed: ${stats.successfulTables}/${stats.totalTables} tables, ${stats.totalRecords} records`);
-      return 'completed';
+      return { status: 'completed', stats };
     } catch (error) {
+      if (this.isSyncAlreadyInProgressError(error)) {
+        const reason = 'another sync is already in progress';
+        logger.warn(`Skipping full sync: ${reason}`);
+        return { status: 'skipped', reason };
+      }
+
       logger.error('Full sync failed:', error);
-      return false;
+      return { status: 'failed', error: this.toError(error) };
+    } finally {
+      this.isSyncInProgress = false;
+    }
+  }
+
+  /**
+   * Perform full sync with overlap guards.
+   */
+  public async performFullSync(): Promise<'completed' | 'skipped' | false> {
+    const result = await this.performFullSyncWithStats();
+    if (result.status === 'completed') return 'completed';
+    if (result.status === 'skipped') return 'skipped';
+    return false;
+  }
+
+  /**
+   * Perform incremental sync and return detailed result.
+   */
+  public async performIncrementalSyncWithStats(): Promise<GuardedSyncResult> {
+    const blockReason = this.getSyncBlockReason();
+    if (blockReason) {
+      logger.warn(`Skipping incremental sync: ${blockReason}`);
+      return { status: 'skipped', reason: blockReason };
+    }
+
+    this.isSyncInProgress = true;
+    try {
+      logger.info('🔄 Running incremental sync...');
+      const stats = await this.syncService.incrementalSync();
+
+      // Checkpoint after sync to merge WAL into main database file
+      // This ensures fast restart and minimal WAL size
+      await this.duckdb.checkpoint();
+
+      this.lastSuccessfulSync = new Date();
+      this.restartAttempts = 0;
+
+      logger.info(`✅ Incremental sync completed: ${stats.successfulTables}/${stats.totalTables} tables, ${stats.totalRecords} records`);
+      return { status: 'completed', stats };
+    } catch (error) {
+      if (this.isSyncAlreadyInProgressError(error)) {
+        const reason = 'another sync is already in progress';
+        logger.warn(`Skipping incremental sync: ${reason}`);
+        return { status: 'skipped', reason };
+      }
+
+      logger.error('Incremental sync failed:', error);
+      return { status: 'failed', error: this.toError(error) };
     } finally {
       this.isSyncInProgress = false;
     }
@@ -258,35 +319,10 @@ class AutomationService {
    * Returns 'completed' on success, 'skipped' if guards prevented execution, false on failure.
    */
   public async performIncrementalSync(): Promise<'completed' | 'skipped' | false> {
-    if (this.isBackupInProgress) {
-      logger.warn('Skipping scheduled incremental sync: backup is currently in progress');
-      return 'skipped';
-    }
-    if (this.isSyncInProgress) {
-      logger.warn('Skipping scheduled incremental sync: another sync is already in progress');
-      return 'skipped';
-    }
-
-    this.isSyncInProgress = true;
-    try {
-      logger.info('🔄 Running scheduled incremental sync...');
-      const stats = await this.syncService.incrementalSync();
-
-      // Checkpoint after sync to merge WAL into main database file
-      // This ensures fast restart and minimal WAL size
-      await this.duckdb.checkpoint();
-
-      this.lastSuccessfulSync = new Date();
-      this.restartAttempts = 0;
-
-      logger.info(`✅ Scheduled incremental sync completed: ${stats.successfulTables}/${stats.totalTables} tables, ${stats.totalRecords} records`);
-      return 'completed';
-    } catch (error) {
-      logger.error('Scheduled incremental sync failed:', error);
-      return false;
-    } finally {
-      this.isSyncInProgress = false;
-    }
+    const result = await this.performIncrementalSyncWithStats();
+    if (result.status === 'completed') return 'completed';
+    if (result.status === 'skipped') return 'skipped';
+    return false;
   }
 
   /**

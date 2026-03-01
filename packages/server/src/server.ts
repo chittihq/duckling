@@ -424,18 +424,17 @@ class DuckDBServer {
   private async fullSync(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-
-      // Check overlap guards if automation is running for this database
-      const automation = AutomationService.getExistingInstance(databaseId);
-      const blockReason = automation?.getSyncBlockReason();
-      if (blockReason) {
-        res.status(409).json({ error: `Sync skipped: ${blockReason}` });
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      const result = await automationService.performFullSyncWithStats();
+      if (result.status === 'skipped') {
+        res.status(409).json({ error: `Sync skipped: ${result.reason}` });
         return;
       }
-
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
-      const result = await syncService.fullSync();
-      res.json(result);
+      if (result.status === 'failed') {
+        throw result.error;
+      }
+      res.json(result.stats);
     } catch (error) {
       logger.error('Full sync failed:', error);
       res.status(500).json({
@@ -447,18 +446,17 @@ class DuckDBServer {
   private async incrementalSync(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-
-      // Check overlap guards if automation is running for this database
-      const automation = AutomationService.getExistingInstance(databaseId);
-      const blockReason = automation?.getSyncBlockReason();
-      if (blockReason) {
-        res.status(409).json({ error: `Sync skipped: ${blockReason}` });
+      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      const result = await automationService.performIncrementalSyncWithStats();
+      if (result.status === 'skipped') {
+        res.status(409).json({ error: `Sync skipped: ${result.reason}` });
         return;
       }
-
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
-      const result = await syncService.incrementalSync();
-      res.json(result);
+      if (result.status === 'failed') {
+        throw result.error;
+      }
+      res.json(result.stats);
     } catch (error) {
       logger.error('Incremental sync failed:', error);
       res.status(500).json({
