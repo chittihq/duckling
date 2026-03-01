@@ -27,6 +27,7 @@ ok()  { echo -e "  \033[0;32mPASS\033[0m $*"; }
 fail(){ echo -e "  \033[0;31mFAIL\033[0m $*"; }
 
 cleanup() {
+  local exit_code=$?
   echo ""
   log "--- Server error.log (last 100 lines) ---"
   docker compose exec -T duckling tail -100 /app/data/logs/error.log 2>/dev/null || echo "(no error.log)"
@@ -37,6 +38,8 @@ cleanup() {
   docker compose down -v 2>/dev/null || true
   rm -rf data/ 2>/dev/null || true
   log "Done."
+  trap - EXIT
+  exit "$exit_code"
 }
 trap cleanup EXIT
 
@@ -63,7 +66,13 @@ pre_cleanup() {
 
 protocol_smoke() {
   log "[5/7] Running MySQL protocol smoke checks..."
-  docker compose exec -T duckling node - <<'EOJS'
+  curl -sf -X POST "${API_URL}/sync/full?db=${DB_ID}" \
+    -H "Authorization: ${API_KEY}" \
+    -H "Content-Type: application/json" > /dev/null
+
+  docker compose exec -T duckling sh -s <<'EOSH'
+cd /app/packages/server
+node - <<'EOJS'
 const mysql = require('mysql2/promise');
 
 const dbId = process.env.DUCKLING_TEST_DB_ID || 'integration';
@@ -107,6 +116,7 @@ main().catch((error) => {
   process.exit(1);
 });
 EOJS
+EOSH
   ok "MySQL protocol smoke checks passed"
 }
 
