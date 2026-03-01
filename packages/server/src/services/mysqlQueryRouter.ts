@@ -386,6 +386,9 @@ export function routeQuery(
     let rewrittenColumnsSql = rewriteForDuckDB(norm, currentDatabase);
     rewrittenColumnsSql = rewrittenColumnsSql
       .replace(/\bcolumn_type\b/ig, 'data_type')
+      .replace(/\bcharacter_set_name\s+AS\s+([`"]?\w+[`"]?)/ig, "'' AS $1")
+      .replace(/\bcolumn_comment\s+AS\s+([`"]?\w+[`"]?)/ig, "'' AS $1")
+      .replace(/\bextra\s+AS\s+([`"]?\w+[`"]?)/ig, "'' AS $1")
       .replace(/\bcharacter_set_name\b/ig, "''")
       .replace(/\bcolumn_comment\b/ig, "''")
       .replace(/\bextra\b/ig, "''");
