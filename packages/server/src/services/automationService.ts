@@ -92,6 +92,10 @@ class AutomationService {
     return AutomationService.instances.get(databaseId)!;
   }
 
+  public static getExistingInstance(databaseId: string): AutomationService | undefined {
+    return AutomationService.instances.get(databaseId);
+  }
+
   public static closeInstance(databaseId: string): void {
     const instance = AutomationService.instances.get(databaseId);
     if (instance) {
@@ -205,16 +209,16 @@ class AutomationService {
   }
 
   /**
-   * Perform full sync
+   * Perform full sync with overlap guards.
    */
-  private async performFullSync(): Promise<void> {
+  public async performFullSync(): Promise<'completed' | 'skipped' | false> {
     if (this.isBackupInProgress) {
-      logger.warn('Skipping scheduled full sync: backup is currently in progress');
-      return;
+      logger.warn('Skipping full sync: backup is currently in progress');
+      return 'skipped';
     }
     if (this.isSyncInProgress) {
-      logger.warn('Skipping scheduled full sync: another sync is already in progress');
-      return;
+      logger.warn('Skipping full sync: another sync is already in progress');
+      return 'skipped';
     }
 
     this.isSyncInProgress = true;
@@ -229,9 +233,11 @@ class AutomationService {
       this.lastSuccessfulSync = new Date();
       this.restartAttempts = 0;
 
-      logger.info(`✅ Scheduled full sync completed: ${stats.successfulTables}/${stats.totalTables} tables, ${stats.totalRecords} records`);
+      logger.info(`✅ Full sync completed: ${stats.successfulTables}/${stats.totalTables} tables, ${stats.totalRecords} records`);
+      return 'completed';
     } catch (error) {
-      logger.error('Scheduled full sync failed:', error);
+      logger.error('Full sync failed:', error);
+      return false;
     } finally {
       this.isSyncInProgress = false;
     }
@@ -239,15 +245,16 @@ class AutomationService {
 
   /**
    * Perform incremental sync
+   * Returns 'completed' on success, 'skipped' if guards prevented execution, false on failure.
    */
-  private async performIncrementalSync(): Promise<boolean> {
+  public async performIncrementalSync(): Promise<'completed' | 'skipped' | false> {
     if (this.isBackupInProgress) {
       logger.warn('Skipping scheduled incremental sync: backup is currently in progress');
-      return false;
+      return 'skipped';
     }
     if (this.isSyncInProgress) {
       logger.warn('Skipping scheduled incremental sync: another sync is already in progress');
-      return false;
+      return 'skipped';
     }
 
     this.isSyncInProgress = true;
@@ -263,7 +270,7 @@ class AutomationService {
       this.restartAttempts = 0;
 
       logger.info(`✅ Scheduled incremental sync completed: ${stats.successfulTables}/${stats.totalTables} tables, ${stats.totalRecords} records`);
-      return true;
+      return 'completed';
     } catch (error) {
       logger.error('Scheduled incremental sync failed:', error);
       return false;
@@ -654,8 +661,14 @@ class AutomationService {
 
       // Try to trigger a sync to verify recovery
       logger.info('Testing sync after recovery...');
-      const syncRecovered = await this.performIncrementalSync();
-      if (!syncRecovered) {
+      const syncResult = await this.performIncrementalSync();
+      if (syncResult === 'skipped') {
+        // Another sync or backup is already running — not a failure, just retry later
+        logger.info('Recovery sync skipped (another operation in progress), will retry');
+        this.restartAttempts--; // Don't count a skip as a failed attempt
+        return;
+      }
+      if (syncResult === false) {
         throw new Error('Recovery sync did not complete successfully');
       }
 

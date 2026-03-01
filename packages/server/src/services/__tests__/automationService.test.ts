@@ -186,8 +186,9 @@ describe('AutomationService scheduling guards', () => {
     );
 
     (service as any).isBackupInProgress = true;
-    await (service as any).performIncrementalSync();
+    const result = await (service as any).performIncrementalSync();
 
+    expect(result).toBe('skipped');
     expect(syncServiceMock.incrementalSync).not.toHaveBeenCalled();
   });
 
@@ -250,12 +251,37 @@ describe('AutomationService scheduling guards', () => {
     (service as any).lastSuccessfulSync = baselineSyncTime;
     (service as any).restartAttempts = 2;
 
-    await (service as any).performFullSync();
+    const result = await (service as any).performFullSync();
 
+    expect(result).toBe(false);
     expect(syncServiceMock.fullSync).toHaveBeenCalledTimes(1);
     expect((service as any).lastSuccessfulSync).toBe(baselineSyncTime);
     expect((service as any).restartAttempts).toBe(2);
     expect((service as any).isSyncInProgress).toBe(false);
+  });
+
+  test('attemptRecovery does not burn restart attempts when sync is skipped', async () => {
+    const syncServiceMock = {
+      incrementalSync: vi.fn(),
+      fullSync: vi.fn(),
+    };
+
+    const service = AutomationService.getInstance(
+      databaseId,
+      syncServiceMock as any,
+      { checkpoint: vi.fn(), query: vi.fn() } as any,
+      { query: vi.fn() } as any
+    );
+
+    vi.spyOn(service as any, 'performIncrementalSync').mockResolvedValue('skipped');
+    vi.spyOn(service as any, 'checkDuckDBHealth').mockResolvedValue(true);
+    vi.spyOn(service as any, 'checkMySQLHealth').mockResolvedValue(true);
+
+    (service as any).restartAttempts = 0;
+    await (service as any).attemptRecovery();
+
+    // restartAttempts incremented to 1 then decremented back to 0 on skip
+    expect((service as any).restartAttempts).toBe(0);
   });
 
   test('attemptRecovery uses guarded incremental sync path', async () => {
@@ -273,7 +299,7 @@ describe('AutomationService scheduling guards', () => {
 
     const performIncrementalSyncSpy = vi
       .spyOn(service as any, 'performIncrementalSync')
-      .mockResolvedValue(true);
+      .mockResolvedValue('completed');
     vi.spyOn(service as any, 'checkDuckDBHealth').mockResolvedValue(true);
     vi.spyOn(service as any, 'checkMySQLHealth').mockResolvedValue(true);
 

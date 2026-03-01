@@ -424,6 +424,19 @@ class DuckDBServer {
   private async fullSync(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+
+      // Use AutomationService guards if an instance exists to prevent sync/backup overlap
+      const automation = AutomationService.getExistingInstance(databaseId);
+      if (automation) {
+        const result = await automation.performFullSync();
+        if (result === 'skipped') {
+          res.status(409).json({ error: 'Sync skipped: another sync or backup is currently in progress' });
+          return;
+        }
+        res.json({ success: result === 'completed' });
+        return;
+      }
+
       const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
       const result = await syncService.fullSync();
       res.json(result);
@@ -438,6 +451,19 @@ class DuckDBServer {
   private async incrementalSync(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+
+      // Use AutomationService guards if an instance exists to prevent sync/backup overlap
+      const automation = AutomationService.getExistingInstance(databaseId);
+      if (automation) {
+        const result = await automation.performIncrementalSync();
+        if (result === 'skipped') {
+          res.status(409).json({ error: 'Sync skipped: another sync or backup is currently in progress' });
+          return;
+        }
+        res.json({ success: result === 'completed' });
+        return;
+      }
+
       const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
       const result = await syncService.incrementalSync();
       res.json(result);
