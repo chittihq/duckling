@@ -371,7 +371,7 @@
 
     <!-- Diagnose Results Dialog -->
     <Dialog v-model:open="showDiagnoseDialog">
-      <DialogScrollContent class="max-w-3xl">
+      <DialogScrollContent class="max-w-5xl">
         <DialogHeader>
           <DialogTitle>Diagnose — {{ selectedDiagnoseDb?.name }}</DialogTitle>
         </DialogHeader>
@@ -450,64 +450,42 @@
           <!-- Per-table results -->
           <div>
             <h3 class="text-sm font-semibold mb-3">Tables</h3>
-            <div class="space-y-2">
+            <div class="space-y-1">
               <div
                 v-for="tbl in sortedDiagnoseTables"
                 :key="tbl.table"
-                class="border border-border rounded-lg"
+                class="flex items-start gap-3 px-3 py-1.5 text-sm rounded hover:bg-muted/50"
               >
-                <button
-                  @click="toggleTableExpand(tbl.table)"
-                  class="w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-muted/50 rounded-lg"
-                >
-                  <div class="flex items-center gap-2">
-                    <span class="font-mono font-medium">{{ tbl.table }}</span>
-                    <span
-                      v-if="tableHasWarning(tbl)"
-                      class="px-1.5 py-0.5 rounded text-xs bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
-                    >!</span>
-                  </div>
-                  <div class="flex items-center gap-3 text-xs text-muted-foreground">
-                    <span>~{{ formatNumber(tbl.estimatedRows) }} rows</span>
-                    <span>{{ expandedTables.has(tbl.table) ? '\u25B2' : '\u25BC' }}</span>
-                  </div>
-                </button>
-                <div v-if="expandedTables.has(tbl.table)" class="px-3 pb-3 text-sm space-y-1.5">
-                  <div class="flex gap-4 text-xs">
-                    <span>
-                      PK:
-                      <strong :class="tbl.primaryKey ? '' : 'text-yellow-600'">
-                        {{ tbl.primaryKey || 'none' }}
-                      </strong>
-                    </span>
-                    <span>
-                      Timestamp:
-                      <strong :class="tbl.timestampColumn ? (tbl.timestampQuality === 'append-only' ? 'text-yellow-600' : '') : 'text-yellow-600'">
-                        {{ tbl.timestampColumn || 'none' }}
-                      </strong>
-                    </span>
-                    <span>Charset: <span class="font-mono">{{ tbl.charset }}</span></span>
-                  </div>
-                  <!-- Warnings -->
-                  <div v-if="!tbl.primaryKey" class="text-xs text-yellow-600">
-                    No primary key — slow sync, no CDC deletes
-                  </div>
-                  <div v-if="!tbl.timestampColumn" class="text-xs text-yellow-600">
-                    No timestamp column — no incremental sync possible
-                  </div>
-                  <div v-else-if="tbl.timestampQuality === 'append-only'" class="text-xs text-yellow-600">
-                    Only {{ tbl.timestampColumn }} — updates not tracked
-                  </div>
-                  <!-- Unsupported columns -->
-                  <div v-if="tbl.unsupportedColumns.length > 0" class="text-xs text-yellow-600">
-                    Unsupported types (mapped to VARCHAR):
-                    <span v-for="(col, i) in tbl.unsupportedColumns" :key="col.column">
-                      {{ col.column }} ({{ col.type }}){{ i < tbl.unsupportedColumns.length - 1 ? ', ' : '' }}
-                    </span>
-                  </div>
-                  <div v-if="!tableHasWarning(tbl)" class="text-xs text-green-600">
-                    All checks passed
-                  </div>
+                <span class="font-mono font-medium w-48 shrink-0 truncate" :title="tbl.table">{{ tbl.table }}</span>
+                <span class="text-xs text-muted-foreground w-20 shrink-0 text-right tabular-nums">~{{ formatNumber(tbl.estimatedRows) }}</span>
+                <span class="text-xs w-28 shrink-0" :class="tbl.primaryKey ? 'text-muted-foreground' : 'text-yellow-600'">
+                  PK: {{ tbl.primaryKey || 'none' }}
+                </span>
+                <span class="text-xs w-32 shrink-0" :class="tbl.timestampColumn ? (tbl.timestampQuality === 'append-only' ? 'text-yellow-600' : 'text-muted-foreground') : 'text-yellow-600'">
+                  TS: {{ tbl.timestampColumn || 'none' }}
+                </span>
+                <span class="text-xs text-muted-foreground truncate" :title="tbl.charset">{{ tbl.charset }}</span>
+                <div v-if="tableHasWarning(tbl)" class="flex items-center gap-1 shrink-0">
+                  <span
+                    v-if="!tbl.primaryKey"
+                    class="px-1.5 py-0.5 rounded text-[10px] bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+                    title="No primary key — slow sync, no CDC deletes"
+                  >no PK</span>
+                  <span
+                    v-if="!tbl.timestampColumn"
+                    class="px-1.5 py-0.5 rounded text-[10px] bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+                    title="No timestamp column — no incremental sync possible"
+                  >no TS</span>
+                  <span
+                    v-else-if="tbl.timestampQuality === 'append-only'"
+                    class="px-1.5 py-0.5 rounded text-[10px] bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+                    :title="`Only ${tbl.timestampColumn} — updates not tracked`"
+                  >append-only</span>
+                  <span
+                    v-if="tbl.unsupportedColumns.length > 0"
+                    class="px-1.5 py-0.5 rounded text-[10px] bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+                    :title="`Unsupported: ${tbl.unsupportedColumns.map(c => c.column + ' (' + c.type + ')').join(', ')}`"
+                  >{{ tbl.unsupportedColumns.length }} unsupported</span>
                 </div>
               </div>
             </div>

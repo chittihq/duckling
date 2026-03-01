@@ -160,36 +160,30 @@ export async function diagnoseDatabase(
 
   // 4. Binlog enabled
   const logBin = await getVariable(mysql, 'log_bin');
-  if (logBin !== null) {
-    const check: DiagnoseProgressEvent = {
-      name: 'Binlog enabled',
-      status: logBin === 'ON' ? 'pass' : 'warn',
-      detail: logBin === 'ON' ? 'ON' : 'OFF — CDC will not work',
-    };
+  {
+    const check: DiagnoseProgressEvent = logBin !== null
+      ? { name: 'Binlog enabled', status: logBin === 'ON' ? 'pass' : 'warn', detail: logBin === 'ON' ? 'ON' : 'OFF — CDC will not work' }
+      : { name: 'Binlog enabled', status: 'warn', detail: 'Not available — insufficient privileges' };
     serverChecks.push(check);
     reportProgress(check);
   }
 
   // 5. Binlog format
   const binlogFormat = await getVariable(mysql, 'binlog_format');
-  if (binlogFormat !== null) {
-    const check: DiagnoseProgressEvent = {
-      name: 'Binlog format',
-      status: binlogFormat === 'ROW' ? 'pass' : 'warn',
-      detail: binlogFormat === 'ROW' ? 'ROW' : `${binlogFormat} — CDC needs ROW format`,
-    };
+  {
+    const check: DiagnoseProgressEvent = binlogFormat !== null
+      ? { name: 'Binlog format', status: binlogFormat === 'ROW' ? 'pass' : 'warn', detail: binlogFormat === 'ROW' ? 'ROW' : `${binlogFormat} — CDC needs ROW format` }
+      : { name: 'Binlog format', status: 'warn', detail: 'Not available — insufficient privileges' };
     serverChecks.push(check);
     reportProgress(check);
   }
 
   // 6. Binlog row image
   const binlogRowImage = await getVariable(mysql, 'binlog_row_image');
-  if (binlogRowImage !== null) {
-    const check: DiagnoseProgressEvent = {
-      name: 'Binlog row image',
-      status: binlogRowImage === 'FULL' ? 'pass' : 'warn',
-      detail: binlogRowImage === 'FULL' ? 'FULL' : `${binlogRowImage} — CDC may miss columns`,
-    };
+  {
+    const check: DiagnoseProgressEvent = binlogRowImage !== null
+      ? { name: 'Binlog row image', status: binlogRowImage === 'FULL' ? 'pass' : 'warn', detail: binlogRowImage === 'FULL' ? 'FULL' : `${binlogRowImage} — CDC may miss columns` }
+      : { name: 'Binlog row image', status: 'warn', detail: 'Not available — insufficient privileges' };
     serverChecks.push(check);
     reportProgress(check);
   }
