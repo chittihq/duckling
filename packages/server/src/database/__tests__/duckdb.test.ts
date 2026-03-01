@@ -1,5 +1,5 @@
-import { describe, test, expect, vi } from 'vitest';
-import DuckDBConnection from '../duckdb';
+import { describe, expect, test, vi } from 'vitest';
+import DuckDBConnection, { sanitizeLogParams } from '../duckdb';
 
 describe('DuckDBConnection getPersistentConnection', () => {
   test('uses a single connect call under concurrent access', async () => {
@@ -25,5 +25,23 @@ describe('DuckDBConnection getPersistentConnection', () => {
     expect(conn3).toBe(connection);
     expect(connect).toHaveBeenCalledTimes(1);
     expect(ctx.getDbInstance).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('sanitizeLogParams', () => {
+  test('replaces Buffer and Uint8Array values with safe placeholders', () => {
+    const params = [Buffer.from('secret'), new Uint8Array([1, 2, 3]), 'ok', 42, null];
+
+    expect(sanitizeLogParams(params)).toEqual([
+      '<Buffer length=6>',
+      '<Uint8Array length=3>',
+      'ok',
+      42,
+      null
+    ]);
+  });
+
+  test('returns undefined when params are undefined', () => {
+    expect(sanitizeLogParams(undefined)).toBeUndefined();
   });
 });

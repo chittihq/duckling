@@ -4,6 +4,22 @@ import * as path from 'path';
 import config from '../config';
 import logger from '../logger';
 
+export function sanitizeLogParams(params?: any[]): any[] | undefined {
+  if (!params) return params;
+
+  return params.map(param => {
+    if (Buffer.isBuffer(param)) {
+      return `<Buffer length=${param.length}>`;
+    }
+
+    if (param instanceof Uint8Array) {
+      return `<Uint8Array length=${param.length}>`;
+    }
+
+    return param;
+  });
+}
+
 class DuckDBConnection {
   private dbInstance: DuckDBInstance | null = null;
   private wasInvalidated: boolean = false;
@@ -410,7 +426,7 @@ class DuckDBConnection {
         this.wasInvalidated = true;
       }
 
-      logger.error('DuckDB query error:', { query, params, error: errorMessage });
+      logger.error('DuckDB query error:', { query, params: sanitizeLogParams(params), error: errorMessage });
       throw error;
     }
   }
@@ -486,7 +502,7 @@ class DuckDBConnection {
         this.wasInvalidated = true;
       }
 
-      logger.error('DuckDB run error:', { query, params, error: errorMessage });
+      logger.error('DuckDB run error:', { query, params: sanitizeLogParams(params), error: errorMessage });
       throw error;
     }
   }
