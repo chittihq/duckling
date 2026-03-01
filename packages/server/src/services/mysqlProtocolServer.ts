@@ -20,10 +20,134 @@ import {
 import config from '../config';
 import logger from '../logger';
 import * as crypto from 'crypto';
+import * as path from 'path';
 
 // mysql2 is CommonJS — use require for the server-side API
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const mysql2 = require('mysql2');
+
+/* ------------------------------------------------------------------ */
+/*  Monkey-patch: sanitize client handshake flags before mysql2 parses */
+/*  them. Some clients (notably TablePlus) send flags/features that    */
+/*  mysql2's server-side parser does not robustly handle here, causing */
+/*  readLengthCodedNumberExt errors during auth/connect-attrs parsing. */
+/* ------------------------------------------------------------------ */
+try {
+  const mysql2EntryPath = require.resolve('mysql2');
+  const mysql2Root = path.dirname(mysql2EntryPath);
+  const handshakeResponsePath = path.join(mysql2Root, 'lib/packets/handshake_response.js');
+  const packetPath = path.join(mysql2Root, 'lib/packets/packet.js');
+  const serverHandshakePath = path.join(mysql2Root, 'lib/commands/server_handshake.js');
+
+  const HandshakeResponse = require(handshakeResponsePath);
+  const Packet = require(packetPath);
+  const ServerHandshake = require(serverHandshakePath);
+  const origFromPacket = HandshakeResponse.fromPacket;
+  const origReadLengthCodedNumberExt = Packet.prototype.readLengthCodedNumberExt;
+  const origReadClientReply = ServerHandshake.prototype.readClientReply;
+
+  Packet.prototype.readLengthCodedNumberExt = function patchedReadLengthCodedNumberExt(
+    this: any,
+    tag: number,
+    bigNumberStrings: unknown,
+    signed: unknown,
+  ) {
+    const isKnownTag = tag === 0xfb || tag === 0xfc || tag === 0xfd || tag === 0xfe;
+    if (!isKnownTag) {
+      const offset = typeof this?.offset === 'number' ? this.offset - 1 : 'unknown';
+      const start = typeof this?.start === 'number' ? this.start : 0;
+      const end = typeof this?.end === 'number' ? this.end : 0;
+      const payloadBytes = Math.max(end - (start + 4), 0);
+      const remaining = typeof this?.offset === 'number' ? Math.max(end - this.offset, 0) : 0;
+
+      logger.warn(
+        `MySQL protocol parse anomaly: invalid length-coded number tag=${String(tag)} ` +
+        `(payloadBytes=${payloadBytes}, offset=${offset}, remaining=${remaining})`,
+      );
+      throw new Error(
+        `Invalid length-coded number tag ${String(tag)} at offset ${offset} (remaining=${remaining})`,
+      );
+    }
+
+    return origReadLengthCodedNumberExt.call(this, tag, bigNumberStrings, signed);
+  };
+
+  HandshakeResponse.fromPacket = function patchedFromPacket(packet: any) {
+    const payloadStart = (typeof packet?.start === 'number' ? packet.start : 0) + 4;
+    const payloadEnd = typeof packet?.end === 'number'
+      ? packet.end
+      : (packet?.buffer?.length || payloadStart);
+    const payloadBytes = Math.max(payloadEnd - payloadStart, 0);
+
+    let flags: number | null = null;
+    let sanitizedFlags: number | null = null;
+
+    if (packet?.buffer && packet.buffer.length >= payloadStart + 4) {
+      flags = packet.buffer.readUInt32LE(payloadStart);
+      sanitizedFlags =
+        flags &
+        ~CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA &
+        ~CLIENT_CONNECT_ATTRS;
+      if (sanitizedFlags !== flags) {
+        packet.buffer.writeUInt32LE(sanitizedFlags, payloadStart);
+        logger.debug(
+          `MySQL protocol handshake flags sanitized ${formatCapabilityFlags(flags)} -> ` +
+          `${formatCapabilityFlags(sanitizedFlags)} ` +
+          `(removed=${describeCapabilityFlags(flags ^ sanitizedFlags).join(',') || 'none'}, ` +
+          `payloadBytes=${payloadBytes})`,
+        );
+      }
+    }
+
+    try {
+      return origFromPacket.call(this, packet);
+    } catch (error) {
+      const offset = typeof packet?.offset === 'number'
+        ? packet.offset - payloadStart
+        : null;
+      const remaining = typeof packet?.offset === 'number'
+        ? Math.max(payloadEnd - packet.offset, 0)
+        : null;
+      const nextByte = typeof packet?.offset === 'number' &&
+        packet?.buffer &&
+        packet.offset >= 0 &&
+        packet.offset < packet.buffer.length
+        ? packet.buffer[packet.offset]
+        : null;
+
+      logger.error(
+        `MySQL protocol handshake parse failure: ` +
+        `${error instanceof Error ? error.message : String(error)} ` +
+        `(payloadBytes=${payloadBytes}, offset=${offset ?? 'n/a'}, ` +
+        `remaining=${remaining ?? 'n/a'}, nextByte=${nextByte ?? 'n/a'}, ` +
+        `flags=${flags === null ? 'n/a' : formatCapabilityFlags(flags)}, ` +
+        `sanitizedFlags=${sanitizedFlags === null ? 'n/a' : formatCapabilityFlags(sanitizedFlags)})`,
+      );
+      throw error;
+    }
+  };
+
+  ServerHandshake.prototype.readClientReply = function patchedReadClientReply(
+    packet: any,
+    connection: any,
+  ) {
+    const next = origReadClientReply.call(this, packet, connection);
+    if (typeof connection?._resetSequenceId === 'function') {
+      connection._resetSequenceId();
+    }
+    return next;
+  };
+
+  logger.info(
+    `MySQL protocol handshake compatibility patch installed ` +
+    `(mysql2=${mysql2EntryPath})`,
+  );
+} catch (error) {
+  logger.warn(
+    `MySQL protocol handshake compatibility patch not applied: ` +
+    `${error instanceof Error ? error.message : String(error)}`,
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /*  MySQL auth_41 helpers (inlined to avoid internal mysql2 imports)    */
@@ -68,11 +192,41 @@ const CLIENT_LONG_FLAG = 0x00000004;
 const CLIENT_CONNECT_WITH_DB = 0x00000008;
 const CLIENT_NO_SCHEMA = 0x00000010;
 const CLIENT_PROTOCOL_41 = 0x00000200;
+const CLIENT_SSL = 0x00000800;
 const CLIENT_TRANSACTIONS = 0x00002000;
 const CLIENT_SECURE_CONNECTION = 0x00008000;
 const CLIENT_MULTI_RESULTS = 0x00020000;
 const CLIENT_PLUGIN_AUTH = 0x00080000;
+const CLIENT_CONNECT_ATTRS = 0x00100000;
 const CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA = 0x00200000;
+
+function formatCapabilityFlags(flags: number): string {
+  return `0x${flags.toString(16).padStart(8, '0')}`;
+}
+
+function describeCapabilityFlags(flags: number): string[] {
+  if (!flags) return [];
+
+  const knownFlags: Array<[string, number]> = [
+    ['LONG_PASSWORD', CLIENT_LONG_PASSWORD],
+    ['FOUND_ROWS', CLIENT_FOUND_ROWS],
+    ['LONG_FLAG', CLIENT_LONG_FLAG],
+    ['CONNECT_WITH_DB', CLIENT_CONNECT_WITH_DB],
+    ['NO_SCHEMA', CLIENT_NO_SCHEMA],
+    ['PROTOCOL_41', CLIENT_PROTOCOL_41],
+    ['SSL', CLIENT_SSL],
+    ['TRANSACTIONS', CLIENT_TRANSACTIONS],
+    ['SECURE_CONNECTION', CLIENT_SECURE_CONNECTION],
+    ['MULTI_RESULTS', CLIENT_MULTI_RESULTS],
+    ['PLUGIN_AUTH', CLIENT_PLUGIN_AUTH],
+    ['CONNECT_ATTRS', CLIENT_CONNECT_ATTRS],
+    ['PLUGIN_AUTH_LENENC_CLIENT_DATA', CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA],
+  ];
+
+  return knownFlags
+    .filter(([, value]) => (flags & value) !== 0)
+    .map(([name]) => name);
+}
 
 /* ------------------------------------------------------------------ */
 /*  Connection state                                                   */
@@ -192,10 +346,26 @@ export class MySQLProtocolServer {
           code: 1040,
           message: 'Too many connections',
         });
+        this.resetCommandSequence(conn);
       } catch (_) { /* ignore */ }
       try { conn.close(); } catch (_) { /* ignore */ }
       return;
     }
+
+    // Catch protocol-level parse errors (e.g. unsupported auth plugins)
+    // so they don't produce ugly stack traces in the logs.
+    conn.on('error', (err: Error) => {
+      logger.debug(`MySQL protocol connection ${connectionId} error: ${err.message}`);
+      this.removeConnection(connectionId);
+    });
+    conn.on('warn', (warn: any) => {
+      const expected = typeof warn?.expected === 'number' ? warn.expected : 'unknown';
+      const received = typeof warn?.received === 'number' ? warn.received : 'unknown';
+      logger.warn(
+        `MySQL protocol sequence warning on connection ${connectionId}: ` +
+        `expected=${expected}, received=${received}, message=${warn?.message || 'unknown'}`,
+      );
+    });
 
     // Initiate MySQL handshake
     conn.serverHandshake({
@@ -223,7 +393,10 @@ export class MySQLProtocolServer {
     // PING → OK
     conn.on('ping', () => {
       this.touchConnection(connectionId);
-      try { conn.writeOk(); } catch (_) { /* ignore */ }
+      try {
+        conn.writeOk();
+        this.resetCommandSequence(conn);
+      } catch (_) { /* ignore */ }
     });
 
     // Connection closed
@@ -233,11 +406,6 @@ export class MySQLProtocolServer {
     });
 
     conn.on('end', () => {
-      this.removeConnection(connectionId);
-    });
-
-    conn.on('error', (err: Error) => {
-      logger.debug(`MySQL protocol connection ${connectionId} error: ${err.message}`);
       this.removeConnection(connectionId);
     });
   }
@@ -315,6 +483,7 @@ export class MySQLProtocolServer {
     if (!state) {
       try {
         conn.writeError({ code: 1053, message: 'Server shutdown in progress' });
+        this.resetCommandSequence(conn);
       } catch (_) { /* ignore */ }
       return;
     }
@@ -328,10 +497,12 @@ export class MySQLProtocolServer {
       switch (result.type) {
         case 'ok':
           conn.writeOk();
+          this.resetCommandSequence(conn);
           break;
 
         case 'error':
           conn.writeError({ code: result.code, message: result.message });
+          this.resetCommandSequence(conn);
           break;
 
         case 'intercepted':
@@ -352,6 +523,7 @@ export class MySQLProtocolServer {
           code: 1105, // ER_UNKNOWN_ERROR
           message: err.message || 'Internal error',
         });
+        this.resetCommandSequence(conn);
       } catch (_) { /* ignore */ }
     }
   }
@@ -360,6 +532,7 @@ export class MySQLProtocolServer {
     const dbConfig = DatabaseConfigManager.getInstance().getDatabase(state.databaseId);
     if (!dbConfig) {
       conn.writeError({ code: 1049, message: `Unknown database '${state.databaseId}'` });
+      this.resetCommandSequence(conn);
       return;
     }
 
@@ -395,19 +568,28 @@ export class MySQLProtocolServer {
 
     const state = this.connections.get(connectionId);
     if (!state) {
-      try { conn.writeError({ code: 1053, message: 'Server shutdown in progress' }); } catch (_) { /* ignore */ }
+      try {
+        conn.writeError({ code: 1053, message: 'Server shutdown in progress' });
+        this.resetCommandSequence(conn);
+      } catch (_) { /* ignore */ }
       return;
     }
 
     const dbConfig = DatabaseConfigManager.getInstance().getDatabase(schemaName);
     if (!dbConfig) {
-      try { conn.writeError({ code: 1049, message: `Unknown database '${schemaName}'` }); } catch (_) { /* ignore */ }
+      try {
+        conn.writeError({ code: 1049, message: `Unknown database '${schemaName}'` });
+        this.resetCommandSequence(conn);
+      } catch (_) { /* ignore */ }
       return;
     }
 
     state.databaseId = schemaName;
     logger.debug(`MySQL protocol: connection ${connectionId} switched to database '${schemaName}'`);
-    try { conn.writeOk(); } catch (_) { /* ignore */ }
+    try {
+      conn.writeOk();
+      this.resetCommandSequence(conn);
+    } catch (_) { /* ignore */ }
   }
 
   /* ---------------------------------------------------------------- */
@@ -426,6 +608,7 @@ export class MySQLProtocolServer {
       conn.writeTextRow(row);
     }
     conn.writeEof();
+    this.resetCommandSequence(conn);
   }
 
   /* ---------------------------------------------------------------- */
@@ -452,9 +635,19 @@ export class MySQLProtocolServer {
       this.removeConnection(connectionId);
       try {
         conn.writeError({ code: 1205, message: 'Connection idle timeout' });
+        this.resetCommandSequence(conn);
         conn.close();
       } catch (_) { /* ignore */ }
     }, timeoutMs);
+  }
+
+  private resetCommandSequence(conn: any): void {
+    if (typeof conn?._resetSequenceId === 'function') {
+      conn._resetSequenceId();
+      return;
+    }
+    conn.sequenceId = 0;
+    conn.compressedSequenceId = 0;
   }
 
   private removeConnection(connectionId: number): void {
@@ -471,6 +664,9 @@ export class MySQLProtocolServer {
   /* ---------------------------------------------------------------- */
 
   private buildCapabilityFlags(): number {
+    // Note: CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA is intentionally excluded —
+    // mysql2's server-side parser cannot handle length-encoded auth data from
+    // clients like TablePlus, causing readLengthCodedNumberExt crashes.
     return (
       CLIENT_LONG_PASSWORD |
       CLIENT_FOUND_ROWS |
@@ -481,8 +677,7 @@ export class MySQLProtocolServer {
       CLIENT_TRANSACTIONS |
       CLIENT_SECURE_CONNECTION |
       CLIENT_MULTI_RESULTS |
-      CLIENT_PLUGIN_AUTH |
-      CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA
+      CLIENT_PLUGIN_AUTH
     );
   }
 }
