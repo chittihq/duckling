@@ -773,13 +773,12 @@ async function runDiagnose(db: Database) {
       throw new Error('Missing authentication token');
     }
 
+    // EventSource does not support custom Authorization headers, so token is passed in query string for SSE.
     diagnoseEventSource = new EventSource(`${apiBase}/api/databases/${db.id}/diagnose/stream?token=${encodeURIComponent(token)}`);
 
     diagnoseEventSource.addEventListener('tick', (event) => {
       const tick = JSON.parse((event as MessageEvent).data) as DiagnoseTick;
-      const index = diagnoseTicks.value.findIndex(t => t.id === tick.id);
-      if (index === -1) diagnoseTicks.value.push(tick);
-      else diagnoseTicks.value[index] = tick;
+      diagnoseTicks.value.push(tick);
     });
 
     diagnoseEventSource.addEventListener('result', (event) => {
@@ -796,11 +795,12 @@ async function runDiagnose(db: Database) {
       }
     });
 
-    diagnoseEventSource.addEventListener('error', (event) => {
+    diagnoseEventSource.addEventListener('diagnose-error', (event) => {
       const payload = (() => {
         try {
           return JSON.parse((event as MessageEvent).data) as { error?: string };
-        } catch {
+        } catch (parseError) {
+          console.error('Failed to parse diagnose-error payload', parseError);
           return null;
         }
       })();
@@ -813,6 +813,17 @@ async function runDiagnose(db: Database) {
         diagnoseEventSource = null;
       }
     });
+
+    diagnoseEventSource.onerror = () => {
+      if (!diagnoseStreamDone.value) {
+        toast({ title: 'Error', description: 'Diagnose stream disconnected', variant: 'destructive' });
+      }
+      diagnosing.value = '';
+      if (diagnoseEventSource) {
+        diagnoseEventSource.close();
+        diagnoseEventSource = null;
+      }
+    };
   } catch {
     toast({ title: 'Error', description: 'Diagnose failed', variant: 'destructive' });
     diagnosing.value = '';

@@ -137,11 +137,11 @@ export async function diagnoseDatabase(
   // 2. Server charset
   const charset = await getVariable(mysql, 'character_set_server');
   if (charset) {
-    const check = {
+    const check: DiagnoseProgressEvent = {
       name: 'Server charset',
       status: charset === 'utf8mb4' ? 'pass' : 'warn',
       detail: charset === 'utf8mb4' ? charset : `${charset} — 4-byte emoji will be lost`,
-    } as const;
+    };
     serverChecks.push(check);
     reportProgress(check);
   }
@@ -149,11 +149,11 @@ export async function diagnoseDatabase(
   // 3. Server collation
   const collation = await getVariable(mysql, 'collation_server');
   if (collation) {
-    const check = {
+    const check: DiagnoseProgressEvent = {
       name: 'Server collation',
       status: collation.startsWith('utf8mb4') ? 'pass' : 'warn',
       detail: collation,
-    } as const;
+    };
     serverChecks.push(check);
     reportProgress(check);
   }
@@ -161,11 +161,11 @@ export async function diagnoseDatabase(
   // 4. Binlog enabled
   const logBin = await getVariable(mysql, 'log_bin');
   if (logBin !== null) {
-    const check = {
+    const check: DiagnoseProgressEvent = {
       name: 'Binlog enabled',
       status: logBin === 'ON' ? 'pass' : 'warn',
       detail: logBin === 'ON' ? 'ON' : 'OFF — CDC will not work',
-    } as const;
+    };
     serverChecks.push(check);
     reportProgress(check);
   }
@@ -173,11 +173,11 @@ export async function diagnoseDatabase(
   // 5. Binlog format
   const binlogFormat = await getVariable(mysql, 'binlog_format');
   if (binlogFormat !== null) {
-    const check = {
+    const check: DiagnoseProgressEvent = {
       name: 'Binlog format',
       status: binlogFormat === 'ROW' ? 'pass' : 'warn',
       detail: binlogFormat === 'ROW' ? 'ROW' : `${binlogFormat} — CDC needs ROW format`,
-    } as const;
+    };
     serverChecks.push(check);
     reportProgress(check);
   }
@@ -185,11 +185,11 @@ export async function diagnoseDatabase(
   // 6. Binlog row image
   const binlogRowImage = await getVariable(mysql, 'binlog_row_image');
   if (binlogRowImage !== null) {
-    const check = {
+    const check: DiagnoseProgressEvent = {
       name: 'Binlog row image',
       status: binlogRowImage === 'FULL' ? 'pass' : 'warn',
       detail: binlogRowImage === 'FULL' ? 'FULL' : `${binlogRowImage} — CDC may miss columns`,
-    } as const;
+    };
     serverChecks.push(check);
     reportProgress(check);
   }
@@ -199,11 +199,11 @@ export async function diagnoseDatabase(
     const rows = await mysql.execute('SELECT @@sql_mode as mode');
     const sqlMode = rows[0]?.mode || '';
     const hasNoZeroDate = sqlMode.includes('NO_ZERO_DATE');
-    const check = {
+    const check: DiagnoseProgressEvent = {
       name: 'Zero-date handling',
       status: hasNoZeroDate ? 'pass' : 'warn',
       detail: hasNoZeroDate ? 'NO_ZERO_DATE enabled' : 'NO_ZERO_DATE not set — zero dates may appear',
-    } as const;
+    };
     serverChecks.push(check);
     reportProgress(check);
   } catch {

@@ -150,6 +150,8 @@ class DuckDBServer {
    */
   private checkApiKeyOrSession(req: express.Request, res: express.Response, next: express.NextFunction): void {
     const authHeader = req.headers.authorization;
+    // SSE EventSource cannot set Authorization headers, so we allow token query param for those endpoints.
+    // Callers should use short-lived JWTs when possible because URL tokens may appear in logs/history.
     const queryToken = typeof req.query.token === 'string' ? req.query.token : null;
     const token = authHeader ? extractTokenFromHeader(authHeader) : queryToken;
 
@@ -1477,7 +1479,7 @@ class DuckDBServer {
         return;
       }
       if (!closed) {
-        sendSSE(res, 'error', { error: error instanceof Error ? error.message : 'Unknown error' });
+        sendSSE(res, 'diagnose-error', { error: error instanceof Error ? error.message : 'Unknown error' });
         res.end();
       }
     }
