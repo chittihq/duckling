@@ -18,7 +18,7 @@ import s3BackupService from './services/s3BackupService';
 import { diagnoseDatabase } from './services/diagnoseService';
 import { generateToken, verifyToken, extractTokenFromHeader } from './utils/jwtUtils';
 import { preAuthRateLimiter, postAuthRateLimiter, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
-import config from './config';
+import config, { getAuthSecurityIssues } from './config';
 import logger from './logger';
 
 class InvalidIdentifierError extends Error {
@@ -1802,6 +1802,15 @@ class DuckDBServer {
   async start(): Promise<void> {
     try {
       console.log('Starting DuckDB Server...');
+
+      const authSecurityIssues = getAuthSecurityIssues();
+      if (authSecurityIssues.length > 0) {
+        const authSecurityMessage = `Insecure auth config:\n${authSecurityIssues.map(i => `  - ${i}`).join('\n')}`;
+        if (config.env === 'production') {
+          throw new Error(authSecurityMessage);
+        }
+        logger.warn(authSecurityMessage);
+      }
 
       // Debug: Log configuration values
       console.log('=== Configuration Debug ===');
