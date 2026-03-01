@@ -2,7 +2,7 @@
 
 ![Duckling Banner](docs/images/banner.jpeg)
 
-DuckDB server that replicates your MySQL data. Columnar storage makes analytical queries 100-13,000x faster depending on query shape. Writes are ACID — no partial syncs, no duplicates.
+DuckDB server that replicates your MySQL data. Columnar storage makes analytical queries 100-13,000x faster depending on query shape. Writes are ACID, no partial syncs, no duplicates.
 
 ## Benchmarks (20M rows)
 
@@ -28,15 +28,16 @@ BENCHMARK_SCALE=0.01 ./run.sh   # 200K rows (quick smoke test)
 
 Replicates MySQL tables into DuckDB with ACID transactions. Incremental sync only fetches what changed since the last watermark. If you need sub-second replication, there's optional CDC through the MySQL binlog.
 
-You get a REST API, a WebSocket SDK, and a Nuxt 4 dashboard. The whole thing runs on a $20/month droplet.
+Query it over REST, WebSocket, or the MySQL wire protocol on port 3307 (so any MySQL client just works). There's a Nuxt 4 dashboard too. Runs on a $20/month droplet.
 
 | Feature | |
 |---------|---|
 | Data integrity | ACID transactions, primary key constraints |
-| Storage | Single DuckDB file, columnar, compressed |
+| Storage | Single DuckDB file per database, columnar, compressed |
 | Sync modes | Full, incremental (watermark), CDC (binlog) |
+| Query access | REST API, WebSocket SDK, native MySQL protocol (port 3307) |
+| Multi-database | Multiple MySQL sources replicated independently |
 | Schema changes | Additive column evolution, zero downtime |
-| Code | ~800 lines for the sync engine |
 
 ## How sync works
 
@@ -46,9 +47,54 @@ You get a REST API, a WebSocket SDK, and a Nuxt 4 dashboard. The whole thing run
 | Incremental | Every 15 min (automatic) | Routine catch-up |
 | CDC | MySQL binlog stream | Sub-second replication (opt-in) |
 
-Full and incremental sync batch-read rows from MySQL into DuckDB using `INSERT OR REPLACE`. Watermarks track the last processed ID/timestamp per table.
+Full and incremental sync batch-read rows from MySQL into DuckDB using `INSERT OR REPLACE`. Watermarks track the last processed ID/timestamp per table. Tables sync in parallel with per-table locking, so a slow table doesn't block the rest.
 
 CDC streams binlog events via [ZongJi](https://github.com/vlasky/zongji), processing inserts, updates, and deletes in order. Binlog position is checkpointed for resume after restarts. Enable with `CDC_ENABLED=true`. It can run alongside scheduled syncs.
+
+Row sanitization (type conversion, null handling, date formatting) runs in a worker thread pool, so large syncs don't block the main thread.
+
+## MySQL wire protocol
+
+Port 3307 runs a MySQL wire protocol server. Connect with any MySQL client:
+
+```bash
+mysql -h 127.0.0.1 -P 3307 -u duckling -p
+```
+
+If it speaks MySQL, it works. Queries hit DuckDB under the hood.
+
+| Variable | Default | |
+|----------|---------|---|
+| `MYSQL_PROTOCOL_ENABLED` | `true` | Turn the protocol server on/off |
+| `MYSQL_PROTOCOL_PORT` | `3307` | TCP port |
+| `MYSQL_PROTOCOL_USER` | `duckling` | Login username |
+| `MYSQL_PROTOCOL_PASSWORD` | uses `DUCKLING_API_KEY` | Login password |
+| `MYSQL_PROTOCOL_MAX_CONNECTIONS` | `50` | Max concurrent connections |
+
+## Query governor
+
+Caps concurrent DuckDB queries and kills long-running ones. Sync and CDC get priority so replication doesn't stall when someone fires off a heavy report.
+
+| Variable | Default | |
+|----------|---------|---|
+| `MAX_CONCURRENT_QUERIES` | `10` | Concurrent query cap |
+| `QUERY_TIMEOUT_MS` | `30000` | Per-query timeout |
+| `QUERY_QUEUE_MAX` | `50` | Queue depth before 503 |
+
+## Read replicas
+
+Keeps a read-only copy of the DuckDB file for API queries while sync and CDC write to the primary. The replica is a periodic snapshot, so queries lag behind by at most `REPLICA_REFRESH_INTERVAL` seconds. Off by default.
+
+| Variable | Default | |
+|----------|---------|---|
+| `READ_REPLICA_ENABLED` | `false` | Off by default |
+| `REPLICA_REFRESH_INTERVAL` | `300` | Seconds between snapshots |
+
+## Observability
+
+The `/observe` dashboard page shows CPU, memory, event loop latency, active queries, and query pattern stats (which queries run most, slowest, etc.). Samples every 30 seconds, keeps 30 minutes of history.
+
+Endpoints: `GET /api/metrics/system`, `GET /api/metrics/queries`.
 
 ## Why DuckDB and not X?
 
@@ -107,31 +153,47 @@ EXCLUDED_TABLES=temp_table,cache_table
 
 | Variable | Default | What it does |
 |----------|---------|-------------|
-| `MYSQL_CONNECTION_STRING` | — | MySQL connection string |
+| `MYSQL_CONNECTION_STRING` | required | MySQL connection string |
 | `DUCKDB_PATH` | `data/duckling.db` | Where the DuckDB file lives |
+| `DUCKLING_API_KEY` | required | API key for auth (also used as MySQL protocol password) |
 | `BATCH_SIZE` | `10000` | Rows per batch during sync |
 | `SYNC_INTERVAL_MINUTES` | `15` | How often incremental sync runs |
+| `ENABLE_INCREMENTAL_SYNC` | `true` | Use watermark-based incremental sync |
+| `AUTO_START_SYNC` | `true` | Start syncing when the server boots |
+| `EXCLUDED_TABLES` | none | Comma-separated tables to skip |
+| `CDC_ENABLED` | `false` | Enable binlog-based CDC |
 | `MAX_RETRIES` | `3` | Retry attempts on failure |
-| `CONNECTION_TIMEOUT` | `30000` | Connection timeout (ms) |
+| `WORKER_THREADS` | `0` (auto) | Worker threads for row sanitization (0 = CPU count - 1) |
 
 ## Tuning
 
-**Batch size:** Default is 10,000 rows. For tables under 100K rows, 5,000 works well. Over 1M rows, try 20,000. Set via `BATCH_SIZE`.
+`BATCH_SIZE` defaults to 10,000 rows. For tables under 100K rows, 5,000 works. Over 1M, try 20,000.
 
-**Sync frequency:** Default is every 15 minutes. Busy databases might want 5-10 min, quiet ones can do 30-60. Set via `SYNC_INTERVAL_MINUTES`.
+`SYNC_INTERVAL_MINUTES` defaults to 15. Busy databases might want 5-10 min, quiet ones can do 30-60.
 
-**Queries:** DuckDB's columnar format handles analytical queries well out of the box. Selecting only the columns you need helps most.
+`WORKER_THREADS` controls how many threads handle row sanitization (type conversion, null coercion, date formatting) during sync. Defaults to CPU count minus one. The main thread stays free for DuckDB reads and writes.
+
+For queries, selecting only the columns you need helps most. DuckDB scans columns, not rows, so fewer columns = less data read.
 
 ## Type support
 
-All standard MySQL 8 types work. Spatial/geometry types (`POINT`, `POLYGON`, `GEOMETRY`, etc.) do not — they fall through to `VARCHAR`. See [TYPES.md](TYPES.md) for the full mapping and test coverage.
+All standard MySQL 8 types work, including JSON (mapped to DuckDB's native JSON type), ENUM, BOOLEAN, DATE, and full UTF-8 4-byte characters (emoji). Spatial/geometry types (`POINT`, `POLYGON`, `GEOMETRY`, etc.) do not work and fall through to `VARCHAR`. See [TYPES.md](TYPES.md) for the full mapping and test coverage.
+
+## Testing
+
+7 integration test suites covering full sync, incremental insert/update/delete, idempotency, CDC, and type fidelity across 27 MySQL types:
+
+```bash
+cd tests/integration
+./run.sh
+```
 
 ## More docs
 
-- [API.md](./API.md) — REST endpoints, WebSocket SDK, query examples
-- [CLI.md](CLI.md) — CLI commands
-- [TYPES.md](TYPES.md) — Type mapping, known limitations, integration test details
-- [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) — Production deployment, security, backups
+- [API.md](./API.md) -- REST endpoints, WebSocket SDK, query examples
+- [CLI.md](CLI.md) -- CLI commands
+- [TYPES.md](TYPES.md) -- Type mapping, known limitations, integration test details
+- [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) -- Production deployment, security, backups
 
 ## Contributing
 
