@@ -376,7 +376,7 @@ export function preAuthRateLimiter(req: Request, res: Response, next: NextFuncti
   setRateLimitHeaders(res, result);
 
   if (result.wouldLimit) {
-    logger.warn(`Rate limit threshold reached: ${clientKey} on ${category}`, {
+    logger.debug(`Rate limit threshold reached: ${clientKey} on ${category}`, {
       path: req.path,
       category,
       limit: result.limit,
@@ -413,7 +413,7 @@ export function postAuthRateLimiter(req: Request, res: Response, next: NextFunct
   setRateLimitHeaders(res, result);
 
   if (result.wouldLimit) {
-    logger.warn(`Rate limit threshold reached: ${key} on ${category}`, {
+    logger.debug(`Rate limit threshold reached: ${key} on ${category}`, {
       path: req.path,
       category,
       tier,
@@ -432,7 +432,7 @@ export function postAuthRateLimiter(req: Request, res: Response, next: NextFunct
     const slot = acquireQueryConcurrencySlot(key, tier);
     if (slot.shadow) {
       res.setHeader('X-RateLimit-Shadow-Query-Concurrency-Would-Block', 'true');
-      logger.warn(`Query concurrency threshold reached (shadow): ${key}`, {
+      logger.debug(`Query concurrency threshold reached (shadow): ${key}`, {
         path: req.path,
         tier,
         inFlight: slot.inFlight,
