@@ -413,11 +413,10 @@ export function postAuthRateLimiter(req: Request, res: Response, next: NextFunct
   setRateLimitHeaders(res, result);
 
   if (result.wouldLimit) {
-    logger.debug(`Rate limit threshold reached: ${key} on ${category}`, {
+    logger.debug('Rate limit threshold reached', {
       path: req.path,
       category,
       tier,
-      limit: result.limit,
       mode: getRateLimitMode(),
       shadow: result.shadow,
     });
@@ -432,11 +431,9 @@ export function postAuthRateLimiter(req: Request, res: Response, next: NextFunct
     const slot = acquireQueryConcurrencySlot(key, tier);
     if (slot.shadow) {
       res.setHeader('X-RateLimit-Shadow-Query-Concurrency-Would-Block', 'true');
-      logger.debug(`Query concurrency threshold reached (shadow): ${key}`, {
+      logger.debug('Query concurrency threshold reached (shadow)', {
         path: req.path,
         tier,
-        inFlight: slot.inFlight,
-        limit: slot.maxInFlight,
       });
     }
 
@@ -446,7 +443,6 @@ export function postAuthRateLimiter(req: Request, res: Response, next: NextFunct
         error: 'Too Many Requests',
         message: 'Too many concurrent queries. Please retry shortly.',
         category: 'query',
-        concurrencyLimit: slot.maxInFlight,
       });
       return;
     }
