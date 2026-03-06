@@ -69,6 +69,8 @@ export interface DuckDBSDKConfig {
   reconnectDelay?: number;
   /** Connection timeout in milliseconds (default: 5000) */
   connectionTimeout?: number;
+  /** Per-request timeout in milliseconds (default: 30000) */
+  requestTimeout?: number;
   /** Enable automatic ping to keep connection alive (default: true) */
   autoPing?: boolean;
   /** Ping interval in milliseconds (default: 30000) */
@@ -138,6 +140,8 @@ export interface DucklingClientEvents {
   error: (error: Error) => void;
   /** Emitted when reconnection attempt starts */
   reconnecting: (attempt: number) => void;
+  /** Emitted when auto-reconnect gives up after the configured attempts */
+  reconnectExhausted: (attempts: number, error: Error) => void;
   /** Emitted when a message is received */
   message: (response: QueryResponse) => void;
 }

@@ -176,3 +176,136 @@ test('timed-out connect attempts clean up sockets and allow a later reconnect', 
     await closeServer(server);
   }
 });
+
+test('request timeout uses config.requestTimeout instead of the hardcoded 30 seconds', async () => {
+  const { server, url } = await createServer((socket) => {
+    socket.on('message', (raw) => {
+      const message = JSON.parse(raw.toString());
+
+      if (message.type === 'auth') {
+        socket.send(JSON.stringify({ id: message.id, success: true, result: [] }));
+      }
+    });
+  });
+
+  const client = new DucklingClient({
+    url,
+    apiKey: 'test-key',
+    autoReconnect: false,
+    autoPing: false,
+    requestTimeout: 40
+  });
+
+  try {
+    await client.connect();
+
+    const startedAt = Date.now();
+    await assert.rejects(client.query('SELECT 1'), /Request timeout/);
+    const elapsedMs = Date.now() - startedAt;
+
+    assert.ok(elapsedMs < 500, `expected request timeout to occur quickly, got ${elapsedMs}ms`);
+    assert.equal(client.getStats().pendingRequests, 0);
+  } finally {
+    client.close();
+    await closeServer(server);
+  }
+});
+
+test('reconnectExhausted is emitted when auto-reconnect reaches the configured limit', async () => {
+  let connectionCount = 0;
+
+  const { server, url } = await createServer((socket) => {
+    connectionCount += 1;
+
+    socket.on('message', (raw) => {
+      const message = JSON.parse(raw.toString());
+
+      if (message.type === 'auth') {
+        if (connectionCount === 1) {
+          socket.send(JSON.stringify({ id: message.id, success: true, result: [] }));
+          setTimeout(() => {
+            socket.close(1013, 'try again later');
+          }, 5);
+        }
+      }
+    });
+  });
+
+  const exhaustedEvents = [];
+  const client = new DucklingClient({
+    url,
+    apiKey: 'test-key',
+    autoReconnect: true,
+    autoPing: false,
+    reconnectDelay: 10,
+    maxReconnectAttempts: 1,
+    connectionTimeout: 50
+  });
+
+  client.on('reconnectExhausted', (attempts, error) => {
+    exhaustedEvents.push({ attempts, error });
+  });
+
+  try {
+    await client.connect();
+    await waitFor(() => exhaustedEvents.length === 1, 1000);
+
+    assert.equal(connectionCount, 2);
+    assert.equal(exhaustedEvents[0].attempts, 1);
+    assert.match(exhaustedEvents[0].error.message, /Reconnect attempts exhausted/);
+  } finally {
+    client.close();
+    await closeServer(server);
+  }
+});
+
+test('close codes 1008 and 1011 do not trigger reconnect attempts', async () => {
+  for (const closeCode of [1008, 1011]) {
+    let connectionCount = 0;
+
+    const { server, url } = await createServer((socket) => {
+      connectionCount += 1;
+
+      socket.on('message', (raw) => {
+        const message = JSON.parse(raw.toString());
+
+        if (message.type === 'auth') {
+          socket.send(JSON.stringify({ id: message.id, success: true, result: [] }));
+          setTimeout(() => {
+            socket.close(closeCode, `close-${closeCode}`);
+          }, 5);
+        }
+      });
+    });
+
+    const reconnectAttempts = [];
+    const exhaustedEvents = [];
+    const client = new DucklingClient({
+      url,
+      apiKey: 'test-key',
+      autoReconnect: true,
+      autoPing: false,
+      reconnectDelay: 10,
+      maxReconnectAttempts: 2
+    });
+
+    client.on('reconnecting', (attempt) => {
+      reconnectAttempts.push(attempt);
+    });
+    client.on('reconnectExhausted', (attempts) => {
+      exhaustedEvents.push(attempts);
+    });
+
+    try {
+      await client.connect();
+      await delay(100);
+
+      assert.equal(connectionCount, 1);
+      assert.deepEqual(reconnectAttempts, []);
+      assert.deepEqual(exhaustedEvents, []);
+    } finally {
+      client.close();
+      await closeServer(server);
+    }
+  }
+});

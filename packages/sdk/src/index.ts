@@ -29,6 +29,8 @@ import type {
 // Import logger
 import { Logger, LogLevel } from './logger';
 
+const NON_RECONNECT_CLOSE_CODES = new Set([1008, 1011]);
+
 /**
  * Duckling WebSocket SDK Client
  *
@@ -73,6 +75,7 @@ export class DucklingClient extends EventEmitter {
   private connectResolve: (() => void) | null = null;
   private connectReject: ((error: Error) => void) | null = null;
   private manualClose: boolean = false;
+  private reconnectExhaustedEmitted: boolean = false;
   private tornDownSockets: WeakSet<WebSocket> = new WeakSet();
   private logger: Logger;
 
@@ -84,6 +87,7 @@ export class DucklingClient extends EventEmitter {
       maxReconnectAttempts: 5,
       reconnectDelay: 1000,
       connectionTimeout: 5000,
+      requestTimeout: 30000,
       autoPing: true,
       pingInterval: 30000,
       enableLogging: false,
@@ -116,6 +120,7 @@ export class DucklingClient extends EventEmitter {
 
     this.manualClose = false;
     this.isConnecting = true;
+    this.reconnectExhaustedEmitted = false;
     this.clearReconnectTimer();
 
     // Tear down any stale socket before replacing it with a new attempt.
@@ -229,7 +234,11 @@ export class DucklingClient extends EventEmitter {
             reason: reason || undefined
           }
         );
-        this.teardownSocket(socket, closeError, !this.manualClose);
+        this.teardownSocket(
+          socket,
+          closeError,
+          !this.manualClose && this.shouldReconnectForCloseCode(code)
+        );
       });
     });
 
@@ -263,9 +272,23 @@ export class DucklingClient extends EventEmitter {
     if (
       this.manualClose ||
       !this.config.autoReconnect ||
-      this.reconnectTimer ||
-      this.reconnectAttempts >= this.config.maxReconnectAttempts
+      this.reconnectTimer
     ) {
+      return;
+    }
+
+    if (this.reconnectAttempts >= this.config.maxReconnectAttempts) {
+      if (!this.reconnectExhaustedEmitted) {
+        this.reconnectExhaustedEmitted = true;
+        this.emit(
+          'reconnectExhausted',
+          this.reconnectAttempts,
+          this.createError(
+            DuckDBErrorType.CONNECTION_ERROR,
+            `Reconnect attempts exhausted after ${this.reconnectAttempts} tries`
+          )
+        );
+      }
       return;
     }
 
@@ -327,6 +350,10 @@ export class DucklingClient extends EventEmitter {
     } catch {
       // Ignore secondary teardown failures
     }
+  }
+
+  private shouldReconnectForCloseCode(code: number): boolean {
+    return !NON_RECONNECT_CLOSE_CODES.has(code);
   }
 
   private reportError(error: Error): void {
@@ -568,7 +595,7 @@ export class DucklingClient extends EventEmitter {
         return;
       }
 
-      // Set timeout for request (30 seconds)
+      // Set timeout for each request
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(message.id);
         reject(
@@ -577,7 +604,7 @@ export class DucklingClient extends EventEmitter {
             type: message.type
           })
         );
-      }, 30000);
+      }, this.config.requestTimeout);
 
       this.pendingRequests.set(message.id, { resolve, reject, timeout });
 
