@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest';
 import {
   getMySQLTypeCode,
   buildColumnDefinition,
+  buildForwardedColumnDefinition,
   formatValueByType,
   formatResultSet,
   singleValueResult,
@@ -133,6 +134,30 @@ describe('buildColumnDefinition', () => {
 
   test('characterSet is utf8mb4 (45)', () => {
     expect(buildColumnDefinition('x').characterSet).toBe(45);
+  });
+});
+
+describe('buildForwardedColumnDefinition', () => {
+  test('keeps integer columns typed for basic compatibility', () => {
+    expect(buildForwardedColumnDefinition('id', 'BIGINT').columnType).toBe(TYPES.LONGLONG);
+    expect(buildForwardedColumnDefinition('age', 'INTEGER').columnType).toBe(TYPES.LONG);
+  });
+
+  test('downgrades floating-point columns to VAR_STRING for safe text-protocol decoding', () => {
+    expect(buildForwardedColumnDefinition('score', 'FLOAT').columnType).toBe(TYPES.VAR_STRING);
+    expect(buildForwardedColumnDefinition('ratio', 'DOUBLE').columnType).toBe(TYPES.VAR_STRING);
+  });
+
+  test('downgrades decimal and temporal columns to VAR_STRING', () => {
+    expect(buildForwardedColumnDefinition('balance', 'DECIMAL(12,2)').columnType).toBe(TYPES.VAR_STRING);
+    expect(buildForwardedColumnDefinition('created_at', 'TIMESTAMP').columnType).toBe(TYPES.VAR_STRING);
+    expect(buildForwardedColumnDefinition('birth_date', 'DATE').columnType).toBe(TYPES.VAR_STRING);
+  });
+
+  test('downgrades JSON, blob, and enum columns to VAR_STRING', () => {
+    expect(buildForwardedColumnDefinition('metadata', 'JSON').columnType).toBe(TYPES.VAR_STRING);
+    expect(buildForwardedColumnDefinition('avatar', 'BLOB').columnType).toBe(TYPES.VAR_STRING);
+    expect(buildForwardedColumnDefinition('role', 'ENUM').columnType).toBe(TYPES.VAR_STRING);
   });
 });
 

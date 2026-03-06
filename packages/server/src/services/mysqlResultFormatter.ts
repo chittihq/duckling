@@ -145,6 +145,32 @@ export function buildColumnDefinition(
   };
 }
 
+/**
+ * Build a conservative column definition for forwarded DuckDB result sets.
+ * Some MySQL clients are stricter about typed text-protocol decoding than
+ * mysql2's server-side API is about advertised metadata, so we prefer
+ * string-compatible field types for anything beyond simple integers.
+ */
+export function buildForwardedColumnDefinition(
+  name: string,
+  duckdbType?: string,
+  table?: string,
+): MySQLColumnDefinition {
+  const baseType = baseDuckDBType(duckdbType);
+
+  switch (baseType) {
+    case 'TINYINT':
+    case 'SMALLINT':
+    case 'INTEGER':
+    case 'INT':
+    case 'BIGINT':
+      return buildColumnDefinition(name, duckdbType, table);
+
+    default:
+      return buildColumnDefinition(name, 'VARCHAR', table);
+  }
+}
+
 function baseDuckDBType(duckdbType?: string): string {
   if (!duckdbType) return '';
   return duckdbType.replace(/\(.*\)/, '').trim().toUpperCase();

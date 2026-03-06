@@ -14,6 +14,7 @@ import { DatabaseConfigManager } from '../database/databaseConfig';
 import { routeQuery } from './mysqlQueryRouter';
 import {
   buildColumnDefinition,
+  buildForwardedColumnDefinition,
   formatValueByType,
   type MySQLColumnDefinition,
 } from './mysqlResultFormatter';
@@ -472,9 +473,9 @@ export class MySQLProtocolServer {
 
     const { rows, columnNames, columnTypes } = await duckdb.executeWithMetadata(sql);
 
-    // Build MySQL column definitions
+    // Forwarded DuckDB result sets use compatibility-first text metadata.
     const columns = columnNames.map((name: string, i: number) =>
-      buildColumnDefinition(name, columnTypes[i]),
+      buildForwardedColumnDefinition(name, columnTypes[i]),
     );
 
     // Format rows: convert each value to string|null
