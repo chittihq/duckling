@@ -4,6 +4,12 @@ import { EventEmitter } from 'events';
 // Export all types from types.ts
 export * from './types';
 
+// Import runtime error types
+import {
+  DuckDBError,
+  DuckDBErrorType
+} from './types';
+
 // Import types for internal use
 import type {
   QueryMessage,
@@ -13,8 +19,6 @@ import type {
   PendingRequest,
   ConnectionStats,
   DucklingClientEvents,
-  DuckDBError,
-  DuckDBErrorType,
   BatchQueryRequest,
   BatchQueryResult,
   PaginationOptions,
@@ -64,6 +68,12 @@ export class DucklingClient extends EventEmitter {
   private pendingRequests: Map<string, PendingRequest> = new Map();
   private messageIdCounter: number = 0;
   private pingIntervalHandle: NodeJS.Timeout | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private connectPromise: Promise<void> | null = null;
+  private connectResolve: (() => void) | null = null;
+  private connectReject: ((error: Error) => void) | null = null;
+  private manualClose: boolean = false;
+  private tornDownSockets: WeakSet<WebSocket> = new WeakSet();
   private logger: Logger;
 
   constructor(config: DuckDBSDKConfig) {
@@ -76,6 +86,8 @@ export class DucklingClient extends EventEmitter {
       connectionTimeout: 5000,
       autoPing: true,
       pingInterval: 30000,
+      enableLogging: false,
+      logLevel: 'info',
       databaseName: 'default',
       ...config
     };
@@ -98,93 +110,267 @@ export class DucklingClient extends EventEmitter {
       return; // Already connected and authenticated
     }
 
-    if (this.isConnecting) {
-      // Wait for existing connection attempt
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Connection timeout')), this.config.connectionTimeout);
-        this.once('connected', () => {
-          clearTimeout(timeout);
-          resolve(undefined);
-        });
-        this.once('error', (error) => {
-          clearTimeout(timeout);
-          reject(error);
-        });
-      });
-      return;
+    if (this.connectPromise) {
+      return this.connectPromise;
     }
 
+    this.manualClose = false;
     this.isConnecting = true;
+    this.clearReconnectTimer();
 
-    return new Promise((resolve, reject) => {
+    // Tear down any stale socket before replacing it with a new attempt.
+    if (this.ws) {
+      const staleSocket = this.ws;
+      this.teardownSocket(
+        staleSocket,
+        this.createError(DuckDBErrorType.CONNECTION_ERROR, 'Replacing stale connection before reconnect'),
+        false
+      );
+      this.forceTerminateSocket(staleSocket);
+    }
+
+    // Build WebSocket URL with database parameter
+    const url = new URL(this.config.url);
+    url.searchParams.set('db', this.config.databaseName);
+
+    const socket = new WebSocket(url.toString());
+    this.ws = socket;
+
+    this.connectPromise = new Promise((resolve, reject) => {
+      this.connectResolve = resolve;
+      this.connectReject = reject;
+
       const timeout = setTimeout(() => {
-        this.isConnecting = false;
-        reject(new Error(`Connection timeout after ${this.config.connectionTimeout}ms`));
+        const error = this.createError(
+          DuckDBErrorType.TIMEOUT_ERROR,
+          `Connection timeout after ${this.config.connectionTimeout}ms`
+        );
+        this.reportError(error);
+        this.teardownSocket(socket, error, true);
+        this.forceTerminateSocket(socket);
       }, this.config.connectionTimeout);
 
-      // Build WebSocket URL with database parameter
-      const url = new URL(this.config.url);
-      url.searchParams.set('db', this.config.databaseName);
+      socket.on('open', async () => {
+        if (this.ws !== socket || this.tornDownSockets.has(socket)) {
+          return;
+        }
 
-      this.ws = new WebSocket(url.toString());
-
-      this.ws.on('open', async () => {
         try {
           // Authenticate with API key
           await this.authenticate();
+
+          if (this.ws !== socket || this.tornDownSockets.has(socket)) {
+            return;
+          }
+
           clearTimeout(timeout);
           this.isConnecting = false;
+          this.isAuthenticated = true;
           this.reconnectAttempts = 0;
+          this.resolveConnectPromise();
           this.emit('connected');
 
           // Start automatic ping if enabled
           if (this.config.autoPing) {
             this.startAutoPing();
           }
-
-          resolve();
         } catch (error) {
           clearTimeout(timeout);
-          this.isConnecting = false;
-          reject(error);
+          if (this.tornDownSockets.has(socket)) {
+            return;
+          }
+
+          const authError = this.toDuckDBError(
+            error,
+            DuckDBErrorType.AUTH_ERROR,
+            'Authentication failed'
+          );
+          this.reportError(authError);
+          this.teardownSocket(socket, authError, true);
+          this.forceTerminateSocket(socket);
         }
       });
 
-      this.ws.on('message', (data: Buffer) => {
+      socket.on('message', (data: WebSocket.RawData) => {
+        if (this.ws !== socket || this.tornDownSockets.has(socket)) {
+          return;
+        }
         this.handleMessage(data);
       });
 
-      this.ws.on('error', (error) => {
-        this.emit('error', error);
-        if (!this.isAuthenticated) {
-          clearTimeout(timeout);
-          this.isConnecting = false;
-          reject(error);
+      socket.on('error', (error) => {
+        if (this.ws !== socket || this.tornDownSockets.has(socket)) {
+          return;
         }
+
+        clearTimeout(timeout);
+        const connectionError = this.toDuckDBError(
+          error,
+          DuckDBErrorType.CONNECTION_ERROR,
+          'WebSocket connection error'
+        );
+        this.reportError(connectionError);
+        this.teardownSocket(socket, connectionError, !this.manualClose);
+        this.forceTerminateSocket(socket);
       });
 
-      this.ws.on('close', () => {
-        this.isAuthenticated = false;
-        this.stopAutoPing();
-        this.emit('disconnected');
-
-        // Reject all pending requests
-        for (const [id, request] of this.pendingRequests.entries()) {
-          clearTimeout(request.timeout);
-          request.reject(new Error('Connection closed'));
+      socket.on('close', (code, reasonBuffer) => {
+        if (this.ws !== socket || this.tornDownSockets.has(socket)) {
+          return;
         }
-        this.pendingRequests.clear();
 
-        // Auto-reconnect if enabled
-        if (this.config.autoReconnect && this.reconnectAttempts < this.config.maxReconnectAttempts) {
-          this.reconnectAttempts++;
-          setTimeout(() => {
-            this.connect().catch(error => {
-              this.emit('error', error);
-            });
-          }, this.config.reconnectDelay * this.reconnectAttempts);
-        }
+        clearTimeout(timeout);
+        const reason = Buffer.isBuffer(reasonBuffer) ? reasonBuffer.toString() : String(reasonBuffer || '');
+        const closeError = this.createError(
+          DuckDBErrorType.CONNECTION_ERROR,
+          this.manualClose ? 'Connection closed' : `Connection closed${code ? ` (code ${code})` : ''}`,
+          {
+            code,
+            reason: reason || undefined
+          }
+        );
+        this.teardownSocket(socket, closeError, !this.manualClose);
       });
+    });
+
+    return this.connectPromise;
+  }
+
+  private resolveConnectPromise(): void {
+    const resolve = this.connectResolve;
+    this.connectPromise = null;
+    this.connectResolve = null;
+    this.connectReject = null;
+    resolve?.();
+  }
+
+  private rejectConnectPromise(error: Error): void {
+    const reject = this.connectReject;
+    this.connectPromise = null;
+    this.connectResolve = null;
+    this.connectReject = null;
+    reject?.(error);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (
+      this.manualClose ||
+      !this.config.autoReconnect ||
+      this.reconnectTimer ||
+      this.reconnectAttempts >= this.config.maxReconnectAttempts
+    ) {
+      return;
+    }
+
+    const attempt = ++this.reconnectAttempts;
+    const delay = this.config.reconnectDelay * (2 ** (attempt - 1));
+    this.emit('reconnecting', attempt);
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect().catch((error) => {
+        this.reportError(this.toDuckDBError(error, DuckDBErrorType.CONNECTION_ERROR, 'Reconnect failed'));
+      });
+    }, delay);
+  }
+
+  private rejectPendingRequests(error: Error): void {
+    for (const request of this.pendingRequests.values()) {
+      clearTimeout(request.timeout);
+      request.reject(error);
+    }
+    this.pendingRequests.clear();
+  }
+
+  private teardownSocket(socket: WebSocket, error: Error, shouldReconnect: boolean): void {
+    if (this.tornDownSockets.has(socket)) {
+      return;
+    }
+
+    this.tornDownSockets.add(socket);
+
+    if (this.ws === socket) {
+      this.ws = null;
+    }
+
+    const hadConnection = this.isConnecting || this.isAuthenticated || socket.readyState === WebSocket.OPEN;
+
+    this.isConnecting = false;
+    this.isAuthenticated = false;
+    this.stopAutoPing();
+    this.rejectPendingRequests(error);
+    this.rejectConnectPromise(error);
+
+    socket.removeAllListeners();
+
+    if (hadConnection) {
+      this.emit('disconnected');
+    }
+
+    if (shouldReconnect) {
+      this.scheduleReconnect();
+    }
+  }
+
+  private forceTerminateSocket(socket: WebSocket): void {
+    try {
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        socket.terminate();
+      }
+    } catch {
+      // Ignore secondary teardown failures
+    }
+  }
+
+  private reportError(error: Error): void {
+    if (this.listenerCount('error') > 0) {
+      super.emit('error', error);
+      return;
+    }
+
+    if (error instanceof DuckDBError) {
+      this.logger.error(error.message, {
+        type: error.type,
+        context: error.context
+      });
+      return;
+    }
+
+    this.logger.error(error.message, { name: error.name });
+  }
+
+  private createError(
+    type: DuckDBErrorType,
+    message: string,
+    context?: Record<string, unknown>
+  ): DuckDBError {
+    return new DuckDBError(type, message, context);
+  }
+
+  private toDuckDBError(
+    error: unknown,
+    fallbackType: DuckDBErrorType,
+    fallbackMessage: string,
+    context?: Record<string, unknown>
+  ): DuckDBError {
+    if (error instanceof DuckDBError) {
+      return error;
+    }
+
+    if (error instanceof Error) {
+      return this.createError(fallbackType, error.message || fallbackMessage, context);
+    }
+
+    return this.createError(fallbackType, fallbackMessage, {
+      ...context,
+      cause: error
     });
   }
 
@@ -201,10 +387,11 @@ export class DucklingClient extends EventEmitter {
     const response = await this.sendMessage(authMessage);
 
     if (!response.success) {
-      throw new Error(`Authentication failed: ${response.error || 'Unknown error'}`);
+      throw this.createError(
+        DuckDBErrorType.AUTH_ERROR,
+        `Authentication failed: ${response.error || 'Unknown error'}`
+      );
     }
-
-    this.isAuthenticated = true;
   }
 
   /**
@@ -221,7 +408,10 @@ export class DucklingClient extends EventEmitter {
     }
 
     if (!this.isAuthenticated) {
-      throw new Error('Not connected. Call connect() first or enable autoConnect.');
+      throw this.createError(
+        DuckDBErrorType.CONNECTION_ERROR,
+        'Not connected. Call connect() first or enable autoConnect.'
+      );
     }
 
     // Log query reception
@@ -248,7 +438,15 @@ export class DucklingClient extends EventEmitter {
         sql: sql,
         duration: response.duration
       });
-      throw new Error(`Query failed: ${response.error || 'Unknown error'}`);
+      throw this.createError(
+        DuckDBErrorType.QUERY_ERROR,
+        `Query failed: ${response.error || 'Unknown error'}`,
+        {
+          sql,
+          params,
+          duration: response.duration
+        }
+      );
     }
 
     // Log query results
@@ -305,7 +503,16 @@ export class DucklingClient extends EventEmitter {
       if (this.isAuthenticated) {
         const success = await this.ping();
         if (!success) {
-          this.emit('error', new Error('Ping failed - connection may be unhealthy'));
+          const error = this.createError(
+            DuckDBErrorType.CONNECTION_ERROR,
+            'Ping failed - connection may be unhealthy'
+          );
+          this.reportError(error);
+          if (this.ws) {
+            const unhealthySocket = this.ws;
+            this.teardownSocket(unhealthySocket, error, true);
+            this.forceTerminateSocket(unhealthySocket);
+          }
         }
       }
     }, this.config.pingInterval);
@@ -325,15 +532,23 @@ export class DucklingClient extends EventEmitter {
    * Close WebSocket connection
    */
   close(): void {
-    this.config.autoReconnect = false; // Disable auto-reconnect
+    this.manualClose = true;
     this.stopAutoPing();
+    this.clearReconnectTimer();
 
     if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+      const socket = this.ws;
+      this.teardownSocket(
+        socket,
+        this.createError(DuckDBErrorType.CONNECTION_ERROR, 'Connection closed by client'),
+        false
+      );
+      try {
+        socket.close();
+      } catch {
+        // Ignore close failures during shutdown
+      }
     }
-
-    this.isAuthenticated = false;
   }
 
   /**
@@ -349,14 +564,19 @@ export class DucklingClient extends EventEmitter {
   private sendMessage(message: QueryMessage): Promise<QueryResponse> {
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        reject(new Error('WebSocket not connected'));
+        reject(this.createError(DuckDBErrorType.CONNECTION_ERROR, 'WebSocket not connected'));
         return;
       }
 
       // Set timeout for request (30 seconds)
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(message.id);
-        reject(new Error(`Request timeout: ${message.id}`));
+        reject(
+          this.createError(DuckDBErrorType.TIMEOUT_ERROR, `Request timeout: ${message.id}`, {
+            messageId: message.id,
+            type: message.type
+          })
+        );
       }, 30000);
 
       this.pendingRequests.set(message.id, { resolve, reject, timeout });
@@ -384,10 +604,20 @@ export class DucklingClient extends EventEmitter {
   /**
    * Handle incoming message from server
    */
-  private handleMessage(data: Buffer): void {
+  private handleMessage(data: WebSocket.RawData): void {
     try {
-      const response: QueryResponse = JSON.parse(data.toString());
+      const raw =
+        typeof data === 'string'
+          ? data
+          : Buffer.isBuffer(data)
+            ? data.toString()
+            : Array.isArray(data)
+              ? Buffer.concat(data).toString()
+              : Buffer.from(data).toString();
+      const response: QueryResponse = JSON.parse(raw);
       const request = this.pendingRequests.get(response.id);
+
+      this.emit('message', response);
 
       if (request) {
         clearTimeout(request.timeout);
@@ -414,7 +644,9 @@ export class DucklingClient extends EventEmitter {
       }
     } catch (error) {
       this.logger.error('Failed to parse incoming message', { error });
-      this.emit('error', new Error(`Failed to parse message: ${error}`));
+      this.reportError(
+        this.toDuckDBError(error, DuckDBErrorType.UNKNOWN_ERROR, 'Failed to parse incoming message')
+      );
     }
   }
 

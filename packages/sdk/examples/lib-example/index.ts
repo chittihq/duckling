@@ -1,4 +1,4 @@
-import { DucklingClient } from '@chittihq/duckling';
+import { DucklingClient } from '../../src/index';
 
 /**
  * Basic Query Example

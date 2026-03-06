@@ -1,4 +1,4 @@
-import { DucklingClient } from '../lib/index';
+import { DucklingClient } from '../src/index';
 
 /**
  * Connection Pool Example

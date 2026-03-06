@@ -5,7 +5,7 @@ import {
   BatchQueryRequest,
   QueryRow,
   DucklingClientEvents
-} from '../lib/index';
+} from '../src/index';
 
 /**
  * Typed Queries Example
