@@ -309,3 +309,52 @@ test('close codes 1008 and 1011 do not trigger reconnect attempts', async () => 
     }
   }
 });
+
+test('authentication failures do not trigger reconnect attempts', async () => {
+  let connectionCount = 0;
+
+  const { server, url } = await createServer((socket) => {
+    connectionCount += 1;
+
+    socket.on('message', (raw) => {
+      const message = JSON.parse(raw.toString());
+
+      if (message.type === 'auth') {
+        socket.send(JSON.stringify({ id: message.id, success: false, error: 'Invalid API key' }));
+        setTimeout(() => {
+          socket.close(1008, 'invalid api key');
+        }, 5);
+      }
+    });
+  });
+
+  const reconnectAttempts = [];
+  const exhaustedEvents = [];
+  const client = new DucklingClient({
+    url,
+    apiKey: 'wrong-key',
+    autoReconnect: true,
+    autoPing: false,
+    reconnectDelay: 10,
+    maxReconnectAttempts: 2
+  });
+
+  client.on('reconnecting', (attempt) => {
+    reconnectAttempts.push(attempt);
+  });
+  client.on('reconnectExhausted', (attempts) => {
+    exhaustedEvents.push(attempts);
+  });
+
+  try {
+    await assert.rejects(client.connect(), /Authentication failed: Invalid API key/);
+    await delay(100);
+
+    assert.equal(connectionCount, 1);
+    assert.deepEqual(reconnectAttempts, []);
+    assert.deepEqual(exhaustedEvents, []);
+  } finally {
+    client.close();
+    await closeServer(server);
+  }
+});

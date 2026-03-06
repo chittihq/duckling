@@ -191,7 +191,7 @@ export class DucklingClient extends EventEmitter {
             'Authentication failed'
           );
           this.reportError(authError);
-          this.teardownSocket(socket, authError, true);
+          this.teardownSocket(socket, authError, authError.type !== DuckDBErrorType.AUTH_ERROR);
           this.forceTerminateSocket(socket);
         }
       });

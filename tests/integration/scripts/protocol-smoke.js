@@ -7,9 +7,10 @@
  * Usage (inside the duckling container):
  *   node scripts/protocol-smoke.js
  */
-const mysql = require('mysql2/promise');
+import mysql from 'mysql2/promise';
 
 const dbId = process.env.DUCKLING_TEST_DB_ID || 'integration';
+const protocolPort = Number(process.env.MYSQL_PROTOCOL_PORT || '3307');
 
 const queries = [
   'SHOW DATABASES',
@@ -28,7 +29,7 @@ const queries = [
 async function main() {
   const conn = await mysql.createConnection({
     host: '127.0.0.1',
-    port: 3307,
+    port: protocolPort,
     user: process.env.MYSQL_PROTOCOL_USER || 'duckling',
     password: process.env.MYSQL_PROTOCOL_PASSWORD || process.env.DUCKLING_API_KEY || 'integration-test-key',
     database: dbId,

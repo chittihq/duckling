@@ -68,7 +68,7 @@ describe('Suite 11: SDK Integration', () => {
     const client = createClient();
 
     const counts = await client.query<{ count: number }>('SELECT COUNT(*) AS count FROM users_with_timestamps');
-    expect(counts[0].count).toBe(5);
+    expect(Number(counts[0].count)).toBe(5);
 
     expect(await client.ping()).toBe(true);
 
@@ -76,15 +76,15 @@ describe('Suite 11: SDK Integration', () => {
       'SELECT COUNT(*) AS count FROM users_with_timestamps',
       'SELECT COUNT(*) AS count FROM events_append_only',
     ]);
-    expect(batch[0][0].count).toBe(5);
-    expect(batch[1][0].count).toBe(3);
+    expect(Number(batch[0][0].count)).toBe(5);
+    expect(Number(batch[1][0].count)).toBe(3);
 
     const detailed = await client.queryBatchDetailed<{ id: number }>([
       { sql: 'SELECT id FROM users_with_timestamps ORDER BY id LIMIT 2' },
       { sql: 'SELECT * FROM definitely_missing_table' },
     ]);
     expect(detailed[0].success).toBe(true);
-    expect(detailed[0].data?.map((row) => row.id)).toEqual([1, 2]);
+    expect(detailed[0].data?.map((row) => Number(row.id))).toEqual([1, 2]);
     expect(detailed[1].success).toBe(false);
     expect(detailed[1].error).toMatch(/Query failed:/);
 
@@ -92,7 +92,7 @@ describe('Suite 11: SDK Integration', () => {
       'SELECT id FROM users_with_timestamps ORDER BY id',
       { limit: 2, offset: 1 },
     );
-    expect(paginated.data.map((row) => row.id)).toEqual([2, 3]);
+    expect(paginated.data.map((row) => Number(row.id))).toEqual([2, 3]);
     expect(paginated.pagination).toEqual({
       offset: 1,
       limit: 2,

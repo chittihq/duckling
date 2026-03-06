@@ -65,13 +65,14 @@ pre_cleanup() {
 }
 
 protocol_smoke() {
-  log "[6/8] Running MySQL protocol smoke checks..."
+  log "[7/8] Running MySQL protocol smoke checks..."
   curl -sf -X POST "${API_URL}/sync/full?db=${DB_ID}" \
     -H "Authorization: ${API_KEY}" \
     -H "Content-Type: application/json" > /dev/null
 
-  docker compose exec -T duckling sh -c \
-    "cd /app/packages/server && node /app/tests/integration/scripts/protocol-smoke.js"
+  MYSQL_PROTOCOL_PORT=3309 \
+  MYSQL_PROTOCOL_PASSWORD="${API_KEY}" \
+  node ./scripts/protocol-smoke.js
   ok "MySQL protocol smoke checks passed"
 }
 
@@ -302,13 +303,13 @@ log "[5/8] Building SDK package..."
 pnpm --filter @chittihq/duckling build
 ok "SDK built"
 
-# ------- Step 6: MySQL protocol smoke -------
-protocol_smoke
-
-# ------- Step 7: Run vitest -------
-log "[7/8] Running test suites via vitest..."
+# ------- Step 6: Run vitest -------
+log "[6/8] Running test suites via vitest..."
 echo ""
 pnpm test
+
+# ------- Step 7: MySQL protocol smoke -------
+protocol_smoke
 
 # ------- Step 8: Scan logs for protocol regressions -------
 assert_no_protocol_regressions
