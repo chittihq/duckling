@@ -4,6 +4,13 @@ import { dirname, resolve } from 'path';
 export const API_URL = process.env.DUCKLING_TEST_API_URL || 'http://localhost:3002';
 export const API_KEY = process.env.DUCKLING_TEST_API_KEY || 'integration-test-key';
 export const DB_ID = process.env.DUCKLING_TEST_DB_ID || 'integration';
+export const WS_URL = (() => {
+  const url = new URL(API_URL);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.pathname = '/ws';
+  url.search = '';
+  return url.toString();
+})();
 
 export const TIMEOUT_STARTUP = Number(process.env.DUCKLING_TEST_TIMEOUT_STARTUP || 180) * 1000;
 export const TIMEOUT_CDC = Number(process.env.DUCKLING_TEST_TIMEOUT_CDC || 30) * 1000;

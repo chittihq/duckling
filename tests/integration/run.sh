@@ -65,7 +65,7 @@ pre_cleanup() {
 }
 
 protocol_smoke() {
-  log "[5/7] Running MySQL protocol smoke checks..."
+  log "[6/8] Running MySQL protocol smoke checks..."
   curl -sf -X POST "${API_URL}/sync/full?db=${DB_ID}" \
     -H "Authorization: ${API_KEY}" \
     -H "Content-Type: application/json" > /dev/null
@@ -76,7 +76,7 @@ protocol_smoke() {
 }
 
 assert_no_protocol_regressions() {
-  log "[7/7] Checking logs for protocol regressions..."
+  log "[8/8] Checking logs for protocol regressions..."
   local logs_file
   logs_file="$(mktemp)"
   docker compose logs duckling > "$logs_file" 2>&1 || true
@@ -112,7 +112,7 @@ assert_no_protocol_regressions() {
 
 echo -e "\033[1m\033[0;36m╔══════════════════════════════════════════════════════════════╗\033[0m"
 echo -e "\033[1m\033[0;36m║           Duckling Integration Test Suite                    ║\033[0m"
-echo -e "\033[1m\033[0;36m║       MySQL → DuckDB Replication (vitest)                    ║\033[0m"
+echo -e "\033[1m\033[0;36m║   MySQL → DuckDB Replication + SDK Integration (vitest)      ║\033[0m"
 echo -e "\033[1m\033[0;36m╚══════════════════════════════════════════════════════════════╝\033[0m"
 echo ""
 
@@ -120,7 +120,7 @@ check_deps
 pre_cleanup
 
 # ------- Step 1: Prepare environment -------
-log "[1/7] Preparing environment..."
+log "[1/8] Preparing environment..."
 mkdir -p data
 cat > data/databases.json << EOJSON
 [
@@ -137,7 +137,7 @@ EOJSON
 ok "Environment ready"
 
 # ------- Step 2: Start MySQL & seed data -------
-log "[2/7] Starting MySQL..."
+log "[2/8] Starting MySQL..."
 docker compose up -d mysql
 echo -n "  Waiting for MySQL health check"
 mysql_wait=0
@@ -275,7 +275,7 @@ EOSQL
 ok "Seed data inserted"
 
 # ------- Step 3: Start Duckling -------
-log "[3/7] Starting Duckling server..."
+log "[3/8] Starting Duckling server..."
 docker compose up -d --build duckling
 echo -n "  Waiting for Duckling health check"
 duckling_wait=0
@@ -293,17 +293,22 @@ echo ""
 ok "Duckling is ready"
 
 # ------- Step 4: Install test dependencies -------
-log "[4/7] Installing test dependencies..."
+log "[4/8] Installing test dependencies..."
 (cd "$SCRIPT_DIR" && pnpm install --frozen-lockfile 2>/dev/null || pnpm install)
 ok "Dependencies installed"
 
-# ------- Step 5: MySQL protocol smoke -------
+# ------- Step 5: Build SDK -------
+log "[5/8] Building SDK package..."
+pnpm --filter @chittihq/duckling build
+ok "SDK built"
+
+# ------- Step 6: MySQL protocol smoke -------
 protocol_smoke
 
-# ------- Step 6: Run vitest -------
-log "[6/7] Running test suites via vitest..."
+# ------- Step 7: Run vitest -------
+log "[7/8] Running test suites via vitest..."
 echo ""
 pnpm test
 
-# ------- Step 7: Scan logs for protocol regressions -------
+# ------- Step 8: Scan logs for protocol regressions -------
 assert_no_protocol_regressions

@@ -196,6 +196,10 @@ importers:
         version: 5.8.3
 
   tests/integration:
+    dependencies:
+      '@chittihq/duckling':
+        specifier: workspace:*
+        version: link:../../packages/sdk
     devDependencies:
       typescript:
         specifier: ^5.3.3
