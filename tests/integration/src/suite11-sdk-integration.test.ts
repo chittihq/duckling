@@ -64,6 +64,30 @@ describe('Suite 11: SDK Integration', () => {
     expect(client.isConnected()).toBe(false);
   });
 
+  test('parameterized and parallel queries work against the live server', async () => {
+    const client = createClient();
+    await client.connect();
+
+    const [alice, eve, productCount] = await Promise.all([
+      client.query<{ name: string }>(
+        'SELECT name FROM users_with_timestamps WHERE id = ?',
+        [1],
+      ),
+      client.query<{ name: string }>(
+        'SELECT name FROM users_with_timestamps WHERE id = ?',
+        [5],
+      ),
+      client.query<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM products_simple',
+      ),
+    ]);
+
+    expect(alice).toEqual([{ name: 'Alice' }]);
+    expect(eve).toEqual([{ name: 'Eve' }]);
+    expect(Number(productCount[0].count)).toBe(4);
+    expect(client.getStats().pendingRequests).toBe(0);
+  });
+
   test('auto-connect, ping, batch APIs, and pagination work against the live server', async () => {
     const client = createClient();
 
@@ -98,6 +122,23 @@ describe('Suite 11: SDK Integration', () => {
       limit: 2,
       hasMore: true,
     });
+  });
+
+  test('client remains usable after a failed query on the live server', async () => {
+    const client = createClient();
+
+    await expect(client.query('SELECT * FROM does_not_exist')).rejects.toMatchObject({
+      name: 'DuckDBError',
+      type: DuckDBErrorType.QUERY_ERROR,
+    });
+
+    const rows = await client.query<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM users_with_timestamps',
+    );
+
+    expect(Number(rows[0].count)).toBe(5);
+    expect(client.isConnected()).toBe(true);
+    expect(client.getStats().pendingRequests).toBe(0);
   });
 
   test('connected, disconnected, and message events are emitted on real traffic', async () => {

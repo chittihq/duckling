@@ -85,6 +85,96 @@ test('invalid server messages do not crash clients without an error listener', a
   }
 });
 
+test('concurrent connect calls share a single handshake', async () => {
+  let authMessageCount = 0;
+
+  const { server, url } = await createServer((socket) => {
+    socket.on('message', (raw) => {
+      const message = JSON.parse(raw.toString());
+
+      if (message.type === 'auth') {
+        authMessageCount += 1;
+        setTimeout(() => {
+          socket.send(JSON.stringify({ id: message.id, success: true, result: [] }));
+        }, 20);
+      }
+    });
+  });
+
+  const client = new DucklingClient({
+    url,
+    apiKey: 'test-key',
+    autoReconnect: false,
+    autoPing: false
+  });
+
+  try {
+    await Promise.all([client.connect(), client.connect(), client.connect()]);
+    assert.equal(client.isConnected(), true);
+    assert.equal(authMessageCount, 1);
+  } finally {
+    client.close();
+    await closeServer(server);
+  }
+});
+
+test('concurrent queries resolve correctly when responses arrive out of order', async () => {
+  const pendingQueryIds = [];
+
+  const { server, url } = await createServer((socket) => {
+    socket.on('message', (raw) => {
+      const message = JSON.parse(raw.toString());
+
+      if (message.type === 'auth') {
+        socket.send(JSON.stringify({ id: message.id, success: true, result: [] }));
+        return;
+      }
+
+      if (message.type === 'query') {
+        pendingQueryIds.push(message.id);
+
+        if (pendingQueryIds.length === 2) {
+          socket.send(JSON.stringify({
+            id: pendingQueryIds[1],
+            success: true,
+            result: [{ value: 'second' }]
+          }));
+          setTimeout(() => {
+            socket.send(JSON.stringify({
+              id: pendingQueryIds[0],
+              success: true,
+              result: [{ value: 'first' }]
+            }));
+          }, 10);
+        }
+      }
+    });
+  });
+
+  const client = new DucklingClient({
+    url,
+    apiKey: 'test-key',
+    autoReconnect: false,
+    autoPing: false
+  });
+
+  try {
+    await client.connect();
+
+    const [first, second] = await Promise.all([
+      client.query('SELECT first'),
+      client.query('SELECT second')
+    ]);
+
+    assert.deepEqual(first, [{ value: 'first' }]);
+    assert.deepEqual(second, [{ value: 'second' }]);
+    assert.equal(client.getStats().pendingRequests, 0);
+  } finally {
+    client.close();
+    await closeServer(server);
+  }
+});
+
 test('ping failures tear down the socket and trigger reconnect', async () => {
   let connectionCount = 0;
 
@@ -124,6 +214,46 @@ test('ping failures tear down the socket and trigger reconnect', async () => {
     await client.connect();
     await waitFor(() => connectionCount >= 2, 1000);
     assert.ok(reconnectAttempts.includes(1));
+  } finally {
+    client.close();
+    await closeServer(server);
+  }
+});
+
+test('in-flight requests are rejected and cleaned up when the socket closes mid-query', async () => {
+  const { server, url } = await createServer((socket) => {
+    socket.on('message', (raw) => {
+      const message = JSON.parse(raw.toString());
+
+      if (message.type === 'auth') {
+        socket.send(JSON.stringify({ id: message.id, success: true, result: [] }));
+        return;
+      }
+
+      if (message.type === 'query') {
+        socket.close(1012, 'server restart');
+      }
+    });
+  });
+
+  const client = new DucklingClient({
+    url,
+    apiKey: 'test-key',
+    autoReconnect: false,
+    autoPing: false,
+    requestTimeout: 1000
+  });
+
+  try {
+    await client.connect();
+
+    await assert.rejects(
+      client.query('SELECT slow_operation'),
+      /Connection closed/i
+    );
+
+    assert.equal(client.isConnected(), false);
+    assert.equal(client.getStats().pendingRequests, 0);
   } finally {
     client.close();
     await closeServer(server);
@@ -171,6 +301,53 @@ test('timed-out connect attempts clean up sockets and allow a later reconnect', 
 
     await client.connect();
     assert.equal(client.isConnected(), true);
+  } finally {
+    client.close();
+    await closeServer(server);
+  }
+});
+
+test('manual close cancels a scheduled reconnect', async () => {
+  let connectionCount = 0;
+
+  const { server, url } = await createServer((socket) => {
+    connectionCount += 1;
+
+    socket.on('message', (raw) => {
+      const message = JSON.parse(raw.toString());
+
+      if (message.type === 'auth') {
+        socket.send(JSON.stringify({ id: message.id, success: true, result: [] }));
+        setTimeout(() => {
+          socket.close(1012, 'restart');
+        }, 5);
+      }
+    });
+  });
+
+  const reconnectAttempts = [];
+  const client = new DucklingClient({
+    url,
+    apiKey: 'test-key',
+    autoReconnect: true,
+    autoPing: false,
+    reconnectDelay: 50,
+    maxReconnectAttempts: 3
+  });
+
+  client.on('reconnecting', (attempt) => {
+    reconnectAttempts.push(attempt);
+  });
+
+  try {
+    await client.connect();
+    await waitFor(() => reconnectAttempts.length === 1, 1000);
+    client.close();
+    await delay(120);
+
+    assert.equal(connectionCount, 1);
+    assert.deepEqual(reconnectAttempts, [1]);
+    assert.equal(client.isConnected(), false);
   } finally {
     client.close();
     await closeServer(server);
