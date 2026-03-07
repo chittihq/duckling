@@ -1,6 +1,6 @@
 # DuckDB WebSocket SDK
 
-High-performance TypeScript SDK for connecting to DuckDB server via WebSocket. Designed for low-latency, high-throughput query execution with automatic reconnection and connection pooling support.
+High-performance TypeScript SDK for connecting to DuckDB server via WebSocket. Designed for low-latency, high-throughput query execution with automatic reconnection.
 
 ## Features
 
@@ -9,7 +9,6 @@ High-performance TypeScript SDK for connecting to DuckDB server via WebSocket. D
 - **WebSocket Connection**: Persistent connection with 5-15ms latency (vs 50-100ms for HTTP)
 - **API Key Authentication**: Secure authentication using DUCKLING_API_KEY
 - **Auto-Reconnection**: Automatic reconnection with exponential backoff
-- **Connection Pooling**: Built-in support for connection pools
 - **Parallel Queries**: Execute multiple queries concurrently
 - **Type-Safe**: Full TypeScript support with type inference
 - **High Throughput**: 10,000+ queries/second capability
@@ -104,6 +103,7 @@ import {
   // Config types
   DuckDBSDKConfig,
   ConnectionStats,
+  ConnectionState,
 
   // Query result types
   CountResult,
@@ -143,6 +143,7 @@ interface DuckDBSDKConfig {
   maxReconnectAttempts?: number;  // Max reconnection attempts (default: 5)
   reconnectDelay?: number;        // Reconnect delay in ms (default: 1000)
   connectionTimeout?: number;     // Connection timeout in ms (default: 5000)
+  requestTimeout?: number;        // Per-request timeout in ms (default: 30000)
 }
 ```
 
@@ -290,25 +291,6 @@ const results = await client.queryBatch(queries);
 // 3-5x faster than sequential execution
 ```
 
-### Connection Pool
-
-```bash
-pnpm run example:connection-pool
-```
-
-High-concurrency scenarios with connection pooling:
-
-```typescript
-const pool = new DuckDBConnectionPool(5, {
-  url: 'ws://localhost:3001/ws',
-  apiKey: process.env.DUCKLING_API_KEY
-});
-
-await pool.initialize();
-const results = await pool.queryBatch(queries);
-pool.close();
-```
-
 ## Performance
 
 ### Latency Comparison
@@ -322,7 +304,6 @@ pool.close();
 
 - **Sequential**: ~20-50 queries/second
 - **Parallel (single connection)**: ~500-1,000 queries/second
-- **Connection Pool (5 connections)**: ~2,000-5,000 queries/second
 - **Maximum Capacity**: 10,000+ queries/second
 
 ## Error Handling
@@ -340,6 +321,18 @@ client.on('disconnected', () => {
 
 client.on('error', (error) => {
   console.error('WebSocket error:', error);
+});
+
+client.on('reconnecting', (attempt) => {
+  console.log(`Reconnect attempt ${attempt}`);
+});
+
+client.on('reconnectExhausted', (attempts, error) => {
+  console.error(`Reconnect exhausted after ${attempts} attempts`, error);
+});
+
+client.on('message', (response) => {
+  console.log('Received message:', response.id);
 });
 ```
 
@@ -385,11 +378,13 @@ const client = new DucklingClient({
   apiKey: 'your-api-key',
   autoReconnect: true,          // default: true
   maxReconnectAttempts: 5,      // default: 5
-  reconnectDelay: 1000          // default: 1000ms, exponential backoff
+  reconnectDelay: 1000,         // default: 1000ms, exponential backoff
+  requestTimeout: 30000         // default: 30000ms
 });
 
 // Connection will auto-reconnect up to 5 times on failure
-// Delays: 1s, 2s, 3s, 4s, 5s
+// Delays: 1s, 2s, 4s, 8s, 16s
+// Close codes 1008 (auth/policy) and 1011 (server/internal) do not auto-reconnect
 ```
 
 ## Environment Variables
@@ -405,9 +400,8 @@ DUCKLING_WS_URL=ws://localhost:3001/ws  # Optional
 ```
 Dashboard → SDK → WebSocket → DuckDB Server
             ↓
-     [Connection Pool]
      [Auto-Reconnect]
-     [Query Queuing]
+     [Parallel Queries]
 ```
 
 ## Use Cases
