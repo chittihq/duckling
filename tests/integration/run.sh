@@ -9,6 +9,7 @@
 #   cd tests/integration
 #   chmod +x run.sh
 #   ./run.sh
+#   DUCKLING_TEST_SDK_REGISTRY_VERSION=0.0.5 ./run.sh
 # ============================================================
 set -euo pipefail
 
@@ -116,6 +117,10 @@ echo -e "\033[1m\033[0;36m║           Duckling Integration Test Suite         
 echo -e "\033[1m\033[0;36m║   MySQL → DuckDB Replication + SDK Integration (vitest)      ║\033[0m"
 echo -e "\033[1m\033[0;36m╚══════════════════════════════════════════════════════════════╝\033[0m"
 echo ""
+
+if [ -n "${DUCKLING_TEST_SDK_REGISTRY_VERSION:-}" ]; then
+  log "Registry SDK verification enabled for @chittihq/duckling@${DUCKLING_TEST_SDK_REGISTRY_VERSION}"
+fi
 
 check_deps
 pre_cleanup

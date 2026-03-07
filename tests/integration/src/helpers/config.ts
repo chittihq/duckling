@@ -15,6 +15,8 @@ export const WS_URL = (() => {
 export const TIMEOUT_STARTUP = Number(process.env.DUCKLING_TEST_TIMEOUT_STARTUP || 180) * 1000;
 export const TIMEOUT_CDC = Number(process.env.DUCKLING_TEST_TIMEOUT_CDC || 30) * 1000;
 export const TIMEOUT_CDC_START = Number(process.env.DUCKLING_TEST_TIMEOUT_CDC_START || 15) * 1000;
+export const SDK_REGISTRY_VERSION = process.env.DUCKLING_TEST_SDK_REGISTRY_VERSION || '';
+export const SDK_REGISTRY_URL = process.env.DUCKLING_TEST_SDK_REGISTRY_URL || 'https://registry.npmjs.org';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
