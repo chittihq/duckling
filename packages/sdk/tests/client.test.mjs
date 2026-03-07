@@ -436,6 +436,68 @@ test('reconnectExhausted is emitted when auto-reconnect reaches the configured l
   }
 });
 
+test('manual connect resets the reconnect budget after a previously exhausted cycle', async () => {
+  let connectionCount = 0;
+
+  const { server, url } = await createServer((socket) => {
+    connectionCount += 1;
+
+    socket.on('message', (raw) => {
+      const message = JSON.parse(raw.toString());
+
+      if (message.type !== 'auth') {
+        return;
+      }
+
+      if (connectionCount === 1) {
+        socket.send(JSON.stringify({ id: message.id, success: true, result: [] }));
+        setTimeout(() => {
+          socket.close(1013, 'temporary failure');
+        }, 5);
+        return;
+      }
+
+      if (connectionCount >= 4) {
+        socket.send(JSON.stringify({ id: message.id, success: true, result: [] }));
+      }
+    });
+  });
+
+  const reconnectAttempts = [];
+  const exhaustedEvents = [];
+  const client = new DucklingClient({
+    url,
+    apiKey: 'test-key',
+    autoReconnect: true,
+    autoPing: false,
+    reconnectDelay: 10,
+    maxReconnectAttempts: 1,
+    connectionTimeout: 40
+  });
+
+  client.on('reconnecting', (attempt) => {
+    reconnectAttempts.push(attempt);
+  });
+  client.on('reconnectExhausted', (attempts) => {
+    exhaustedEvents.push(attempts);
+  });
+
+  try {
+    await client.connect();
+    await waitFor(() => exhaustedEvents.length === 1, 1000);
+
+    await assert.rejects(client.connect(), /Connection timeout/);
+    await waitFor(() => client.isConnected(), 1000);
+
+    assert.ok(connectionCount >= 4);
+    assert.deepEqual(reconnectAttempts, [1, 1]);
+    assert.deepEqual(exhaustedEvents, [1]);
+  } finally {
+    client.close();
+    await closeServer(server);
+  }
+});
+
 test('close codes 1008 and 1011 do not trigger reconnect attempts', async () => {
   for (const closeCode of [1008, 1011]) {
     let connectionCount = 0;

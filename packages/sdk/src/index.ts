@@ -107,9 +107,20 @@ export class DucklingClient extends EventEmitter {
   }
 
   /**
-   * Connect to DuckDB WebSocket server and authenticate
+   * Connect to DuckDB WebSocket server and authenticate.
+   * Resets the reconnect budget so auto-reconnect gets a fresh cycle.
    */
   async connect(): Promise<void> {
+    this.reconnectAttempts = 0;
+    this.reconnectExhaustedEmitted = false;
+    return this._doConnect();
+  }
+
+  /**
+   * Internal connect — called by both the public API and the reconnect timer.
+   * Does NOT reset the reconnect budget so scheduled retries accumulate.
+   */
+  private async _doConnect(): Promise<void> {
     if (this.ws?.readyState === WebSocket.OPEN && this.isAuthenticated) {
       return; // Already connected and authenticated
     }
@@ -120,7 +131,6 @@ export class DucklingClient extends EventEmitter {
 
     this.manualClose = false;
     this.isConnecting = true;
-    this.reconnectExhaustedEmitted = false;
     this.clearReconnectTimer();
 
     // Tear down any stale socket before replacing it with a new attempt.
@@ -298,7 +308,7 @@ export class DucklingClient extends EventEmitter {
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.connect().catch((error) => {
+      this._doConnect().catch((error) => {
         this.reportError(this.toDuckDBError(error, DuckDBErrorType.CONNECTION_ERROR, 'Reconnect failed'));
       });
     }, delay);
