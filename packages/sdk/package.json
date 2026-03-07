@@ -1,6 +1,6 @@
 {
   "name": "@chittihq/duckling",
-  "version": "0.0.5",
+  "version": "0.0.7",
   "description": "High-performance WebSocket SDK for Duckling DuckDB Server",
   "type": "module",
   "exports": {
