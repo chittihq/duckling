@@ -136,6 +136,16 @@ class SequentialAppenderService extends EventEmitter {
     logger.info(message, details);
   }
 
+  private getPrimaryKeyColumnsFromSchema(schema: any[]): string[] {
+    return schema.filter(col => col.Key === 'PRI').map(col => col.Field);
+  }
+
+  private buildPrimaryKeyJoinPredicate(leftAlias: string, rightAlias: string, primaryKeyColumns: string[]): string {
+    return primaryKeyColumns
+      .map((column) => `${leftAlias}.${this.q(column)} = ${rightAlias}.${this.q(column)}`)
+      .join(' AND ');
+  }
+
   /** Best-effort table cleanup that never masks the original sync outcome. */
   private async dropTableIfExists(tableName: string, context: string): Promise<void> {
     try {
@@ -1258,41 +1268,44 @@ class SequentialAppenderService extends EventEmitter {
       }
 
       try {
-        // Get column names for INSERT OR REPLACE statement (upsert)
+        // Get column names and keys for staging-table incremental merge
         const columns = schema.map(col => col.Field);
-
-        // Create column type map for sanitization
         const columnTypes = new Map(schema.map(col => [col.Field, col.Type]));
+        const primaryKeyColumns = this.getPrimaryKeyColumnsFromSchema(schema);
 
-        // Calculate safe insert batch size based on column count
-        // JavaScript/Node.js has ~65K function argument limit
+        if (primaryKeyColumns.length === 0) {
+          logger.warn(`${tableName}: No primary key found for incremental merge, falling back to sequential sync with Appender`);
+          return await this.syncTableSequentialWithAppender(tableName);
+        }
+
         const columnCount = schema.length;
-        const maxSafeBatchSize = Math.floor(65000 / columnCount); // Safety margin for parameter binding
-        const insertBatchSize = Math.min(config.sync.insertBatchSize, maxSafeBatchSize);
         const fetchBatchSize = config.sync.batchSize;
+        const flushInterval = config.sync.appenderFlushInterval;
+        let lastFlushedAt = 0;
 
-        logger.info(`${tableName}: watermark sync - columns=${columnCount}, insertBatchSize=${insertBatchSize}, fetchBatchSize=${fetchBatchSize}`);
+        await this.cleanupOrphanStagingTables(tableName);
+        const stagingTable = this.buildStagingTableName(tableName);
+        await this.createTable(stagingTable, schema);
 
-        // Checkpoint watermark every N stream batches to limit re-work on crash
-        // With default batchSize=1000, this saves progress every ~10K records
-        const WATERMARK_CHECKPOINT_INTERVAL = 10;
-        let batchesSinceCheckpoint = 0;
+        logger.info(`${tableName}: watermark sync - columns=${columnCount}, fetchBatchSize=${fetchBatchSize}, flushInterval=${flushInterval}, primaryKeys=${primaryKeyColumns.join(', ')}, strategy=staging-merge`);
 
-        // Stream incremental data batch-by-batch (no full dataset in memory)
-        for await (const streamBatch of this.mysql.streamIncrementalData(tableName, watermarkColumn, watermarkValue, fetchBatchSize)) {
-          // Sub-batch for INSERT OR REPLACE parameter limits
-          for (let i = 0; i < streamBatch.length; i += insertBatchSize) {
-            const batch = streamBatch.slice(i, i + insertBatchSize);
-            const batchNumber = Math.floor(i / insertBatchSize) + 1;
-            const sampleRecord = batch[0] || {};
+        let totalBatches = 0;
+        let _appender: any = null;
+        let _conn: any = null;
 
-            // Build bulk INSERT OR REPLACE query for incremental records
-            const rowPlaceholders = `(${columns.map(() => '?').join(', ')})`;
-            const allPlaceholders = batch.map(() => rowPlaceholders).join(', ');
-            const bulkInsertQuery = `INSERT OR REPLACE INTO ${this.q(tableName)} (${columns.map(c => this.q(c)).join(', ')}) VALUES ${allPlaceholders}`;
+        try {
+          const { appender, connection: conn } = await this.duckdb.createAppender(stagingTable);
+          _appender = appender;
+          _conn = conn;
+
+          // Stream incremental data batch-by-batch (no full dataset in memory)
+          for await (const streamBatch of this.mysql.streamIncrementalData(tableName, watermarkColumn, watermarkValue, fetchBatchSize)) {
+            totalBatches++;
+            const batchNumber = totalBatches;
+            const sampleRecord = streamBatch[0] || {};
 
             // Sanitize batch: use worker threads if enabled, otherwise main thread
-            let allValues: any[];
+            let sanitizedRows: any[][];
             const pool = WorkerPool.getInstance();
             let useMainThread = pool.isDisabled;
 
@@ -1300,13 +1313,7 @@ class SequentialAppenderService extends EventEmitter {
               try {
                 const columnTypesObj: Record<string, string> = {};
                 for (const [k, v] of columnTypes) columnTypesObj[k] = v;
-                const sanitizedRows = await pool.sanitizeBatch(batch, columns, columnTypesObj);
-                allValues = [];
-                for (const row of sanitizedRows) {
-                  for (const val of row) {
-                    allValues.push(val);
-                  }
-                }
+                sanitizedRows = await pool.sanitizeBatch(streamBatch, columns, columnTypesObj);
               } catch (workerErr) {
                 logger.warn(`${tableName}: Worker pool sanitization failed (incremental), falling back to main thread:`, workerErr);
                 useMainThread = true;
@@ -1314,18 +1321,15 @@ class SequentialAppenderService extends EventEmitter {
             }
 
             if (useMainThread) {
-              allValues = [];
-              for (const record of batch) {
-                for (const col of columns) {
-                  allValues.push(this.sanitizeValue(record[col], columnTypes.get(col) || ''));
-                }
-              }
+              sanitizedRows = streamBatch.map(record =>
+                columns.map(col => this.sanitizeValue(record[col], columnTypes.get(col) || ''))
+              );
             }
 
             this.maybeLogCrashDiagnostics(`${tableName}: incremental batch prepared`, {
               batchNumber,
-              batchSize: batch.length,
-              valuesCount: allValues.length,
+              batchSize: streamBatch.length,
+              valuesCount: sanitizedRows.length * columns.length,
               useMainThread,
               watermarkColumn,
               watermarkValue: watermarkValue instanceof Date ? watermarkValue.toISOString() : String(watermarkValue),
@@ -1338,78 +1342,102 @@ class SequentialAppenderService extends EventEmitter {
               ),
             });
 
-            // Execute bulk upsert (much faster than individual inserts)
-            this.maybeLogCrashDiagnostics(`${tableName}: incremental batch upsert starting`, {
+            this.maybeLogCrashDiagnostics(`${tableName}: incremental staging append starting`, {
               batchNumber,
-              batchSize: batch.length,
-              valuesCount: allValues.length,
-            });
-            await this.duckdb.run(bulkInsertQuery, allValues!);
-            this.maybeLogCrashDiagnostics(`${tableName}: incremental batch upsert completed`, {
-              batchNumber,
-              batchSize: batch.length,
-              recordsProcessedAfterBatch: recordsProcessed + batch.length,
+              batchSize: streamBatch.length,
+              valuesCount: sanitizedRows.length * columns.length,
+              stagingTable,
             });
 
-            recordsProcessed += batch.length;
+            for (const sanitizedRow of sanitizedRows) {
+              for (let c = 0; c < columns.length; c++) {
+                const value = sanitizedRow[c];
+                const mysqlType = columnTypes.get(columns[c]) || '';
+                this.appendValueByType(appender, value, mysqlType);
+              }
+              appender.endRow();
+            }
+
+            recordsProcessed += streamBatch.length;
+            lastRecord = streamBatch[streamBatch.length - 1];
+
+            if (recordsProcessed - lastFlushedAt >= flushInterval) {
+              appender.flushSync();
+              lastFlushedAt = recordsProcessed;
+            }
+
+            this.maybeLogCrashDiagnostics(`${tableName}: incremental staging append completed`, {
+              batchNumber,
+              batchSize: streamBatch.length,
+              recordsProcessedAfterBatch: recordsProcessed,
+              stagingTable,
+            });
+
+            logger.debug(`${tableName}: streamed ${recordsProcessed} incremental records so far`);
           }
 
-          lastRecord = streamBatch[streamBatch.length - 1];
-          batchesSinceCheckpoint++;
+          appender.flushSync();
+          appender.closeSync();
+          conn.closeSync();
+          _appender = null;
+          _conn = null;
 
-          // Periodic watermark checkpoint so crash recovery doesn't restart from zero.
-          // Safe because INSERT OR REPLACE handles re-processing idempotently.
-          if (batchesSinceCheckpoint >= WATERMARK_CHECKPOINT_INTERVAL && lastRecord) {
-            const checkpoint: Partial<TableWatermark> = {
-              lastProcessedTimestamp: new Date(),
-              primaryKeyColumn: watermark.primaryKeyColumn,
-              timestampColumn: watermark.timestampColumn
+          if (recordsProcessed === 0) {
+            await this.dropTableIfExists(stagingTable, `empty incremental staging cleanup for ${tableName}`);
+            const duration = Date.now() - startTime;
+            logger.info(`No incremental data found for ${tableName}`);
+
+            return {
+              table: tableName,
+              recordsProcessed: 0,
+              duration,
+              status: 'success',
+              syncType: 'watermark'
             };
-            if (watermark.primaryKeyColumn && lastRecord[watermark.primaryKeyColumn]) {
-              checkpoint.lastProcessedId = lastRecord[watermark.primaryKeyColumn];
-            }
-            if (watermark.timestampColumn && lastRecord[watermark.timestampColumn]) {
-              checkpoint.lastProcessedTimestamp = new Date(lastRecord[watermark.timestampColumn]);
-            }
-            await this.updateWatermark(tableName, checkpoint);
-            batchesSinceCheckpoint = 0;
-            logger.debug(`${tableName}: watermark checkpoint at ${recordsProcessed} records`);
           }
 
-          logger.debug(`${tableName}: streamed ${recordsProcessed} incremental records so far`);
-        }
+          const joinPredicate = this.buildPrimaryKeyJoinPredicate('target', 'staging', primaryKeyColumns);
 
-        if (recordsProcessed === 0) {
-          const duration = Date.now() - startTime;
-          logger.info(`No incremental data found for ${tableName}`);
+          await this.duckdb.run('BEGIN TRANSACTION');
+          try {
+            await this.duckdb.run(`DELETE FROM ${this.q(tableName)} AS target USING ${this.q(stagingTable)} AS staging WHERE ${joinPredicate}`);
+            await this.duckdb.run(`INSERT INTO ${this.q(tableName)} SELECT * FROM ${this.q(stagingTable)}`);
+            await this.duckdb.run('COMMIT');
+          } catch (mergeError) {
+            try {
+              await this.duckdb.run('ROLLBACK');
+            } catch (rollbackError) {
+              logger.error(`Failed to rollback incremental staging merge for ${tableName}:`, rollbackError);
+            }
+            throw mergeError;
+          } finally {
+            await this.dropTableIfExists(stagingTable, `incremental staging cleanup for ${tableName}`);
+          }
 
-          return {
-            table: tableName,
-            recordsProcessed: 0,
-            duration,
-            status: 'success',
-            syncType: 'watermark'
+          // Update watermark from last record seen in stream
+          const newWatermark: Partial<TableWatermark> = {
+            lastProcessedTimestamp: new Date(),
+            primaryKeyColumn: watermark.primaryKeyColumn,
+            timestampColumn: watermark.timestampColumn
           };
+
+          if (watermark.primaryKeyColumn && lastRecord[watermark.primaryKeyColumn]) {
+            newWatermark.lastProcessedId = lastRecord[watermark.primaryKeyColumn];
+          }
+
+          if (watermark.timestampColumn && lastRecord[watermark.timestampColumn]) {
+            newWatermark.lastProcessedTimestamp = new Date(lastRecord[watermark.timestampColumn]);
+          }
+
+          await this.updateWatermark(tableName, newWatermark);
+
+          logger.info(`Watermark incremental sync completed for ${tableName}: ${recordsProcessed} records`);
+        } catch (error) {
+          if (_appender) { try { _appender.closeSync(); } catch {} }
+          if (_conn) { try { _conn.closeSync(); } catch {} }
+          await this.dropTableIfExists(stagingTable, `error cleanup for incremental sync of ${tableName}`);
+          throw error;
         }
-
-        // Update watermark from last record seen in stream
-        const newWatermark: Partial<TableWatermark> = {
-          lastProcessedTimestamp: new Date(),
-          primaryKeyColumn: watermark.primaryKeyColumn,
-          timestampColumn: watermark.timestampColumn
-        };
-
-        if (watermark.primaryKeyColumn && lastRecord[watermark.primaryKeyColumn]) {
-          newWatermark.lastProcessedId = lastRecord[watermark.primaryKeyColumn];
-        }
-
-        if (watermark.timestampColumn && lastRecord[watermark.timestampColumn]) {
-          newWatermark.lastProcessedTimestamp = new Date(lastRecord[watermark.timestampColumn]);
-        }
-
-        await this.updateWatermark(tableName, newWatermark);
-
-        logger.info(`Watermark incremental sync completed for ${tableName}: ${recordsProcessed} records`);
 
       } catch (error) {
         // Rollback on any error
