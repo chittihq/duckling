@@ -127,6 +127,11 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     const createAppenderTable = duckdb.createAppender.mock.calls[0][0] as string;
 
     expect(result.status).toBe('success');
+    expect(service.createTable).toHaveBeenCalledWith(
+      createAppenderTable,
+      expect.any(Array),
+      { includePrimaryKey: false }
+    );
     expect(createAppenderTable).toMatch(/^__full_sync_staging_users_[a-f0-9]{32}$/);
     expect(queries).toContain('BEGIN TRANSACTION');
     expect(queries).toContain('COMMIT');

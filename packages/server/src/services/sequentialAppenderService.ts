@@ -78,6 +78,8 @@ export interface SyncProgressStatus {
 class SequentialAppenderService extends EventEmitter {
   private mysql: MySQLConnection;
   private duckdb: DuckDBConnection;
+  private startupStagingCleanupPromise: Promise<void> | null = null;
+  private startupStagingCleanupComplete = false;
   private static instances: Map<string, SequentialAppenderService> = new Map();
   private tableSyncLocks: Set<string> = new Set();
   private syncQueue: Array<{ tableName?: string; resolve: (value: any) => void; reject: (error: any) => void }> = [];
@@ -184,6 +186,53 @@ class SequentialAppenderService extends EventEmitter {
     } catch (error) {
       logger.warn(`${tableName}: Failed to list orphan staging tables`, error);
     }
+  }
+
+  /**
+   * Drop any crash-left staging tables once after process startup, before the first staged sync begins.
+   * This avoids restart/recovery failures caused by orphaned staging tables from unrelated tables.
+   */
+  private async ensureStartupStagingCleanup(): Promise<void> {
+    if (this.startupStagingCleanupComplete) return;
+    if (typeof (this.duckdb as any).execute !== 'function') {
+      this.startupStagingCleanupComplete = true;
+      return;
+    }
+    if (this.startupStagingCleanupPromise) {
+      await this.startupStagingCleanupPromise;
+      return;
+    }
+
+    this.startupStagingCleanupPromise = (async () => {
+      try {
+        const rows = await this.duckdb.execute(`
+          SELECT table_name
+          FROM information_schema.tables
+          WHERE table_schema = 'main'
+            AND substr(table_name, 1, 20) = '__full_sync_staging_'
+        `);
+
+        let cleaned = 0;
+        for (const row of rows) {
+          const staleTableName = typeof row?.table_name === 'string' ? row.table_name : null;
+          if (!staleTableName) continue;
+          await this.dropTableIfExists(staleTableName, 'startup orphan staging cleanup');
+          cleaned += 1;
+        }
+
+        if (cleaned > 0) {
+          logger.info(`Startup cleanup removed ${cleaned} orphan staging table(s)`);
+        }
+
+        this.startupStagingCleanupComplete = true;
+      } catch (error) {
+        logger.warn('Failed to perform startup orphan staging cleanup:', error);
+      } finally {
+        this.startupStagingCleanupPromise = null;
+      }
+    })();
+
+    await this.startupStagingCleanupPromise;
   }
 
   static getInstance(databaseId: string, mysql: MySQLConnection, duckdb: DuckDBConnection): SequentialAppenderService {
@@ -983,9 +1032,10 @@ class SequentialAppenderService extends EventEmitter {
       let lastLoggedAt = 0;
       const PROGRESS_LOG_INTERVAL = 10000;
 
+      await this.ensureStartupStagingCleanup();
       await this.cleanupOrphanStagingTables(tableName);
       const stagingTable = this.buildStagingTableName(tableName);
-      await this.createTable(stagingTable, schema);
+      await this.createTable(stagingTable, schema, { includePrimaryKey: false });
 
       logger.info(`${tableName}: Starting Appender-based insert into staging table ${stagingTable}`);
 
@@ -1283,9 +1333,10 @@ class SequentialAppenderService extends EventEmitter {
         const flushInterval = config.sync.appenderFlushInterval;
         let lastFlushedAt = 0;
 
+        await this.ensureStartupStagingCleanup();
         await this.cleanupOrphanStagingTables(tableName);
         const stagingTable = this.buildStagingTableName(tableName);
-        await this.createTable(stagingTable, schema);
+        await this.createTable(stagingTable, schema, { includePrimaryKey: false });
 
         logger.info(`${tableName}: watermark sync - columns=${columnCount}, fetchBatchSize=${fetchBatchSize}, flushInterval=${flushInterval}, primaryKeys=${primaryKeyColumns.join(', ')}, strategy=staging-merge`);
 
@@ -1524,8 +1575,15 @@ class SequentialAppenderService extends EventEmitter {
   /**
    * Create a new table with the given schema
    */
-  private async createTable(tableName: string, schema: any[]): Promise<void> {
-    const primaryKeyColumns = schema.filter(col => col.Key === 'PRI').map(col => col.Field);
+  private async createTable(
+    tableName: string,
+    schema: any[],
+    options?: { includePrimaryKey?: boolean }
+  ): Promise<void> {
+    const includePrimaryKey = options?.includePrimaryKey ?? true;
+    const primaryKeyColumns = includePrimaryKey
+      ? schema.filter(col => col.Key === 'PRI').map(col => col.Field)
+      : [];
 
     const columns = schema.map(col => {
       const type = this.mapMySQLTypeToDuckDB(col.Type);
