@@ -83,6 +83,10 @@ export const config = {
     healthCheckInterval: parseInt(process.env.HEALTH_CHECK_INTERVAL || '60000'),
     logLevel: process.env.LOG_LEVEL || 'info',
   },
+
+  debug: {
+    crashDiagnostics: process.env.CRASH_DEBUG !== 'false',
+  },
   
   server: {
     enableCors: true,

@@ -119,6 +119,23 @@ class SequentialAppenderService extends EventEmitter {
     return `${this.getStagingTablePrefix(tableName)}${randomUUID().replace(/-/g, '')}`;
   }
 
+  private describeDiagnosticValue(value: unknown): string {
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    if (Buffer.isBuffer(value)) return `Buffer(${value.length})`;
+    if (value instanceof Uint8Array) return `Uint8Array(${value.length})`;
+    if (value instanceof Date) return `Date(${value.toISOString()})`;
+    if (Array.isArray(value)) return `Array(${value.length})`;
+    if (typeof value === 'bigint') return `bigint(${value.toString()})`;
+    if (typeof value === 'object') return `object(${Object.keys(value as Record<string, unknown>).slice(0, 5).join(',')})`;
+    return `${typeof value}(${String(value).slice(0, 120)})`;
+  }
+
+  private maybeLogCrashDiagnostics(message: string, details: Record<string, unknown>): void {
+    if (!config.debug.crashDiagnostics) return;
+    logger.info(message, details);
+  }
+
   /** Best-effort table cleanup that never masks the original sync outcome. */
   private async dropTableIfExists(tableName: string, context: string): Promise<void> {
     try {
@@ -1266,6 +1283,8 @@ class SequentialAppenderService extends EventEmitter {
           // Sub-batch for INSERT OR REPLACE parameter limits
           for (let i = 0; i < streamBatch.length; i += insertBatchSize) {
             const batch = streamBatch.slice(i, i + insertBatchSize);
+            const batchNumber = Math.floor(i / insertBatchSize) + 1;
+            const sampleRecord = batch[0] || {};
 
             // Build bulk INSERT OR REPLACE query for incremental records
             const rowPlaceholders = `(${columns.map(() => '?').join(', ')})`;
@@ -1303,8 +1322,34 @@ class SequentialAppenderService extends EventEmitter {
               }
             }
 
+            this.maybeLogCrashDiagnostics(`${tableName}: incremental batch prepared`, {
+              batchNumber,
+              batchSize: batch.length,
+              valuesCount: allValues.length,
+              useMainThread,
+              watermarkColumn,
+              watermarkValue: watermarkValue instanceof Date ? watermarkValue.toISOString() : String(watermarkValue),
+              primaryKeyColumn: watermark.primaryKeyColumn || null,
+              primaryKeySample: watermark.primaryKeyColumn ? this.describeDiagnosticValue(sampleRecord[watermark.primaryKeyColumn]) : null,
+              timestampColumn: watermark.timestampColumn || null,
+              timestampSample: watermark.timestampColumn ? this.describeDiagnosticValue(sampleRecord[watermark.timestampColumn]) : null,
+              sampleValueTypes: Object.fromEntries(
+                columns.slice(0, 8).map((col) => [col, this.describeDiagnosticValue(sampleRecord[col])])
+              ),
+            });
+
             // Execute bulk upsert (much faster than individual inserts)
+            this.maybeLogCrashDiagnostics(`${tableName}: incremental batch upsert starting`, {
+              batchNumber,
+              batchSize: batch.length,
+              valuesCount: allValues.length,
+            });
             await this.duckdb.run(bulkInsertQuery, allValues!);
+            this.maybeLogCrashDiagnostics(`${tableName}: incremental batch upsert completed`, {
+              batchNumber,
+              batchSize: batch.length,
+              recordsProcessedAfterBatch: recordsProcessed + batch.length,
+            });
 
             recordsProcessed += batch.length;
           }

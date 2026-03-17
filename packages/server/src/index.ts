@@ -15,22 +15,90 @@ if (global.gc) {
 }
 
 // Add memory monitoring
-const logMemoryUsage = () => {
+const formatMB = (bytes: number) => Math.round(bytes / 1024 / 1024 * 100) / 100;
+
+const getProcessSnapshot = () => {
   const usage = process.memoryUsage();
-  const formatMB = (bytes: number) => Math.round(bytes / 1024 / 1024 * 100) / 100;
-  
+  return {
+    pid: process.pid,
+    uptimeSec: Math.round(process.uptime()),
+    rssMB: formatMB(usage.rss),
+    heapUsedMB: formatMB(usage.heapUsed),
+    heapTotalMB: formatMB(usage.heapTotal),
+    externalMB: formatMB(usage.external),
+  };
+};
+
+const logMemoryUsage = () => {
   logger.info('Memory Usage:', {
-    rss: `${formatMB(usage.rss)} MB`,
-    heapTotal: `${formatMB(usage.heapTotal)} MB`,
-    heapUsed: `${formatMB(usage.heapUsed)} MB`,
-    external: `${formatMB(usage.external)} MB`
+    rss: `${getProcessSnapshot().rssMB} MB`,
+    heapTotal: `${getProcessSnapshot().heapTotalMB} MB`,
+    heapUsed: `${getProcessSnapshot().heapUsedMB} MB`,
+    external: `${getProcessSnapshot().externalMB} MB`
   });
   
   // Force GC if heap usage is high
+  const usage = process.memoryUsage();
   if (global.gc && usage.heapUsed > usage.heapTotal * 0.8) {
     logger.info('High memory usage detected, running garbage collection');
     global.gc();
   }
+};
+
+const installRuntimeDiagnostics = (logsDir: string) => {
+  if (config.debug.crashDiagnostics && process.report) {
+    try {
+      process.report.directory = logsDir;
+      process.report.reportOnFatalError = true;
+      process.report.reportOnUncaughtException = true;
+      process.report.reportOnSignal = true;
+      process.report.signal = 'SIGUSR2';
+      logger.info('Crash diagnostics enabled', {
+        logsDir,
+        reportOnFatalError: process.report.reportOnFatalError,
+        reportOnSignal: process.report.reportOnSignal,
+        signal: process.report.signal,
+      });
+    } catch (error) {
+      logger.warn('Failed to enable Node.js process reports:', error);
+    }
+  }
+
+  process.on('uncaughtExceptionMonitor', (error, origin) => {
+    logger.error('Uncaught Exception Monitor:', {
+      origin,
+      error,
+      process: getProcessSnapshot(),
+    });
+  });
+
+  process.on('warning', (warning) => {
+    logger.warn('Process warning:', {
+      name: warning.name,
+      message: warning.message,
+      stack: warning.stack,
+      process: getProcessSnapshot(),
+    });
+  });
+
+  process.on('multipleResolves', (type, promise, value) => {
+    logger.warn('Promise multipleResolves detected:', {
+      type,
+      value,
+      promise,
+      process: getProcessSnapshot(),
+    });
+  });
+
+  process.on('beforeExit', (code) => {
+    if (!config.debug.crashDiagnostics) return;
+    logger.info('Process beforeExit', { code, process: getProcessSnapshot() });
+  });
+
+  process.on('exit', (code) => {
+    if (!config.debug.crashDiagnostics) return;
+    logger.info('Process exit', { code, process: getProcessSnapshot() });
+  });
 };
 
 // Log memory usage every 5 minutes
@@ -121,6 +189,7 @@ async function main() {
       fs.mkdirSync(logsDir, { recursive: true });
     }
     console.log('Logs directory created');
+    installRuntimeDiagnostics(logsDir);
 
     const server = new DuckDBServer();
     console.log('DuckDB Server instance created');
