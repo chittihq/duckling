@@ -186,7 +186,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     expect(queries).toContain('COMMIT');
   });
 
-  test('cleans orphan staging tables left by previous crashes before sync', async () => {
+  test('ignores orphan staging tables left by previous crashes before sync', async () => {
     const staleTable = '__full_sync_staging_users_deadbeefdeadbeefdeadbeefdeadbeef';
     const runMock = vi.fn().mockResolvedValue(undefined);
     const appender = {
@@ -231,6 +231,6 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     const queries = runMock.mock.calls.map(([query]) => query);
 
     expect(result.status).toBe('success');
-    expect(queries).toContain(`DROP TABLE IF EXISTS "${staleTable}"`);
+    expect(queries).not.toContain(`DROP TABLE IF EXISTS "${staleTable}"`);
   });
 });

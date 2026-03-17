@@ -121,6 +121,11 @@ class SequentialAppenderService extends EventEmitter {
     return `${this.getStagingTablePrefix(tableName)}${randomUUID().replace(/-/g, '')}`;
   }
 
+  /** Internal crash-recovery staging tables should never be treated as replicated user tables. */
+  private isInternalStagingTable(tableName: string): boolean {
+    return tableName.startsWith('__full_sync_staging_');
+  }
+
   private describeDiagnosticValue(value: unknown): string {
     if (value === null) return 'null';
     if (value === undefined) return 'undefined';
@@ -158,8 +163,10 @@ class SequentialAppenderService extends EventEmitter {
   }
 
   /**
-   * Drop stale staging tables left by previous crashed/aborted full syncs.
-   * Cleanup is table-scoped and best-effort to avoid affecting active sync flow.
+   * Detect stale staging tables left by previous crashed/aborted syncs.
+   *
+   * We intentionally do not drop them from the hot sync path. In damaged DB/WAL states,
+   * even a best-effort DROP on crash residue has triggered native DuckDB failures.
    */
   private async cleanupOrphanStagingTables(tableName: string): Promise<void> {
     const stagingPrefix = this.getStagingTablePrefix(tableName);
@@ -172,16 +179,18 @@ class SequentialAppenderService extends EventEmitter {
           AND substr(table_name, 1, ?) = ?
       `, [stagingPrefix.length, stagingPrefix]);
 
-      let cleaned = 0;
+      const staleTableNames: string[] = [];
       for (const row of rows) {
         const staleTableName = typeof row?.table_name === 'string' ? row.table_name : null;
         if (!staleTableName) continue;
-        await this.dropTableIfExists(staleTableName, `orphan staging cleanup for ${tableName}`);
-        cleaned += 1;
+        staleTableNames.push(staleTableName);
       }
 
-      if (cleaned > 0) {
-        logger.info(`${tableName}: Cleaned ${cleaned} orphan staging table(s) before full sync`);
+      if (staleTableNames.length > 0) {
+        logger.warn(
+          `${tableName}: Ignoring ${staleTableNames.length} orphan staging table(s) from a previous interrupted sync`,
+          { staleTables: staleTableNames }
+        );
       }
     } catch (error) {
       logger.warn(`${tableName}: Failed to list orphan staging tables`, error);
@@ -189,8 +198,10 @@ class SequentialAppenderService extends EventEmitter {
   }
 
   /**
-   * Drop any crash-left staging tables once after process startup, before the first staged sync begins.
-   * This avoids restart/recovery failures caused by orphaned staging tables from unrelated tables.
+   * Detect crash-left staging tables once after process startup.
+   *
+   * We exclude them from normal table listings and sync cleanup, then leave them alone until manual
+   * maintenance. This keeps restart recovery from poking a possibly damaged staging artifact.
    */
   private async ensureStartupStagingCleanup(): Promise<void> {
     if (this.startupStagingCleanupComplete) return;
@@ -212,16 +223,17 @@ class SequentialAppenderService extends EventEmitter {
             AND substr(table_name, 1, 20) = '__full_sync_staging_'
         `);
 
-        let cleaned = 0;
+        const staleTableNames: string[] = [];
         for (const row of rows) {
           const staleTableName = typeof row?.table_name === 'string' ? row.table_name : null;
           if (!staleTableName) continue;
-          await this.dropTableIfExists(staleTableName, 'startup orphan staging cleanup');
-          cleaned += 1;
+          staleTableNames.push(staleTableName);
         }
 
-        if (cleaned > 0) {
-          logger.info(`Startup cleanup removed ${cleaned} orphan staging table(s)`);
+        if (staleTableNames.length > 0) {
+          logger.warn(`Startup detected ${staleTableNames.length} orphan staging table(s); leaving them untouched`, {
+            staleTables: staleTableNames
+          });
         }
 
         this.startupStagingCleanupComplete = true;
@@ -413,6 +425,8 @@ class SequentialAppenderService extends EventEmitter {
       };
       this.emit('syncProgress');
 
+      await this.ensureStartupStagingCleanup();
+
       // Clean up tables that were deleted from MySQL
       await this.cleanupDeletedTables(tables);
 
@@ -504,6 +518,8 @@ class SequentialAppenderService extends EventEmitter {
         lastError: null
       };
       this.emit('syncProgress');
+
+      await this.ensureStartupStagingCleanup();
 
       // Clean up tables that were deleted from MySQL
       await this.cleanupDeletedTables(tables);
@@ -1684,6 +1700,9 @@ class SequentialAppenderService extends EventEmitter {
       const tablesToDelete = duckdbTables.filter(table => {
         // Skip system tables
         if (table === 'appender_watermarks' || table === 'sync_log') {
+          return false;
+        }
+        if (this.isInternalStagingTable(table)) {
           return false;
         }
         return !mysqlTableSet.has(table.toLowerCase());

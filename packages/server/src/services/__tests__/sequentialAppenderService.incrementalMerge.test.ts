@@ -104,7 +104,7 @@ describe('SequentialAppenderService incremental staging merge', () => {
     expect(result.syncType).toBe('sequential');
   });
 
-  test('cleans unrelated orphan staging tables once after restart before incremental sync', async () => {
+  test('ignores unrelated orphan staging tables once after restart before incremental sync', async () => {
     const unrelatedStaleTable = '__full_sync_staging_orders_deadbeefdeadbeefdeadbeefdeadbeef';
     const mysql: any = {
       streamIncrementalData: vi.fn(async function* () {
@@ -160,6 +160,22 @@ describe('SequentialAppenderService incremental staging merge', () => {
     const runSql = duckdb.run.mock.calls.map((call: any[]) => call[0]);
 
     expect(result.status).toBe('success');
-    expect(runSql).toContain(`DROP TABLE IF EXISTS "${unrelatedStaleTable}"`);
+    expect(runSql).not.toContain(`DROP TABLE IF EXISTS "${unrelatedStaleTable}"`);
+  });
+
+  test('cleanupDeletedTables ignores internal staging tables', async () => {
+    const staleTable = '__full_sync_staging_orders_deadbeefdeadbeefdeadbeefdeadbeef';
+    const duckdb: any = {
+      getTables: vi.fn().mockResolvedValue([staleTable, 'users']),
+      run: vi.fn(async () => undefined),
+    };
+
+    const service = SequentialAppenderService.getInstance('incremental-merge-startup-cleanup-test', {} as any, duckdb) as any;
+
+    await service.cleanupDeletedTables([]);
+
+    const runSql = duckdb.run.mock.calls.map((call: any[]) => call[0]);
+    expect(runSql).toContain('DROP TABLE IF EXISTS "users"');
+    expect(runSql).not.toContain(`DROP TABLE IF EXISTS "${staleTable}"`);
   });
 });

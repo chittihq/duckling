@@ -95,3 +95,19 @@ describe('DuckDBConnection prepared statement cleanup', () => {
     expect(ctx.destroyPreparedStatement).toHaveBeenCalledWith(prepared);
   });
 });
+
+describe('DuckDBConnection.getTables', () => {
+  test('excludes internal staging tables from user-visible table lists', async () => {
+    const ctx: any = {
+      execute: vi.fn(async () => [
+        { table_name: 'users' },
+        { table_name: '__full_sync_staging_users_deadbeefdeadbeefdeadbeefdeadbeef' },
+      ]),
+    };
+
+    const getTables = (DuckDBConnection.prototype as any).getTables.bind(ctx);
+    const tables = await getTables();
+
+    expect(tables).toEqual(['users']);
+  });
+});

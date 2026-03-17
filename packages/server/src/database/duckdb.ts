@@ -639,6 +639,7 @@ class DuckDBConnection {
         SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'main'
         AND table_name NOT IN ('appender_watermarks', 'sync_log', 'sync_checkpoint')
+        AND substr(table_name, 1, 20) <> '__full_sync_staging_'
         ORDER BY table_name
       `);
 
@@ -647,6 +648,7 @@ class DuckDBConnection {
 
       // Filter excluded tables
       return tables.filter(table =>
+        !table.startsWith('__full_sync_staging_') &&
         !config.sync.excludedTables.includes(table)
       );
     } catch (error) {
