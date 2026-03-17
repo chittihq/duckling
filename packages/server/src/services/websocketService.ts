@@ -26,6 +26,7 @@ interface QueryResponse {
 interface ExtendedWebSocket extends WebSocket {
   databaseName?: string;
   duckdb?: DuckDBConnection;
+  clientIp?: string;
 }
 
 export class WebSocketService {
@@ -73,9 +74,11 @@ export class WebSocketService {
     // Extract database name from query parameter
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const databaseName = url.searchParams.get('db') || 'default';
+    const clientIp = this.getClientIp(req);
 
     // Store database context in WebSocket
     ws.databaseName = databaseName;
+    ws.clientIp = clientIp;
 
     // Get database-specific DuckDB connection
     try {
@@ -104,6 +107,7 @@ export class WebSocketService {
 
     logger.info('WebSocket client connected', {
       databaseName,
+      ip: clientIp,
       totalClients: this.clients.size
     });
 
@@ -130,6 +134,7 @@ export class WebSocketService {
       this.clients.delete(ws);
       this.authenticatedClients.delete(ws);
       logger.info('WebSocket client disconnected', {
+        ip: ws.clientIp,
         totalClients: this.clients.size,
         totalAuthenticated: this.authenticatedClients.size
       });
@@ -178,7 +183,11 @@ export class WebSocketService {
             success: true,
             result: [{ authenticated: true, message: 'Authentication successful' }]
           });
-          logger.info('WebSocket client authenticated', { totalAuthenticated: this.authenticatedClients.size });
+          logger.info('WebSocket client authenticated', {
+            ip: ws.clientIp,
+            databaseName: ws.databaseName,
+            totalAuthenticated: this.authenticatedClients.size
+          });
         } else {
           const reason = !config.auth.apiKey ? 'Server API key not configured' : 'API key mismatch';
           logger.warn('WebSocket auth failed', { reason });
@@ -265,6 +274,20 @@ export class WebSocketService {
         duration
       });
     }
+  }
+
+  private getClientIp(req: IncomingMessage): string {
+    const forwardedFor = req.headers['x-forwarded-for'];
+
+    if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
+      return forwardedFor.split(',')[0].trim();
+    }
+
+    if (Array.isArray(forwardedFor) && forwardedFor.length > 0) {
+      return forwardedFor[0].split(',')[0].trim();
+    }
+
+    return req.socket.remoteAddress || 'unknown';
   }
 
   /**
