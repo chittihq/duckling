@@ -830,18 +830,16 @@ class DuckDBServer {
       const tables = await duckdb.getTables();
       const counts: Record<string, number> = {};
 
-      // Get all counts in parallel
-      await Promise.all(
-        tables.map(async (tableName) => {
-          try {
-            const count = await duckdb.getTableRowCount(tableName);
-            counts[tableName] = typeof count === 'bigint' ? Number(count) : count;
-          } catch (error) {
-            logger.warn(`Failed to get count for ${tableName}:`, error);
-            counts[tableName] = 0;
-          }
-        })
-      );
+      // Count sequentially to avoid flooding the shared DuckDB connection with one query per table.
+      for (const tableName of tables) {
+        try {
+          const count = await duckdb.getTableRowCount(tableName);
+          counts[tableName] = typeof count === 'bigint' ? Number(count) : count;
+        } catch (error) {
+          logger.warn(`Failed to get count for ${tableName}:`, error);
+          counts[tableName] = 0;
+        }
+      }
 
       res.json(counts);
     } catch (error) {
