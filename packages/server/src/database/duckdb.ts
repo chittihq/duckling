@@ -157,22 +157,6 @@ class DuckDBConnection {
       const instance = new DuckDBConnection(path);
       instance.databaseId = databaseId;
       DuckDBConnection.instances.set(databaseId, instance);
-
-      // Initialize database asynchronously (don't await here to keep method synchronous)
-      if (!DuckDBConnection.initializedInstances.has(databaseId)) {
-        instance.initializationPromise = instance.initializeDatabase()
-          .then(() => {
-            DuckDBConnection.initializedInstances.add(databaseId);
-            logger.info(`Database instance '${databaseId}' initialized at ${path}`);
-            // Clear the promise after successful initialization
-            instance.initializationPromise = null;
-          })
-          .catch((error) => {
-            logger.error(`Failed to initialize database instance '${databaseId}':`, error);
-            // Clear the promise even on error to allow retry
-            instance.initializationPromise = null;
-          });
-      }
     }
     return DuckDBConnection.instances.get(databaseId)!;
   }
@@ -182,6 +166,7 @@ class DuckDBConnection {
     if (instance) {
       instance.close();
       DuckDBConnection.instances.delete(databaseId);
+      DuckDBConnection.initializedInstances.delete(databaseId);
     }
   }
 
@@ -206,7 +191,40 @@ class DuckDBConnection {
     }
   }
 
+  /**
+   * Reset the initialized flag so the next initializeDatabase() call
+   * re-creates metadata tables. Used after clear-all / drop operations.
+   */
+  resetInitialized(): void {
+    DuckDBConnection.initializedInstances.delete(this.databaseId);
+    this.initializationPromise = null;
+  }
+
   async initializeDatabase(): Promise<void> {
+    // Already completed — skip
+    if (DuckDBConnection.initializedInstances.has(this.databaseId)) {
+      return;
+    }
+
+    // Already in progress — join the existing run (and propagate errors)
+    if (this.initializationPromise) {
+      return this.initializationPromise;
+    }
+
+    // Store the promise so concurrent callers and ensureInitialized() join it
+    this.initializationPromise = this.doInitialize();
+
+    try {
+      await this.initializationPromise;
+      DuckDBConnection.initializedInstances.add(this.databaseId);
+    } catch (error) {
+      // Clear on failure so a retry is possible
+      this.initializationPromise = null;
+      throw error;
+    }
+  }
+
+  private async doInitialize(): Promise<void> {
     this.isInitializing = true;
     try {
       // Wait for connection to be ready (especially important for large database files)

@@ -580,12 +580,15 @@ export class CDCService {
       columnTypes[col] = schema.get(col) || '';
     }
 
-    try {
-      return await this.workerPool.sanitizeBatch(rows, columns, columnTypes);
-    } catch (error) {
-      logger.warn(`CDC worker sanitization failed for ${this.databaseId}, falling back to main-thread sanitization`, error);
-      return rows.map(row => columns.map(col => this.sanitizeValue(row[col])));
+    if (!this.workerPool.isDisabled) {
+      try {
+        return await this.workerPool.sanitizeBatch(rows, columns, columnTypes);
+      } catch (error) {
+        logger.warn(`CDC worker sanitization failed for ${this.databaseId}, falling back to main-thread sanitization`, error);
+      }
     }
+
+    return rows.map(row => columns.map(col => this.sanitizeValue(row[col])));
   }
 
   /**

@@ -10,12 +10,17 @@
  *   const sanitized = await pool.sanitizeBatch(rows, columns, columnTypes);
  *
  * Environment:
- *   WORKER_THREADS — Number of worker threads (default: CPU count - 1, min 1)
+ *   WORKER_THREADS — Number of worker threads.
+ *                    0 or unset = disabled (default). Positive integer = that many threads.
+ *
+ * NOTE: Worker threads are disabled by default because @duckdb/node-api's
+ * native addon can segfault (SIGSEGV / exit code 139) when Node.js
+ * worker_threads exist in the same process. When disabled, callers fall
+ * back to main-thread sanitization via their existing try/catch paths.
  */
 
 import { Worker } from 'worker_threads';
 import * as path from 'path';
-import * as os from 'os';
 import * as fs from 'fs';
 import config from '../config';
 import logger from '../logger';
@@ -34,6 +39,7 @@ export interface WorkerPoolStats {
   totalProcessed: number;
   totalErrors: number;
   totalRespawns: number;
+  disabled: boolean;
 }
 
 export class WorkerPool {
@@ -43,7 +49,8 @@ export class WorkerPool {
   private nextWorker: number = 0;
   private requestId: number = 0;
   private poolSize: number;
-  private workerScript: string;
+  private disabled: boolean;
+  private workerScript: string = '';
   private workerExecArgv?: string[];
 
   // Stats
@@ -53,7 +60,15 @@ export class WorkerPool {
 
   private constructor() {
     const configured = config.workers.threads;
-    this.poolSize = configured > 0 ? configured : Math.max(1, os.cpus().length - 1);
+    this.disabled = configured <= 0;
+
+    if (this.disabled) {
+      this.poolSize = 0;
+      logger.info('Worker pool disabled (WORKER_THREADS=0). Sanitization will run on main thread.');
+      return;
+    }
+
+    this.poolSize = configured;
 
     // Resolve worker script path: prefer compiled .js, fall back to .ts (dev mode with ts-node)
     const jsPath = path.resolve(__dirname, '../workers/sanitizeWorker.js');
@@ -80,6 +95,10 @@ export class WorkerPool {
     return WorkerPool.instance;
   }
 
+  get isDisabled(): boolean {
+    return this.disabled;
+  }
+
   /**
    * Shut down all workers gracefully.
    */
@@ -104,6 +123,10 @@ export class WorkerPool {
     columns: string[],
     columnTypes: Record<string, string>
   ): Promise<any[][]> {
+    if (this.disabled) {
+      return Promise.reject(new Error('Worker pool is disabled'));
+    }
+
     if (!rows.length) {
       return Promise.resolve([]);
     }
@@ -134,6 +157,7 @@ export class WorkerPool {
       totalProcessed: this.totalProcessed,
       totalErrors: this.totalErrors,
       totalRespawns: this.totalRespawns,
+      disabled: this.disabled,
     };
   }
 

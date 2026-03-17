@@ -669,6 +669,7 @@ class DuckDBServer {
       // Reinitialize database (watermark table, etc.)
       logger.info('Reinitializing database after clear');
       try {
+        duckdb.resetInitialized();
         await duckdb.initializeDatabase();
         logger.info('Database reinitialized successfully');
       } catch (error) {

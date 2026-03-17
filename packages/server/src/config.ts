@@ -121,7 +121,7 @@ export const config = {
   },
 
   workers: {
-    threads: parseInt(process.env.WORKER_THREADS || '0'), // 0 = auto (cpus - 1, min 1)
+    threads: parseInt(process.env.WORKER_THREADS || '0'), // 0 = disabled (default), positive integer = that many threads
   },
 
   readReplica: {

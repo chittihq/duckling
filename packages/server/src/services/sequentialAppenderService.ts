@@ -778,23 +778,30 @@ class SequentialAppenderService extends EventEmitter {
             const allPlaceholders = batch.map(() => rowPlaceholders).join(', ');
             const bulkInsertQuery = `INSERT INTO ${this.q(tableName)} (${quotedColumns}) VALUES ${allPlaceholders}`;
 
-            // Offload sanitization to worker thread pool
+            // Sanitize batch: use worker threads if enabled, otherwise main thread
             let allValues: any[];
-            try {
-              const pool = WorkerPool.getInstance();
-              const columnTypesObj: Record<string, string> = {};
-              for (const [k, v] of columnTypes) columnTypesObj[k] = v;
-              const sanitizedRows = await pool.sanitizeBatch(batch, columns, columnTypesObj);
-              // Flatten sanitized rows into single array for bulk insert
-              allValues = [];
-              for (const row of sanitizedRows) {
-                for (const val of row) {
-                  allValues.push(val);
+            const pool = WorkerPool.getInstance();
+            let useMainThread = pool.isDisabled;
+
+            if (!useMainThread) {
+              try {
+                const columnTypesObj: Record<string, string> = {};
+                for (const [k, v] of columnTypes) columnTypesObj[k] = v;
+                const sanitizedRows = await pool.sanitizeBatch(batch, columns, columnTypesObj);
+                // Flatten sanitized rows into single array for bulk insert
+                allValues = [];
+                for (const row of sanitizedRows) {
+                  for (const val of row) {
+                    allValues.push(val);
+                  }
                 }
+              } catch (workerErr) {
+                logger.warn(`${tableName}: Worker pool sanitization failed, falling back to main thread:`, workerErr);
+                useMainThread = true;
               }
-            } catch (workerErr) {
-              // Fallback to main-thread sanitization if worker pool fails
-              logger.warn(`${tableName}: Worker pool sanitization failed, falling back to main thread:`, workerErr);
+            }
+
+            if (useMainThread) {
               allValues = [];
               for (const record of batch) {
                 for (const col of columns) {
@@ -804,7 +811,7 @@ class SequentialAppenderService extends EventEmitter {
             }
 
             // Execute bulk insert (10-100x faster than individual inserts)
-            await this.duckdb.run(bulkInsertQuery, allValues);
+            await this.duckdb.run(bulkInsertQuery, allValues!);
 
             recordsProcessed += batch.length;
 
@@ -977,17 +984,24 @@ class SequentialAppenderService extends EventEmitter {
         logger.info(`${tableName}: fetchBatchSize=${fetchBatchSize}, flushInterval=${FLUSH_INTERVAL}, using Appender API`);
 
         for await (const fetchedBatch of this.mysql.streamTableData(tableName, fetchBatchSize)) {
-          // Offload sanitization to worker thread pool, then append on main thread
+          // Sanitize batch: use worker threads if enabled, otherwise main thread
           // (Appender API methods must run on main thread with DuckDB connection)
           let sanitizedRows: any[][];
-          try {
-            const pool = WorkerPool.getInstance();
-            const columnTypesObj: Record<string, string> = {};
-            for (const [k, v] of columnTypes) columnTypesObj[k] = v;
-            sanitizedRows = await pool.sanitizeBatch(fetchedBatch, columns, columnTypesObj);
-          } catch (workerErr) {
-            // Fallback to main-thread sanitization if worker pool fails
-            logger.warn(`${tableName}: Worker pool sanitization failed, falling back to main thread:`, workerErr);
+          const pool = WorkerPool.getInstance();
+          let useMainThread = pool.isDisabled;
+
+          if (!useMainThread) {
+            try {
+              const columnTypesObj: Record<string, string> = {};
+              for (const [k, v] of columnTypes) columnTypesObj[k] = v;
+              sanitizedRows = await pool.sanitizeBatch(fetchedBatch, columns, columnTypesObj);
+            } catch (workerErr) {
+              logger.warn(`${tableName}: Worker pool sanitization failed, falling back to main thread:`, workerErr);
+              useMainThread = true;
+            }
+          }
+
+          if (useMainThread) {
             sanitizedRows = fetchedBatch.map(record =>
               columns.map(col => this.sanitizeValue(record[col], columnTypes.get(col) || ''))
             );
@@ -1258,22 +1272,29 @@ class SequentialAppenderService extends EventEmitter {
             const allPlaceholders = batch.map(() => rowPlaceholders).join(', ');
             const bulkInsertQuery = `INSERT OR REPLACE INTO ${this.q(tableName)} (${columns.map(c => this.q(c)).join(', ')}) VALUES ${allPlaceholders}`;
 
-            // Offload sanitization to worker thread pool
+            // Sanitize batch: use worker threads if enabled, otherwise main thread
             let allValues: any[];
-            try {
-              const pool = WorkerPool.getInstance();
-              const columnTypesObj: Record<string, string> = {};
-              for (const [k, v] of columnTypes) columnTypesObj[k] = v;
-              const sanitizedRows = await pool.sanitizeBatch(batch, columns, columnTypesObj);
-              allValues = [];
-              for (const row of sanitizedRows) {
-                for (const val of row) {
-                  allValues.push(val);
+            const pool = WorkerPool.getInstance();
+            let useMainThread = pool.isDisabled;
+
+            if (!useMainThread) {
+              try {
+                const columnTypesObj: Record<string, string> = {};
+                for (const [k, v] of columnTypes) columnTypesObj[k] = v;
+                const sanitizedRows = await pool.sanitizeBatch(batch, columns, columnTypesObj);
+                allValues = [];
+                for (const row of sanitizedRows) {
+                  for (const val of row) {
+                    allValues.push(val);
+                  }
                 }
+              } catch (workerErr) {
+                logger.warn(`${tableName}: Worker pool sanitization failed (incremental), falling back to main thread:`, workerErr);
+                useMainThread = true;
               }
-            } catch (workerErr) {
-              // Fallback to main-thread sanitization if worker pool fails
-              logger.warn(`${tableName}: Worker pool sanitization failed (incremental), falling back to main thread:`, workerErr);
+            }
+
+            if (useMainThread) {
               allValues = [];
               for (const record of batch) {
                 for (const col of columns) {
@@ -1283,7 +1304,7 @@ class SequentialAppenderService extends EventEmitter {
             }
 
             // Execute bulk upsert (much faster than individual inserts)
-            await this.duckdb.run(bulkInsertQuery, allValues);
+            await this.duckdb.run(bulkInsertQuery, allValues!);
 
             recordsProcessed += batch.length;
           }

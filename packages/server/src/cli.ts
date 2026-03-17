@@ -9,7 +9,7 @@ import { DatabaseConfigManager } from './database/databaseConfig';
 import logger from './logger';
 
 // Helper function to get database connections
-function getDatabaseConnections(databaseId?: string): { databaseId: string; mysql: MySQLConnection; duckdb: DuckDBConnection } {
+async function getDatabaseConnections(databaseId?: string): Promise<{ databaseId: string; mysql: MySQLConnection; duckdb: DuckDBConnection }> {
   const dbManager = DatabaseConfigManager.getInstance();
 
   // Use provided database ID or default to first database
@@ -33,6 +33,7 @@ function getDatabaseConnections(databaseId?: string): { databaseId: string; mysq
 
   const mysql = MySQLConnection.getInstance(dbConfig.id, dbConfig.mysqlConnectionString);
   const duckdb = DuckDBConnection.getInstance(dbConfig.id, resolvedDuckdbPath);
+  await duckdb.initializeDatabase();
 
   return { databaseId: dbConfig.id, mysql, duckdb };
 }
@@ -48,7 +49,7 @@ program
   .description('Run full synchronization')
   .action(async (options, command) => {
     try {
-      const { databaseId, mysql, duckdb } = getDatabaseConnections(command.parent.opts().database);
+      const { databaseId, mysql, duckdb } = await getDatabaseConnections(command.parent.opts().database);
       console.log(`Syncing database: ${databaseId}`);
       const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
       const result = await syncService.fullSync();
@@ -64,7 +65,7 @@ program
   .description('Run incremental synchronization')
   .action(async (options, command) => {
     try {
-      const { databaseId, mysql, duckdb } = getDatabaseConnections(command.parent.opts().database);
+      const { databaseId, mysql, duckdb } = await getDatabaseConnections(command.parent.opts().database);
       console.log(`Syncing database: ${databaseId}`);
       const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
       const result = await syncService.incrementalSync();
@@ -80,7 +81,7 @@ program
   .description('Show sync status')
   .action(async (options, command) => {
     try {
-      const { databaseId, mysql, duckdb } = getDatabaseConnections(command.parent.opts().database);
+      const { databaseId, mysql, duckdb } = await getDatabaseConnections(command.parent.opts().database);
       const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
       const status = await syncService.getSyncStatus();
       console.log(`Status for database: ${databaseId}`);
@@ -96,7 +97,7 @@ program
   .description('Validate sync integrity')
   .action(async (options, command) => {
     try {
-      const { databaseId, mysql, duckdb } = getDatabaseConnections(command.parent.opts().database);
+      const { databaseId, mysql, duckdb } = await getDatabaseConnections(command.parent.opts().database);
       const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
       const validation = await syncService.validateSync();
       console.log(`Validation for database: ${databaseId}`);
@@ -112,7 +113,7 @@ program
   .description('Check database connections')
   .action(async (options, command) => {
     try {
-      const { databaseId, mysql, duckdb } = getDatabaseConnections(command.parent.opts().database);
+      const { databaseId, mysql, duckdb } = await getDatabaseConnections(command.parent.opts().database);
 
       const mysqlHealthy = await mysql.testConnection();
       const duckdbHealthy = await duckdb.testConnection();
@@ -137,7 +138,7 @@ program
   .description('List tables in both databases')
   .action(async (options, command) => {
     try {
-      const { databaseId, mysql, duckdb } = getDatabaseConnections(command.parent.opts().database);
+      const { databaseId, mysql, duckdb } = await getDatabaseConnections(command.parent.opts().database);
 
       const mysqlTables = await mysql.getTables();
       const duckdbTables = await duckdb.getTables();
