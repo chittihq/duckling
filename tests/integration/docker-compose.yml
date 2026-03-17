@@ -41,16 +41,17 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - DUCKDB_PATH=data/default.db
-      - MYSQL_CONNECTION_STRING=mysql://integration:integrationpass@mysql:3306/integration_db?charset=utf8mb4
+      - MYSQL_CONNECTION_STRING=${DUCKLING_TEST_MYSQL_CONNECTION_STRING:-mysql://integration:integrationpass@mysql:3306/integration_db?charset=utf8mb4}
       - DUCKLING_API_KEY=integration-test-key
       - ADMIN_USERNAME=admin
       - ADMIN_PASSWORD=integrationadmin
       - SESSION_SECRET=integration-session-secret
-      - LOG_LEVEL=info
+      - LOG_LEVEL=${DUCKLING_TEST_LOG_LEVEL:-info}
       - SYNC_INTERVAL_MINUTES=0
       - AUTO_START_SYNC=false
-      - BATCH_SIZE=1000
-      - INSERT_BATCH_SIZE=500
+      - BATCH_SIZE=${DUCKLING_TEST_BATCH_SIZE:-1000}
+      - INSERT_BATCH_SIZE=${DUCKLING_TEST_INSERT_BATCH_SIZE:-500}
+      - MAX_CONCURRENT_QUERIES=${DUCKLING_TEST_MAX_CONCURRENT_QUERIES:-10}
       - ENABLE_INCREMENTAL_SYNC=true
       - ENABLE_HEALTH_CHECKS=false
       - AUTO_CLEANUP=false

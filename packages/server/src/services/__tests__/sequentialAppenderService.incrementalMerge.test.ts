@@ -6,6 +6,7 @@ describe('SequentialAppenderService incremental staging merge', () => {
     SequentialAppenderService.closeInstance('incremental-merge-test');
     SequentialAppenderService.closeInstance('incremental-merge-no-pk-test');
     SequentialAppenderService.closeInstance('incremental-merge-startup-cleanup-test');
+    SequentialAppenderService.closeInstance('incremental-merge-empty-stream-test');
     vi.restoreAllMocks();
   });
 
@@ -161,6 +162,56 @@ describe('SequentialAppenderService incremental staging merge', () => {
 
     expect(result.status).toBe('success');
     expect(runSql).not.toContain(`DROP TABLE IF EXISTS "${unrelatedStaleTable}"`);
+  });
+
+  test('does not create a staging table until the first incremental batch arrives', async () => {
+    const sameTableStaleTable = '__full_sync_staging_users_deadbeefdeadbeefdeadbeefdeadbeef';
+    const mysql: any = {
+      streamIncrementalData: vi.fn(async function* () {
+        return;
+      }),
+    };
+
+    const duckdb: any = {
+      createAppender: vi.fn(async () => ({ appender: {}, connection: {} })),
+      run: vi.fn(async () => undefined),
+      execute: vi.fn(async (query: string) => {
+        if (query.includes("substr(table_name, 1, 20) = '__full_sync_staging_'")) {
+          return [{ table_name: sameTableStaleTable }];
+        }
+        if (query.includes('substr(table_name, 1, ?) = ?')) {
+          return [{ table_name: sameTableStaleTable }];
+        }
+        return [];
+      }),
+    };
+
+    const service = SequentialAppenderService.getInstance('incremental-merge-empty-stream-test', mysql, duckdb) as any;
+
+    vi.spyOn(service, 'getTableWatermark').mockResolvedValue({
+      lastProcessedId: 0,
+      lastProcessedTimestamp: new Date('2026-03-17T09:00:00Z'),
+      primaryKeyColumn: 'id',
+      timestampColumn: 'updatedAt',
+      updatedAt: new Date(),
+    });
+    vi.spyOn(service, 'getSchemaOrCleanup').mockResolvedValue([
+      { Field: 'id', Type: 'int', Key: 'PRI' },
+      { Field: 'name', Type: 'varchar(255)', Key: '' },
+      { Field: 'updatedAt', Type: 'datetime', Key: '' },
+    ]);
+    vi.spyOn(service, 'ensureTableExists').mockResolvedValue(undefined);
+    const createTableSpy = vi.spyOn(service, 'createTable').mockResolvedValue(undefined);
+    const updateWatermarkSpy = vi.spyOn(service, 'updateWatermark').mockResolvedValue(undefined);
+    vi.spyOn(service, 'logSyncOperation').mockResolvedValue(undefined);
+
+    const result = await service.syncTableWatermark('users');
+
+    expect(result.status).toBe('success');
+    expect(result.recordsProcessed).toBe(0);
+    expect(createTableSpy).not.toHaveBeenCalled();
+    expect(duckdb.createAppender).not.toHaveBeenCalled();
+    expect(updateWatermarkSpy).not.toHaveBeenCalled();
   });
 
   test('cleanupDeletedTables ignores internal staging tables', async () => {

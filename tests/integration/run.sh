@@ -19,13 +19,50 @@ cd "$SCRIPT_DIR"
 # --------------- Configuration ---------------
 API_KEY="integration-test-key"
 API_URL="http://localhost:3002"
-DB_ID="integration"
+DB_ID="${DUCKLING_TEST_DB_ID:-integration}"
+DUCKDB_RELATIVE_PATH="${DUCKLING_TEST_DUCKDB_PATH:-data/integration.db}"
+MYSQL_CONNECTION_STRING="${DUCKLING_TEST_MYSQL_CONNECTION_STRING:-mysql://integration:integrationpass@mysql:3306/integration_db?charset=utf8mb4}"
 TIMEOUT_STARTUP="${DUCKLING_TEST_TIMEOUT_STARTUP:-180}"
+DUCKLING_TEST_VITEST_ARGS="${DUCKLING_TEST_VITEST_ARGS:-}"
+DUCKDB_STATE_DIR="${DUCKLING_TEST_DUCKDB_STATE_DIR:-}"
+PRESERVE_DUCKDB_DATA="${DUCKLING_TEST_PRESERVE_DUCKDB_DATA:-false}"
+SKIP_DEFAULT_MYSQL_SEED="${DUCKLING_TEST_SKIP_DEFAULT_MYSQL_SEED:-false}"
+MYSQL_SEED_FILE="${DUCKLING_TEST_MYSQL_SEED_FILE:-}"
 
 # --------------- Helpers ---------------
 log() { echo -e "\033[0;34m[$(date +%H:%M:%S)]\033[0m $*"; }
 ok()  { echo -e "  \033[0;32mPASS\033[0m $*"; }
 fail(){ echo -e "  \033[0;31mFAIL\033[0m $*"; }
+is_true() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+should_preserve_duckdb_data() {
+  if [ -n "$DUCKDB_STATE_DIR" ]; then
+    return 0
+  fi
+  is_true "$PRESERVE_DUCKDB_DATA"
+}
+
+prepare_duckdb_data_dir() {
+  if [ -n "$DUCKDB_STATE_DIR" ]; then
+    if [ ! -d "$DUCKDB_STATE_DIR" ]; then
+      fail "DUCKLING_TEST_DUCKDB_STATE_DIR does not exist: $DUCKDB_STATE_DIR"
+      exit 1
+    fi
+    log "Copying DuckDB state from ${DUCKDB_STATE_DIR}"
+    rm -rf data/ 2>/dev/null || true
+    mkdir -p data
+    cp -R "${DUCKDB_STATE_DIR}/." data/
+    ok "Copied DuckDB state snapshot"
+    return
+  fi
+
+  mkdir -p data
+}
 
 cleanup() {
   local exit_code=$?
@@ -37,7 +74,11 @@ cleanup() {
   log "--- End server logs ---"
   log "Cleaning up..."
   docker compose down -v 2>/dev/null || true
-  rm -rf data/ 2>/dev/null || true
+  if should_preserve_duckdb_data; then
+    log "Preserving tests/integration/data for inspection"
+  else
+    rm -rf data/ 2>/dev/null || true
+  fi
   log "Done."
   trap - EXIT
   exit "$exit_code"
@@ -62,7 +103,11 @@ check_deps() {
 pre_cleanup() {
   log "Cleaning up previous run..."
   docker compose down -v 2>/dev/null || true
-  rm -rf data/ 2>/dev/null || true
+  if [ -n "$DUCKDB_STATE_DIR" ]; then
+    rm -rf data/ 2>/dev/null || true
+  elif ! should_preserve_duckdb_data; then
+    rm -rf data/ 2>/dev/null || true
+  fi
 }
 
 protocol_smoke() {
@@ -125,16 +170,22 @@ fi
 check_deps
 pre_cleanup
 
+export DUCKLING_TEST_API_KEY="${API_KEY}"
+export DUCKLING_TEST_API_URL="${API_URL}"
+export DUCKLING_TEST_DB_ID="${DB_ID}"
+export DUCKLING_TEST_DUCKDB_PATH="${DUCKDB_RELATIVE_PATH}"
+export DUCKLING_TEST_MYSQL_CONNECTION_STRING="${MYSQL_CONNECTION_STRING}"
+
 # ------- Step 1: Prepare environment -------
 log "[1/8] Preparing environment..."
-mkdir -p data
+prepare_duckdb_data_dir
 cat > data/databases.json << EOJSON
 [
   {
     "id": "${DB_ID}",
     "name": "Integration",
-    "mysqlConnectionString": "mysql://integration:integrationpass@mysql:3306/integration_db?charset=utf8mb4",
-    "duckdbPath": "data/integration.db",
+    "mysqlConnectionString": "${MYSQL_CONNECTION_STRING}",
+    "duckdbPath": "${DUCKDB_RELATIVE_PATH}",
     "createdAt": "2025-01-01T00:00:00.000Z",
     "updatedAt": "2025-01-01T00:00:00.000Z"
   }
@@ -159,8 +210,9 @@ done
 echo ""
 ok "MySQL is ready"
 
-log "Seeding test data..."
-docker compose exec -T mysql mysql -h 127.0.0.1 -uroot -prootpass --default-character-set=utf8mb4 integration_db << 'EOSQL'
+if ! is_true "$SKIP_DEFAULT_MYSQL_SEED"; then
+  log "Seeding default test data..."
+  docker compose exec -T mysql mysql -h 127.0.0.1 -uroot -prootpass --default-character-set=utf8mb4 integration_db << 'EOSQL'
 
 -- Grant all privileges to the integration user
 GRANT ALL PRIVILEGES ON integration_db.* TO 'integration'@'%';
@@ -278,7 +330,20 @@ INSERT INTO type_coverage (
 -- type_coverage_cdc: no initial rows (seeded via CDC in Suite 6)
 
 EOSQL
-ok "Seed data inserted"
+  ok "Default seed data inserted"
+else
+  log "Skipping default MySQL seed data"
+fi
+
+if [ -n "$MYSQL_SEED_FILE" ]; then
+  if [ ! -f "$MYSQL_SEED_FILE" ]; then
+    fail "DUCKLING_TEST_MYSQL_SEED_FILE does not exist: $MYSQL_SEED_FILE"
+    exit 1
+  fi
+  log "Applying custom MySQL seed file: ${MYSQL_SEED_FILE}"
+  docker compose exec -T mysql mysql -h 127.0.0.1 -uroot -prootpass --default-character-set=utf8mb4 integration_db < "$MYSQL_SEED_FILE"
+  ok "Custom seed file applied"
+fi
 
 # ------- Step 3: Start Duckling -------
 log "[3/8] Starting Duckling server..."
@@ -311,7 +376,14 @@ ok "SDK built"
 # ------- Step 6: Run vitest -------
 log "[6/8] Running test suites via vitest..."
 echo ""
-pnpm test
+if [ -n "$DUCKLING_TEST_VITEST_ARGS" ]; then
+  log "Vitest args: ${DUCKLING_TEST_VITEST_ARGS}"
+  pnpm run typecheck
+  read -r -a vitest_args <<< "$DUCKLING_TEST_VITEST_ARGS"
+  pnpm exec vitest run "${vitest_args[@]}"
+else
+  pnpm test
+fi
 
 # ------- Step 7: MySQL protocol smoke -------
 protocol_smoke

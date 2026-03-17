@@ -1351,22 +1351,29 @@ class SequentialAppenderService extends EventEmitter {
 
         await this.ensureStartupStagingCleanup();
         await this.cleanupOrphanStagingTables(tableName);
-        const stagingTable = this.buildStagingTableName(tableName);
-        await this.createTable(stagingTable, schema, { includePrimaryKey: false });
-
-        logger.info(`${tableName}: watermark sync - columns=${columnCount}, fetchBatchSize=${fetchBatchSize}, flushInterval=${flushInterval}, primaryKeys=${primaryKeyColumns.join(', ')}, strategy=staging-merge`);
 
         let totalBatches = 0;
+        let stagingTable: string | null = null;
         let _appender: any = null;
         let _conn: any = null;
 
         try {
-          const { appender, connection: conn } = await this.duckdb.createAppender(stagingTable);
-          _appender = appender;
-          _conn = conn;
-
           // Stream incremental data batch-by-batch (no full dataset in memory)
           for await (const streamBatch of this.mysql.streamIncrementalData(tableName, watermarkColumn, watermarkValue, fetchBatchSize)) {
+            if (streamBatch.length === 0) continue;
+
+            if (!_appender || !_conn || !stagingTable) {
+              stagingTable = this.buildStagingTableName(tableName);
+              await this.createTable(stagingTable, schema, { includePrimaryKey: false });
+
+              logger.info(`${tableName}: watermark sync - columns=${columnCount}, fetchBatchSize=${fetchBatchSize}, flushInterval=${flushInterval}, primaryKeys=${primaryKeyColumns.join(', ')}, strategy=staging-merge`);
+
+              const { appender, connection: conn } = await this.duckdb.createAppender(stagingTable);
+              _appender = appender;
+              _conn = conn;
+            }
+
+            const appender = _appender;
             totalBatches++;
             const batchNumber = totalBatches;
             const sampleRecord = streamBatch[0] || {};
@@ -1443,14 +1450,7 @@ class SequentialAppenderService extends EventEmitter {
             logger.debug(`${tableName}: streamed ${recordsProcessed} incremental records so far`);
           }
 
-          appender.flushSync();
-          appender.closeSync();
-          conn.closeSync();
-          _appender = null;
-          _conn = null;
-
           if (recordsProcessed === 0) {
-            await this.dropTableIfExists(stagingTable, `empty incremental staging cleanup for ${tableName}`);
             const duration = Date.now() - startTime;
             logger.info(`No incremental data found for ${tableName}`);
 
@@ -1463,12 +1463,25 @@ class SequentialAppenderService extends EventEmitter {
             };
           }
 
+          const appender = _appender;
+          const conn = _conn;
+          const activeStagingTable = stagingTable;
+          if (!appender || !conn || !activeStagingTable) {
+            throw new Error(`${tableName}: incremental staging state missing after streaming rows`);
+          }
+
+          appender.flushSync();
+          appender.closeSync();
+          conn.closeSync();
+          _appender = null;
+          _conn = null;
+
           const joinPredicate = this.buildPrimaryKeyJoinPredicate('target', 'staging', primaryKeyColumns);
 
           await this.duckdb.run('BEGIN TRANSACTION');
           try {
-            await this.duckdb.run(`DELETE FROM ${this.q(tableName)} AS target USING ${this.q(stagingTable)} AS staging WHERE ${joinPredicate}`);
-            await this.duckdb.run(`INSERT INTO ${this.q(tableName)} SELECT * FROM ${this.q(stagingTable)}`);
+            await this.duckdb.run(`DELETE FROM ${this.q(tableName)} AS target USING ${this.q(activeStagingTable)} AS staging WHERE ${joinPredicate}`);
+            await this.duckdb.run(`INSERT INTO ${this.q(tableName)} SELECT * FROM ${this.q(activeStagingTable)}`);
             await this.duckdb.run('COMMIT');
           } catch (mergeError) {
             try {
@@ -1478,7 +1491,7 @@ class SequentialAppenderService extends EventEmitter {
             }
             throw mergeError;
           } finally {
-            await this.dropTableIfExists(stagingTable, `incremental staging cleanup for ${tableName}`);
+            await this.dropTableIfExists(activeStagingTable, `incremental staging cleanup for ${tableName}`);
           }
 
           // Update watermark from last record seen in stream
@@ -1502,7 +1515,9 @@ class SequentialAppenderService extends EventEmitter {
         } catch (error) {
           if (_appender) { try { _appender.closeSync(); } catch {} }
           if (_conn) { try { _conn.closeSync(); } catch {} }
-          await this.dropTableIfExists(stagingTable, `error cleanup for incremental sync of ${tableName}`);
+          if (stagingTable) {
+            await this.dropTableIfExists(stagingTable, `error cleanup for incremental sync of ${tableName}`);
+          }
           throw error;
         }
 
