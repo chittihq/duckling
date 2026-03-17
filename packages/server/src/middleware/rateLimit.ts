@@ -49,23 +49,71 @@ function sanitizeKeyPart(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'unknown';
 }
 
+function usesDatabaseContextPath(path: string): boolean {
+  return (
+    path === '/health' ||
+    path === '/status' ||
+    path === '/api/query' ||
+    path.startsWith('/sync/') ||
+    path.startsWith('/automation/') ||
+    path.startsWith('/cdc/') ||
+    path.startsWith('/api/tables') ||
+    path.startsWith('/api/backups') ||
+    path.startsWith('/api/replica/') ||
+    path.startsWith('/api/validation/')
+  );
+}
+
+function isMonitoringPath(path: string): boolean {
+  return (
+    path === '/health' ||
+    path === '/status' ||
+    path === '/metrics' ||
+    path === '/api/logs' ||
+    path === '/api/sync-logs' ||
+    path.startsWith('/api/metrics/') ||
+    path.startsWith('/api/governor/') ||
+    path.startsWith('/api/workers/') ||
+    path.endsWith('/diagnose/stream')
+  );
+}
+
+function isProtectedOperationalPath(path: string): boolean {
+  return (
+    path.startsWith('/api/') ||
+    path.startsWith('/sync/') ||
+    path.startsWith('/automation/') ||
+    path.startsWith('/cdc/') ||
+    path === '/health' ||
+    path === '/status' ||
+    path === '/metrics'
+  );
+}
+
 function getRequestDatabaseScope(req: Request): string | null {
   if (!config.rateLimit.identity.includeDatabaseScope) {
     return null;
   }
 
   const queryDb = typeof req.query?.db === 'string' ? req.query.db : null;
-  const paramDb = typeof req.params?.id === 'string' ? req.params.id : null;
   const headerDb = typeof req.headers['x-database-id'] === 'string' ? req.headers['x-database-id'] : null;
-  const db = queryDb || paramDb || headerDb;
-  if (!db) {
-    return null;
+  const paramDb = req.path.startsWith('/api/databases/') && typeof req.params?.id === 'string'
+    ? req.params.id
+    : null;
+
+  if (paramDb) {
+    return sanitizeKeyPart(paramDb);
   }
-  return sanitizeKeyPart(db);
+
+  if (usesDatabaseContextPath(req.path)) {
+    return sanitizeKeyPart(queryDb || headerDb || 'default');
+  }
+
+  return null;
 }
 
 function getClientIp(req: Request): string {
-  return (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 // --- Endpoint classification ---
@@ -98,11 +146,7 @@ export function classifyEndpoint(method: string, path: string): RateLimitCategor
     return 'auth';
   }
 
-  if (
-    path === '/health' ||
-    path === '/status' ||
-    path === '/metrics'
-  ) {
+  if (isMonitoringPath(path)) {
     return 'monitoring';
   }
 
@@ -113,33 +157,15 @@ export function classifyEndpoint(method: string, path: string): RateLimitCategor
     return 'query';
   }
 
-  if (upperMethod === 'GET') {
-    if (
-      path.startsWith('/api/tables') ||
-      path === '/api/databases' ||
-      path === '/api/logs' ||
-      path.startsWith('/api/sync-logs') ||
-      path.startsWith('/api/backups') ||
-      path.startsWith('/sync/') ||
-      path.startsWith('/automation/') ||
-      path.startsWith('/cdc/') ||
-      path.startsWith('/api/validation/')
-    ) {
-      return 'read';
-    }
+  if ((upperMethod === 'GET' || upperMethod === 'HEAD') && isProtectedOperationalPath(path)) {
+    return 'read';
   }
 
-  if (upperMethod === 'POST' || upperMethod === 'PUT' || upperMethod === 'DELETE') {
-    if (
-      path.startsWith('/sync/') ||
-      path.startsWith('/automation/') ||
-      path.startsWith('/cdc/') ||
-      path.startsWith('/api/databases') ||
-      path.startsWith('/api/backups') ||
-      path.startsWith('/api/validation/')
-    ) {
-      return 'write';
-    }
+  if (
+    (upperMethod === 'POST' || upperMethod === 'PUT' || upperMethod === 'DELETE' || upperMethod === 'PATCH') &&
+    isProtectedOperationalPath(path)
+  ) {
+    return 'write';
   }
 
   return null;
@@ -439,13 +465,21 @@ export function postAuthRateLimiter(req: Request, res: Response, next: NextFunct
 
     if (slot.limited) {
       res.setHeader('Retry-After', 1);
+      res.setHeader('X-RateLimit-Query-Concurrency-Limit', slot.maxInFlight);
+      res.setHeader('X-RateLimit-Query-Concurrency-In-Flight', slot.inFlight);
       res.status(429).json({
         error: 'Too Many Requests',
         message: 'Too many concurrent queries. Please retry shortly.',
         category: 'query',
+        concurrencyLimit: slot.maxInFlight,
+        inFlight: slot.inFlight,
+        tier,
       });
       return;
     }
+
+    res.setHeader('X-RateLimit-Query-Concurrency-Limit', slot.maxInFlight);
+    res.setHeader('X-RateLimit-Query-Concurrency-In-Flight', slot.inFlight);
 
     const release = () => {
       slot.release();

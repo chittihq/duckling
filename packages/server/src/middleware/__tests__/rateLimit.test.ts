@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import config from '../../config';
 import {
   __resetRateLimitStateForTests,
+  classifyEndpoint,
   checkRateLimit,
   identifyClient,
   postAuthRateLimiter,
@@ -139,6 +140,42 @@ describe('rateLimit identity', () => {
     expect(id2.key).toContain('session:session-b');
     expect(id1.key).not.toBe(id2.key);
   });
+
+  test('uses req.ip instead of trusting x-forwarded-for directly', () => {
+    const req = buildReq({
+      headers: { 'x-forwarded-for': '203.0.113.10' },
+      ip: '10.0.0.5',
+    });
+
+    const id = identifyClient(req);
+
+    expect(id.tier).toBe('anonymous');
+    expect(id.key).toContain('ip:10.0.0.5');
+    expect(id.key).not.toContain('203.0.113.10');
+  });
+
+  test('defaults database scope for routes that attach database context', () => {
+    const req = buildReq({
+      path: '/sync/full',
+      user: { username: 'admin', jti: 'session-a', authMethod: 'jwt' },
+    });
+
+    const id = identifyClient(req);
+
+    expect(id.key).toContain('db:default');
+  });
+
+  test('does not add a fake database scope to non-database routes', () => {
+    const req = buildReq({
+      path: '/api/logs',
+      query: { db: 'tenant_a' },
+      user: { username: 'admin', jti: 'session-a', authMethod: 'jwt' },
+    });
+
+    const id = identifyClient(req);
+
+    expect(id.key).not.toContain('db:default');
+  });
 });
 
 describe('rateLimit weighted counters', () => {
@@ -216,6 +253,9 @@ describe('query concurrency', () => {
     expect(secondNextCalled).toBe(false);
     expect(res2.statusCode).toBe(429);
     expect(res2.body?.concurrencyLimit).toBe(1);
+    expect(res2.body?.inFlight).toBe(1);
+    expect(res2.getHeader('X-RateLimit-Query-Concurrency-Limit')).toBe(1);
+    expect(res2.getHeader('X-RateLimit-Query-Concurrency-In-Flight')).toBe(1);
 
     res1.emit('finish');
 
@@ -223,5 +263,16 @@ describe('query concurrency', () => {
     let thirdNextCalled = false;
     postAuthRateLimiter(req, res3 as any, () => { thirdNextCalled = true; });
     expect(thirdNextCalled).toBe(true);
+  });
+});
+
+describe('route classification', () => {
+  test('classifies previously uncovered protected endpoints', () => {
+    expect(classifyEndpoint('GET', '/api/metrics/system')).toBe('monitoring');
+    expect(classifyEndpoint('GET', '/api/governor/stats')).toBe('monitoring');
+    expect(classifyEndpoint('GET', '/api/workers/stats')).toBe('monitoring');
+    expect(classifyEndpoint('GET', '/api/databases/tenant_a/diagnose/stream')).toBe('monitoring');
+    expect(classifyEndpoint('GET', '/api/replica/status')).toBe('read');
+    expect(classifyEndpoint('POST', '/api/databases/tenant_a/s3/test')).toBe('write');
   });
 });
