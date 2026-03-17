@@ -20,7 +20,7 @@
     "@aws-sdk/client-s3": "^3.0.0",
     "@aws-sdk/lib-storage": "^3.0.0",
     "@chittihq/duckling-shared": "workspace:*",
-    "@duckdb/node-api": "^1.4.2-r.1",
+    "@duckdb/node-api": "^1.5.0-r.1",
     "@sentry/node": "^10.40.0",
     "@types/ws": "^8.18.1",
     "@vlasky/zongji": "^0.5.9",
