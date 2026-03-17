@@ -297,6 +297,7 @@ class DuckDBServer {
     this.app.get('/sync/progress', attachDatabaseContext, this.getSyncProgress.bind(this));
     this.app.get('/sync/validate', attachDatabaseContext, this.validateSync.bind(this));
     this.app.delete('/sync/clear-all', attachDatabaseContext, this.clearAllData.bind(this));
+    this.app.delete('/storage/clear-all', attachDatabaseContext, this.clearAllData.bind(this));
     this.app.get('/sync/events', attachDatabaseContext, this.syncEvents.bind(this));
 
     // Automation & Recovery endpoints (with database context)

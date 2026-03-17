@@ -44,3 +44,23 @@ export async function apiGet(path: string): Promise<any> {
   }
   return res.text();
 }
+
+export async function apiDelete(path: string): Promise<any> {
+  const url = `${API_URL}${path}`;
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: {
+      'Authorization': API_KEY,
+    },
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`DELETE ${path} failed: ${res.status} ${res.statusText} ${text}`);
+  }
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    return res.json();
+  }
+  return res.text();
+}

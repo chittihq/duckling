@@ -202,7 +202,7 @@ const clearAllData = async () => {
 
   operating.value = 'clear-all'
   try {
-    await del(getApiUrlWithDatabase('/storage/clear-all'))
+    await del(getApiUrlWithDatabase('/sync/clear-all'))
     toast({
       title: 'Success',
       description: 'All data cleared successfully'

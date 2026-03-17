@@ -527,7 +527,7 @@ LIMIT 100;`
 
                     this.operating = 'clear-all';
                     try {
-                        const response = await fetch('/storage/clear-all', { method: 'DELETE' });
+                        const response = await fetch('/sync/clear-all', { method: 'DELETE' });
                         const result = await response.json();
                         alert(response.ok ? 'All data cleared successfully' : `Error: ${result.error}`);
                     } catch (error) {
