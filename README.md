@@ -47,7 +47,7 @@ Query it over REST, WebSocket, or the MySQL wire protocol on port 3307 (so any M
 | Incremental | Every 15 min (automatic) | Routine catch-up |
 | CDC | MySQL binlog stream | Sub-second replication (opt-in) |
 
-Full and incremental sync batch-read rows from MySQL into DuckDB using `INSERT OR REPLACE`. Watermarks track the last processed ID/timestamp per table. Tables sync in parallel with per-table locking, so a slow table doesn't block the rest.
+Full sync uses Appender-based staging swaps, while incremental sync stages watermark deltas into DuckDB and merges them transactionally by primary key. Watermarks track the last processed ID/timestamp per table. Tables sync in parallel with per-table locking, so a slow table doesn't block the rest.
 
 CDC streams binlog events via [ZongJi](https://github.com/vlasky/zongji), processing inserts, updates, and deletes in order. Binlog position is checkpointed for resume after restarts. Enable with `CDC_ENABLED=true`. It can run alongside scheduled syncs.
 
