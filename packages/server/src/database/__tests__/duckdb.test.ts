@@ -45,3 +45,53 @@ describe('sanitizeLogParams', () => {
     expect(sanitizeLogParams(undefined)).toBeUndefined();
   });
 });
+
+describe('DuckDBConnection prepared statement cleanup', () => {
+  test('destroys prepared statements after parameterized reads', async () => {
+    const prepared = {
+      bindVarchar: vi.fn(),
+      runAndReadAll: vi.fn(async () => ({
+        getRows: () => [['ok']],
+        columnNames: () => ['value'],
+      })),
+    };
+
+    const ctx: any = {
+      getPersistentConnection: vi.fn(async () => ({
+        prepare: vi.fn(async () => prepared),
+      })),
+      destroyPreparedStatement: vi.fn(),
+      closePersistentConnection: vi.fn(),
+      dbInstance: null,
+      wasInvalidated: false,
+    };
+
+    const executeRaw = (DuckDBConnection.prototype as any).executeRaw.bind(ctx);
+    const result = await executeRaw('SELECT ?', ['ok'], false);
+
+    expect(result).toEqual([{ value: 'ok' }]);
+    expect(ctx.destroyPreparedStatement).toHaveBeenCalledWith(prepared);
+  });
+
+  test('destroys prepared statements after parameterized writes', async () => {
+    const prepared = {
+      bindVarchar: vi.fn(),
+      run: vi.fn(async () => undefined),
+    };
+
+    const ctx: any = {
+      getPersistentConnection: vi.fn(async () => ({
+        prepare: vi.fn(async () => prepared),
+      })),
+      destroyPreparedStatement: vi.fn(),
+      closePersistentConnection: vi.fn(),
+      dbInstance: null,
+      wasInvalidated: false,
+    };
+
+    const runRaw = (DuckDBConnection.prototype as any).runRaw.bind(ctx);
+    await runRaw('INSERT INTO t VALUES (?)', ['ok']);
+
+    expect(ctx.destroyPreparedStatement).toHaveBeenCalledWith(prepared);
+  });
+});

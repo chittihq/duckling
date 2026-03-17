@@ -145,28 +145,34 @@ export class ReadReplicaService {
 
       if (params && params.length > 0) {
         const prepared = await this.readonlyConn.prepare(query);
-        // Bind parameters (same logic as DuckDBConnection)
-        for (let i = 0; i < params.length; i++) {
-          const value = params[i];
-          if (value === null || value === undefined) {
-            prepared.bindNull(i + 1);
-          } else if (typeof value === 'string') {
-            prepared.bindVarchar(i + 1, value);
-          } else if (typeof value === 'number') {
-            if (Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) {
-              prepared.bindInteger(i + 1, value);
+
+        try {
+          // Bind parameters (same logic as DuckDBConnection)
+          for (let i = 0; i < params.length; i++) {
+            const value = params[i];
+            if (value === null || value === undefined) {
+              prepared.bindNull(i + 1);
+            } else if (typeof value === 'string') {
+              prepared.bindVarchar(i + 1, value);
+            } else if (typeof value === 'number') {
+              if (Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) {
+                prepared.bindInteger(i + 1, value);
+              } else {
+                prepared.bindDouble(i + 1, value);
+              }
+            } else if (typeof value === 'boolean') {
+              prepared.bindBoolean(i + 1, value);
             } else {
-              prepared.bindDouble(i + 1, value);
+              prepared.bindVarchar(i + 1, String(value));
             }
-          } else if (typeof value === 'boolean') {
-            prepared.bindBoolean(i + 1, value);
-          } else {
-            prepared.bindVarchar(i + 1, String(value));
           }
+
+          const reader = await prepared.runAndReadAll();
+          result = reader.getRows();
+          columnNames = reader.columnNames();
+        } finally {
+          try { prepared.destroySync(); } catch {}
         }
-        const reader = await prepared.runAndReadAll();
-        result = reader.getRows();
-        columnNames = reader.columnNames();
       } else {
         const reader = await this.readonlyConn.runAndReadAll(query);
         result = reader.getRows();

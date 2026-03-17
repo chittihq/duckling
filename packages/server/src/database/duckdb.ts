@@ -127,6 +127,16 @@ class DuckDBConnection {
     this.persistentConnPromise = null;
   }
 
+  private destroyPreparedStatement(prepared: { destroySync?: () => void } | null): void {
+    if (!prepared?.destroySync) return;
+
+    try {
+      prepared.destroySync();
+    } catch (error) {
+      logger.warn('Failed to destroy DuckDB prepared statement:', error);
+    }
+  }
+
   /**
    * Wait for database connection to be ready
    * For large database files (>1GB), the connection may not be immediately available
@@ -369,38 +379,42 @@ class DuckDBConnection {
         // Use prepared statement for parameterized queries
         const prepared = await connection.prepare(query);
 
-        // Bind parameters
-        for (let i = 0; i < params.length; i++) {
-          const value = params[i];
-          if (value === null || value === undefined) {
-            prepared.bindNull(i + 1);
-          } else if (typeof value === 'bigint') {
-            prepared.bindBigInt(i + 1, value);
-          } else if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
-            prepared.bindBlob(i + 1, value);
-          } else if (typeof value === 'string') {
-            prepared.bindVarchar(i + 1, value);
-          } else if (typeof value === 'number') {
-            if (Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) {
-              prepared.bindInteger(i + 1, value);
-            } else if (Number.isInteger(value)) {
-              // Values outside INT32 range — use BigInt binding to avoid overflow
-              prepared.bindBigInt(i + 1, BigInt(value));
+        try {
+          // Bind parameters
+          for (let i = 0; i < params.length; i++) {
+            const value = params[i];
+            if (value === null || value === undefined) {
+              prepared.bindNull(i + 1);
+            } else if (typeof value === 'bigint') {
+              prepared.bindBigInt(i + 1, value);
+            } else if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+              prepared.bindBlob(i + 1, value);
+            } else if (typeof value === 'string') {
+              prepared.bindVarchar(i + 1, value);
+            } else if (typeof value === 'number') {
+              if (Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) {
+                prepared.bindInteger(i + 1, value);
+              } else if (Number.isInteger(value)) {
+                // Values outside INT32 range — use BigInt binding to avoid overflow
+                prepared.bindBigInt(i + 1, BigInt(value));
+              } else {
+                prepared.bindDouble(i + 1, value);
+              }
+            } else if (typeof value === 'boolean') {
+              prepared.bindBoolean(i + 1, value);
+            } else if (value instanceof Date) {
+              prepared.bindVarchar(i + 1, value.toISOString());
             } else {
-              prepared.bindDouble(i + 1, value);
+              prepared.bindVarchar(i + 1, String(value));
             }
-          } else if (typeof value === 'boolean') {
-            prepared.bindBoolean(i + 1, value);
-          } else if (value instanceof Date) {
-            prepared.bindVarchar(i + 1, value.toISOString());
-          } else {
-            prepared.bindVarchar(i + 1, String(value));
           }
-        }
 
-        const reader = await prepared.runAndReadAll();
-        result = reader.getRows();
-        columnNames = reader.columnNames();
+          const reader = await prepared.runAndReadAll();
+          result = reader.getRows();
+          columnNames = reader.columnNames();
+        } finally {
+          this.destroyPreparedStatement(prepared);
+        }
       } else {
         const reader = await connection.runAndReadAll(query);
         result = reader.getRows();
@@ -527,35 +541,39 @@ class DuckDBConnection {
       if (params && params.length > 0) {
         const prepared = await connection.prepare(query);
 
-        // Bind parameters
-        for (let i = 0; i < params.length; i++) {
-          const value = params[i];
-          if (value === null || value === undefined) {
-            prepared.bindNull(i + 1);
-          } else if (typeof value === 'bigint') {
-            prepared.bindBigInt(i + 1, value);
-          } else if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
-            prepared.bindBlob(i + 1, value);
-          } else if (typeof value === 'string') {
-            prepared.bindVarchar(i + 1, value);
-          } else if (typeof value === 'number') {
-            if (Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) {
-              prepared.bindInteger(i + 1, value);
-            } else if (Number.isInteger(value)) {
-              prepared.bindBigInt(i + 1, BigInt(value));
+        try {
+          // Bind parameters
+          for (let i = 0; i < params.length; i++) {
+            const value = params[i];
+            if (value === null || value === undefined) {
+              prepared.bindNull(i + 1);
+            } else if (typeof value === 'bigint') {
+              prepared.bindBigInt(i + 1, value);
+            } else if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+              prepared.bindBlob(i + 1, value);
+            } else if (typeof value === 'string') {
+              prepared.bindVarchar(i + 1, value);
+            } else if (typeof value === 'number') {
+              if (Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) {
+                prepared.bindInteger(i + 1, value);
+              } else if (Number.isInteger(value)) {
+                prepared.bindBigInt(i + 1, BigInt(value));
+              } else {
+                prepared.bindDouble(i + 1, value);
+              }
+            } else if (typeof value === 'boolean') {
+              prepared.bindBoolean(i + 1, value);
+            } else if (value instanceof Date) {
+              prepared.bindVarchar(i + 1, value.toISOString());
             } else {
-              prepared.bindDouble(i + 1, value);
+              prepared.bindVarchar(i + 1, String(value));
             }
-          } else if (typeof value === 'boolean') {
-            prepared.bindBoolean(i + 1, value);
-          } else if (value instanceof Date) {
-            prepared.bindVarchar(i + 1, value.toISOString());
-          } else {
-            prepared.bindVarchar(i + 1, String(value));
           }
-        }
 
-        await prepared.run();
+          await prepared.run();
+        } finally {
+          this.destroyPreparedStatement(prepared);
+        }
       } else {
         await connection.run(query);
       }
