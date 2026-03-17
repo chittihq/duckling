@@ -1,5 +1,10 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import DuckDBConnection, { sanitizeLogParams } from '../duckdb';
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe('DuckDBConnection getPersistentConnection', () => {
   test('uses a single connect call under concurrent access', async () => {
@@ -109,5 +114,28 @@ describe('DuckDBConnection.getTables', () => {
     const tables = await getTables();
 
     expect(tables).toEqual(['users']);
+  });
+});
+
+describe('DuckDBConnection waitForConnection', () => {
+  test('retries file lock errors after a short delay', async () => {
+    vi.useFakeTimers();
+
+    const connection = Object.create((DuckDBConnection as any).prototype);
+    connection.executeRaw = vi.fn()
+      .mockRejectedValueOnce(
+        new Error('IO Error: Could not set lock on file "/tmp/chitti_common.db": Conflicting lock is held in PID 0')
+      )
+      .mockResolvedValueOnce([{ ok: 1 }]);
+
+    const waitForConnection = (connection as any).waitForConnection(2, 5000);
+
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(connection.executeRaw).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await waitForConnection;
+
+    expect(connection.executeRaw).toHaveBeenCalledTimes(2);
   });
 });

@@ -7,6 +7,8 @@ import logger from '../logger';
 import QueryMetricsService from '../services/queryMetricsService';
 import { getQueryGovernor, QueryPriority } from '../services/queryGovernor';
 
+const DUCKDB_FILE_LOCK_RETRY_DELAY_MS = 2000;
+
 export function sanitizeLogParams(params?: any[]): any[] | undefined {
   if (!params) return params;
 
@@ -88,8 +90,12 @@ class DuckDBConnection {
           }
         }
       } catch (error: any) {
-        const errorMessage = error.message || error.toString();
-        logger.error(`Failed to create DuckDBInstance: ${errorMessage}`);
+        const errorMessage = this.getErrorMessage(error);
+        if (this.isDuckDBFileLockError(error)) {
+          logger.warn(`DuckDB database file is locked by another process: ${errorMessage}`);
+        } else {
+          logger.error(`Failed to create DuckDBInstance: ${errorMessage}`);
+        }
         throw error;
       }
     }
@@ -127,6 +133,19 @@ class DuckDBConnection {
     this.persistentConnPromise = null;
   }
 
+  private getErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+
+    return String(error);
+  }
+
+  private isDuckDBFileLockError(error: unknown): boolean {
+    const message = this.getErrorMessage(error);
+    return message.includes('Could not set lock on file') || message.includes('Conflicting lock is held');
+  }
+
   private destroyPreparedStatement(prepared: { destroySync?: () => void } | null): void {
     if (!prepared?.destroySync) return;
 
@@ -149,9 +168,17 @@ class DuckDBConnection {
         logger.info(`DuckDB connection established successfully (attempt ${i + 1}/${maxRetries})`);
         return; // Connection is ready
       } catch (error: any) {
+        const isLockError = this.isDuckDBFileLockError(error);
+        const retryDelayMs = isLockError ? DUCKDB_FILE_LOCK_RETRY_DELAY_MS : delayMs;
         if (i < maxRetries - 1) {
-          logger.warn(`DuckDB connection not ready yet (attempt ${i + 1}/${maxRetries}), waiting ${delayMs}ms...`);
-          await new Promise(resolve => setTimeout(resolve, delayMs));
+          if (isLockError) {
+            logger.warn(
+              `DuckDB file lock still held by another process (attempt ${i + 1}/${maxRetries}), retrying in ${retryDelayMs}ms...`
+            );
+          } else {
+            logger.warn(`DuckDB connection not ready yet (attempt ${i + 1}/${maxRetries}), waiting ${retryDelayMs}ms...`);
+          }
+          await new Promise(resolve => setTimeout(resolve, retryDelayMs));
         } else {
           logger.error(`DuckDB connection failed after ${maxRetries} retries:`, error);
           throw error; // Re-throw if max retries reached
