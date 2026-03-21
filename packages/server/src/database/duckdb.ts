@@ -267,6 +267,8 @@ class DuckDBConnection {
       // Wait for connection to be ready (especially important for large database files)
       await this.waitForConnection();
 
+      await this.configureRuntimeSettings();
+
       // Create required tables immediately (needed for sync operations)
       // Schema checks and migrations are deferred to background for faster startup
 
@@ -313,6 +315,42 @@ class DuckDBConnection {
     } finally {
       this.isInitializing = false;
     }
+  }
+
+  private escapeSqlStringLiteral(value: string): string {
+    return value.replace(/'/g, "''");
+  }
+
+  private async configureRuntimeSettings(): Promise<void> {
+    const appliedSettings: Record<string, string | number | boolean> = {};
+
+    if (config.duckdb.tempDirectory) {
+      fs.mkdirSync(config.duckdb.tempDirectory, { recursive: true });
+      await this.runRaw(`SET temp_directory = '${this.escapeSqlStringLiteral(config.duckdb.tempDirectory)}'`);
+      appliedSettings.temp_directory = config.duckdb.tempDirectory;
+    }
+
+    if (config.duckdb.maxTempDirectorySize) {
+      await this.runRaw(
+        `SET max_temp_directory_size = '${this.escapeSqlStringLiteral(config.duckdb.maxTempDirectorySize)}'`
+      );
+      appliedSettings.max_temp_directory_size = config.duckdb.maxTempDirectorySize;
+    }
+
+    if (config.duckdb.memoryLimit) {
+      await this.runRaw(`SET memory_limit = '${this.escapeSqlStringLiteral(config.duckdb.memoryLimit)}'`);
+      appliedSettings.memory_limit = config.duckdb.memoryLimit;
+    }
+
+    if (config.duckdb.threads > 0) {
+      await this.runRaw(`SET threads = ${config.duckdb.threads}`);
+      appliedSettings.threads = config.duckdb.threads;
+    }
+
+    await this.runRaw(`SET preserve_insertion_order = ${config.duckdb.preserveInsertionOrder ? 'true' : 'false'}`);
+    appliedSettings.preserve_insertion_order = config.duckdb.preserveInsertionOrder;
+
+    logger.info('DuckDB runtime settings applied', appliedSettings);
   }
 
   /**

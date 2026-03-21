@@ -36,6 +36,13 @@ export const config = {
   duckdb: {
     path: process.env.DUCKDB_PATH || path.join(DATA_PATH, 'duckling.db'),
     maxConnections: parseInt(process.env.DUCKDB_MAX_CONNECTIONS || '10'),
+    memoryLimit: process.env.DUCKDB_MEMORY_LIMIT || '',
+    threads: parseInt(process.env.DUCKDB_THREADS || '0'),
+    tempDirectory: process.env.DUCKDB_TEMP_DIRECTORY || path.join(DATA_PATH, 'duckdb_tmp'),
+    maxTempDirectorySize: process.env.DUCKDB_MAX_TEMP_DIRECTORY_SIZE || '',
+    preserveInsertionOrder: process.env.DUCKDB_PRESERVE_INSERTION_ORDER !== undefined
+      ? process.env.DUCKDB_PRESERVE_INSERTION_ORDER !== 'false'
+      : false,
   },
   
   mysql: {
@@ -48,6 +55,12 @@ export const config = {
     batchSize: parseInt(process.env.BATCH_SIZE || '1000'),
     insertBatchSize: parseInt(process.env.INSERT_BATCH_SIZE || '2000'),
     appenderFlushInterval: parseInt(process.env.APPENDER_FLUSH_INTERVAL || '5000'),
+    fullSyncBatchSize: parseInt(process.env.FULL_SYNC_BATCH_SIZE || process.env.BATCH_SIZE || '1000'),
+    fullSyncAppenderFlushInterval: parseInt(
+      process.env.FULL_SYNC_APPENDER_FLUSH_INTERVAL ||
+      process.env.APPENDER_FLUSH_INTERVAL ||
+      '5000'
+    ),
     maxRetries: parseInt(process.env.MAX_RETRIES || '3'),
     retryBaseDelayMs: parseInt(process.env.RETRY_BASE_DELAY_MS || '1000'),
     retryMaxDelayMs: parseInt(process.env.RETRY_MAX_DELAY_MS || '60000'),

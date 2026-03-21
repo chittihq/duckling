@@ -1,5 +1,6 @@
 import { describe, expect, test, vi, afterEach } from 'vitest';
 import SequentialAppenderService from '../sequentialAppenderService';
+import config from '../../config';
 
 async function* streamBatches(batches: any[][]) {
   for (const batch of batches) {
@@ -232,5 +233,57 @@ describe('SequentialAppenderService full sync transaction safety', () => {
 
     expect(result.status).toBe('success');
     expect(queries).not.toContain(`DROP TABLE IF EXISTS "${staleTable}"`);
+  });
+
+  test('uses dedicated full sync batch settings for appender loads', async () => {
+    const originalSyncConfig = { ...config.sync };
+    const appender = {
+      flushSync: vi.fn(),
+      closeSync: vi.fn(),
+      endRow: vi.fn()
+    };
+    const duckdb: any = {
+      run: vi.fn().mockResolvedValue(undefined),
+      execute: vi.fn().mockResolvedValue([{ max_id: 1 }]),
+      checkpoint: vi.fn().mockResolvedValue(undefined),
+      createAppender: vi.fn().mockResolvedValue({
+        appender,
+        connection: { closeSync: vi.fn() }
+      })
+    };
+    const mysql: any = {
+      getTableRowCountFast: vi.fn().mockResolvedValue(1),
+      streamTableData: vi.fn().mockReturnValue(streamBatches([[{ id: 1, name: 'Alice' }]]))
+    };
+
+    Object.assign(config.sync, {
+      batchSize: 5000,
+      appenderFlushInterval: 5000,
+      fullSyncBatchSize: 123,
+      fullSyncAppenderFlushInterval: 321,
+    });
+
+    try {
+      const service = SequentialAppenderService.getInstance('tx-test-appender', mysql, duckdb) as any;
+      vi.spyOn(service, 'getSchemaOrCleanup').mockResolvedValue([
+        { Field: 'id', Type: 'int', Key: 'PRI' },
+        { Field: 'name', Type: 'varchar(255)', Key: '' }
+      ]);
+      vi.spyOn(service, 'ensureTableExists').mockResolvedValue(undefined);
+      vi.spyOn(service, 'createTable').mockResolvedValue(undefined);
+      vi.spyOn(service, 'appendValueByType').mockImplementation(() => undefined);
+      vi.spyOn(service, 'getTableWatermark').mockResolvedValue(undefined);
+      vi.spyOn(service, 'detectPrimaryKeyColumn').mockResolvedValue('id');
+      vi.spyOn(service, 'detectTimestampColumn').mockResolvedValue('updatedAt');
+      vi.spyOn(service, 'updateWatermark').mockResolvedValue(undefined);
+      vi.spyOn(service, 'logSyncOperation').mockResolvedValue(undefined);
+
+      const result = await service.syncTableSequentialWithAppender('users');
+
+      expect(result.status).toBe('success');
+      expect(mysql.streamTableData).toHaveBeenCalledWith('users', 123);
+    } finally {
+      Object.assign(config.sync, originalSyncConfig);
+    }
   });
 });

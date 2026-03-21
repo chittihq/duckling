@@ -1071,8 +1071,8 @@ class SequentialAppenderService extends EventEmitter {
         const columnTypes = new Map(schema.map(col => [col.Field, col.Type]));
 
         // Stream records from MySQL and append
-        const fetchBatchSize = config.sync.batchSize; // Configurable via BATCH_SIZE env var
-        const FLUSH_INTERVAL = config.sync.appenderFlushInterval; // Configurable via APPENDER_FLUSH_INTERVAL env var (default 5000)
+        const fetchBatchSize = config.sync.fullSyncBatchSize; // Configurable via FULL_SYNC_BATCH_SIZE env var
+        const FLUSH_INTERVAL = config.sync.fullSyncAppenderFlushInterval; // Configurable via FULL_SYNC_APPENDER_FLUSH_INTERVAL env var
 
         logger.info(`${tableName}: fetchBatchSize=${fetchBatchSize}, flushInterval=${FLUSH_INTERVAL}, using Appender API`);
 
@@ -1134,7 +1134,14 @@ class SequentialAppenderService extends EventEmitter {
               logger.debug(`${tableName}: Garbage collection triggered after flush`);
             }
 
-            logger.info(`${tableName}: Appender flushed successfully, memory freed`);
+            const memoryAfterFlush = process.memoryUsage();
+            const rssAfterFlushMB = (memoryAfterFlush.rss / 1024 / 1024).toFixed(1);
+            const heapAfterFlushMB = (memoryAfterFlush.heapUsed / 1024 / 1024).toFixed(1);
+            const externalAfterFlushMB = (memoryAfterFlush.external / 1024 / 1024).toFixed(1);
+
+            logger.info(
+              `${tableName}: Appender flushed successfully, memory freed | RSS: ${rssAfterFlushMB} MB | Heap: ${heapAfterFlushMB} MB | External: ${externalAfterFlushMB} MB`
+            );
           }
 
           // Log progress for large tables
@@ -1143,14 +1150,20 @@ class SequentialAppenderService extends EventEmitter {
             const rawPercent = (recordsProcessed / totalRecords) * 100;
             const percent = Math.min(rawPercent, 100).toFixed(1);
             const memUsage = process.memoryUsage();
+            const rssMB = (memUsage.rss / 1024 / 1024).toFixed(1);
             const heapUsedMB = (memUsage.heapUsed / 1024 / 1024).toFixed(1);
             const heapTotalMB = (memUsage.heapTotal / 1024 / 1024).toFixed(1);
+            const externalMB = (memUsage.external / 1024 / 1024).toFixed(1);
 
             // If estimate was wrong (>100%), show actual count without percentage
             if (rawPercent > 100) {
-              logger.info(`${tableName}: Processing... ${recordsProcessed.toLocaleString()} records (est. ${totalRecords.toLocaleString()}) | Memory: ${heapUsedMB}/${heapTotalMB} MB`);
+              logger.info(
+                `${tableName}: Processing... ${recordsProcessed.toLocaleString()} records (est. ${totalRecords.toLocaleString()}) | Memory: RSS ${rssMB} MB | Heap ${heapUsedMB}/${heapTotalMB} MB | External ${externalMB} MB`
+              );
             } else {
-              logger.info(`${tableName}: Processing... ${recordsProcessed.toLocaleString()}/${totalRecords.toLocaleString()} records (${percent}%) | Memory: ${heapUsedMB}/${heapTotalMB} MB`);
+              logger.info(
+                `${tableName}: Processing... ${recordsProcessed.toLocaleString()}/${totalRecords.toLocaleString()} records (${percent}%) | Memory: RSS ${rssMB} MB | Heap ${heapUsedMB}/${heapTotalMB} MB | External ${externalMB} MB`
+              );
             }
             lastLoggedAt = recordsProcessed;
           }

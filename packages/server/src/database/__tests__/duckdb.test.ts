@@ -1,9 +1,44 @@
+import * as fs from 'fs';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import DuckDBConnection, { sanitizeLogParams } from '../duckdb';
+import config from '../../config';
 
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe('DuckDBConnection runtime settings', () => {
+  test('applies configured runtime settings before sync work begins', async () => {
+    const originalDuckdbConfig = { ...config.duckdb };
+    const runRaw = vi.fn().mockResolvedValue(undefined);
+    const tempDirectory = '/tmp/duckdb-runtime-settings-test';
+
+    Object.assign(config.duckdb, {
+      memoryLimit: '4GB',
+      threads: 2,
+      tempDirectory,
+      maxTempDirectorySize: '50GB',
+      preserveInsertionOrder: false,
+    });
+
+    try {
+      const ctx: any = { runRaw, escapeSqlStringLiteral: (DuckDBConnection.prototype as any).escapeSqlStringLiteral };
+      const configureRuntimeSettings = (DuckDBConnection.prototype as any).configureRuntimeSettings.bind(ctx);
+
+      await configureRuntimeSettings();
+
+      expect(fs.existsSync(tempDirectory)).toBe(true);
+      expect(runRaw).toHaveBeenCalledWith(`SET temp_directory = '${tempDirectory}'`);
+      expect(runRaw).toHaveBeenCalledWith("SET max_temp_directory_size = '50GB'");
+      expect(runRaw).toHaveBeenCalledWith("SET memory_limit = '4GB'");
+      expect(runRaw).toHaveBeenCalledWith('SET threads = 2');
+      expect(runRaw).toHaveBeenCalledWith('SET preserve_insertion_order = false');
+    } finally {
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+      Object.assign(config.duckdb, originalDuckdbConfig);
+    }
+  });
 });
 
 describe('DuckDBConnection getPersistentConnection', () => {
