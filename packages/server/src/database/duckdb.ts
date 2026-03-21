@@ -331,6 +331,23 @@ class DuckDBConnection {
         CREATE SEQUENCE IF NOT EXISTS sync_log_id_seq START 1
       `);
 
+      await this.runRaw(`
+        CREATE TABLE IF NOT EXISTS full_sync_sessions (
+          table_name VARCHAR PRIMARY KEY,
+          session_id VARCHAR NOT NULL,
+          staging_table VARCHAR NOT NULL,
+          status VARCHAR NOT NULL,
+          pk_columns_json TEXT NOT NULL,
+          last_pk_cursor_json TEXT,
+          records_processed BIGINT DEFAULT 0,
+          schema_fingerprint VARCHAR NOT NULL,
+          error_message TEXT,
+          started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          completed_at TIMESTAMP
+        )
+      `);
+
       logger.info('DuckDB database initialized successfully (optimization running in background)');
 
       // Run non-critical optimizations in background to speed up startup
@@ -732,7 +749,7 @@ class DuckDBConnection {
       const result = await this.execute(`
         SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'main'
-        AND table_name NOT IN ('appender_watermarks', 'sync_log', 'sync_checkpoint')
+        AND table_name NOT IN ('appender_watermarks', 'sync_log', 'sync_checkpoint', 'full_sync_sessions')
         AND substr(table_name, 1, 20) <> '__full_sync_staging_'
         ORDER BY table_name
       `);

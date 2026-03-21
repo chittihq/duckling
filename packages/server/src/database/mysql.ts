@@ -235,18 +235,24 @@ class MySQLConnection {
    * Supports composite primary keys via row-value tuple comparison: (col1, col2) > (?, ?)
    * Falls back to OFFSET pagination only if no primary key exists at all
    */
-  async *streamTableData(tableName: string, batchSize: number = 10000): AsyncGenerator<any[], void, unknown> {
+  async *streamTableData(
+    tableName: string,
+    batchSize: number = 10000,
+    startAfter?: any[] | null
+  ): AsyncGenerator<any[], void, unknown> {
     const pkColumns = await this.getPrimaryKeyColumns(tableName);
 
     if (pkColumns.length > 0) {
       // Keyset pagination - O(1) per batch regardless of table size
       // For composite PKs, uses MySQL row-value tuple comparison: (col1, col2) > (?, ?)
-      let lastValues: any[] | null = null;
+      let lastValues: any[] | null = startAfter && startAfter.length > 0 ? [...startAfter] : null;
       let batch: any[];
 
       const orderByClause = pkColumns.map(pk => `${this.q(pk)} ASC`).join(', ');
 
-      logger.info(`MySQL streamTableData for ${tableName}: batchSize=${batchSize}, using keyset pagination on (${pkColumns.join(', ')})`);
+      logger.info(
+        `MySQL streamTableData for ${tableName}: batchSize=${batchSize}, using keyset pagination on (${pkColumns.join(', ')})`
+      );
 
       do {
         let query: string;

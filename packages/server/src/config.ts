@@ -61,6 +61,7 @@ export const config = {
       process.env.APPENDER_FLUSH_INTERVAL ||
       '5000'
     ),
+    fullSyncResumeEnabled: process.env.FULL_SYNC_RESUME_ENABLED !== 'false',
     maxRetries: parseInt(process.env.MAX_RETRIES || '3'),
     retryBaseDelayMs: parseInt(process.env.RETRY_BASE_DELAY_MS || '1000'),
     retryMaxDelayMs: parseInt(process.env.RETRY_MAX_DELAY_MS || '60000'),

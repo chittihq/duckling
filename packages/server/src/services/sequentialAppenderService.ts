@@ -4,7 +4,7 @@ import MySQLConnection from '../database/mysql';
 import config from '../config';
 import logger from '../logger';
 import { DuckDBTimestampValue, DuckDBTimeValue } from '@duckdb/node-api';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { WorkerPool } from '../workers/workerPool';
 // Appender functionality now provided by unified DuckDBConnection class
 
@@ -60,6 +60,23 @@ export interface SyncProgressStatus {
   recordsProcessed: number;
   startedAt: string | null;
   lastError: string | null;
+}
+
+type FullSyncSessionStatus = 'loading' | 'swapping' | 'completed' | 'abandoned';
+
+interface FullSyncSession {
+  tableName: string;
+  sessionId: string;
+  stagingTable: string;
+  status: FullSyncSessionStatus;
+  pkColumns: string[];
+  lastPkCursor: any[] | null;
+  recordsProcessed: number;
+  schemaFingerprint: string;
+  errorMessage: string | null;
+  startedAt: Date;
+  updatedAt: Date;
+  completedAt: Date | null;
 }
 
 /**
@@ -153,6 +170,297 @@ class SequentialAppenderService extends EventEmitter {
       .join(' AND ');
   }
 
+  private isFullSyncResumeEnabled(): boolean {
+    return config.sync.fullSyncResumeEnabled;
+  }
+
+  private computeSchemaFingerprint(schema: any[]): string {
+    const normalizedSchema = schema.map((col) => ({
+      field: String(col.Field),
+      type: String(col.Type),
+      key: String(col.Key || ''),
+      nullable: String(col.Null || ''),
+    }));
+
+    return createHash('sha256').update(JSON.stringify(normalizedSchema)).digest('hex');
+  }
+
+  private toDateOrNull(value: unknown): Date | null {
+    if (value === null || value === undefined) return null;
+    const date = value instanceof Date ? value : new Date(String(value));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  private parseCursorJson(value: unknown): any[] | null {
+    if (typeof value !== 'string' || value.length === 0) return null;
+
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (error) {
+      logger.warn('Failed to parse full sync cursor JSON:', error);
+      return null;
+    }
+  }
+
+  private async getFullSyncSession(tableName: string): Promise<FullSyncSession | null> {
+    try {
+      const rows = await this.duckdb.execute(`
+        SELECT
+          table_name,
+          session_id,
+          staging_table,
+          status,
+          pk_columns_json,
+          last_pk_cursor_json,
+          records_processed,
+          schema_fingerprint,
+          error_message,
+          started_at,
+          updated_at,
+          completed_at
+        FROM full_sync_sessions
+        WHERE table_name = ?
+      `, [tableName]);
+
+      const row = rows[0];
+      if (!row || typeof row.table_name !== 'string') {
+        return null;
+      }
+
+      let pkColumns: string[] = [];
+      try {
+        const parsed = JSON.parse(String(row.pk_columns_json || '[]'));
+        if (Array.isArray(parsed)) {
+          pkColumns = parsed.map((value) => String(value));
+        }
+      } catch (error) {
+        logger.warn(`Failed to parse primary key metadata for full sync session ${tableName}:`, error);
+      }
+
+      const recordsProcessedValue = row.records_processed;
+      const recordsProcessed = typeof recordsProcessedValue === 'bigint'
+        ? Number(recordsProcessedValue)
+        : Number(recordsProcessedValue || 0);
+
+      return {
+        tableName: row.table_name,
+        sessionId: String(row.session_id),
+        stagingTable: String(row.staging_table),
+        status: row.status as FullSyncSessionStatus,
+        pkColumns,
+        lastPkCursor: this.parseCursorJson(row.last_pk_cursor_json),
+        recordsProcessed: Number.isFinite(recordsProcessed) ? recordsProcessed : 0,
+        schemaFingerprint: String(row.schema_fingerprint),
+        errorMessage: row.error_message ? String(row.error_message) : null,
+        startedAt: this.toDateOrNull(row.started_at) || new Date(),
+        updatedAt: this.toDateOrNull(row.updated_at) || new Date(),
+        completedAt: this.toDateOrNull(row.completed_at),
+      };
+    } catch (error) {
+      logger.warn(`Failed to load full sync session for ${tableName}:`, error);
+      return null;
+    }
+  }
+
+  private async getTrackedResumableStagingTables(): Promise<Set<string>> {
+    try {
+      const rows = await this.duckdb.execute(`
+        SELECT staging_table
+        FROM full_sync_sessions
+        WHERE status IN ('loading', 'swapping')
+      `);
+
+      return new Set(
+        rows
+          .map((row: any) => (typeof row?.staging_table === 'string' ? row.staging_table : null))
+          .filter((value: string | null): value is string => Boolean(value))
+      );
+    } catch {
+      return new Set();
+    }
+  }
+
+  private async saveFullSyncSession(session: FullSyncSession): Promise<void> {
+    await this.duckdb.run(`
+      INSERT OR REPLACE INTO full_sync_sessions
+      (
+        table_name,
+        session_id,
+        staging_table,
+        status,
+        pk_columns_json,
+        last_pk_cursor_json,
+        records_processed,
+        schema_fingerprint,
+        error_message,
+        started_at,
+        updated_at,
+        completed_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      session.tableName,
+      session.sessionId,
+      session.stagingTable,
+      session.status,
+      JSON.stringify(session.pkColumns),
+      session.lastPkCursor ? this.serializeWithBigInt(session.lastPkCursor) : null,
+      session.recordsProcessed,
+      session.schemaFingerprint,
+      session.errorMessage,
+      session.startedAt,
+      session.updatedAt,
+      session.completedAt,
+    ]);
+  }
+
+  private async createFreshFullSyncSession(
+    tableName: string,
+    schema: any[],
+    primaryKeyColumns: string[],
+    schemaFingerprint: string,
+  ): Promise<FullSyncSession> {
+    const session: FullSyncSession = {
+      tableName,
+      sessionId: randomUUID().replace(/-/g, ''),
+      stagingTable: this.buildStagingTableName(tableName),
+      status: 'loading',
+      pkColumns: [...primaryKeyColumns],
+      lastPkCursor: null,
+      recordsProcessed: 0,
+      schemaFingerprint,
+      errorMessage: null,
+      startedAt: new Date(),
+      updatedAt: new Date(),
+      completedAt: null,
+    };
+
+    await this.createTable(session.stagingTable, schema, { includePrimaryKey: false });
+    await this.saveFullSyncSession(session);
+    return session;
+  }
+
+  private async abandonFullSyncSession(session: FullSyncSession, reason: string): Promise<void> {
+    const abandonedSession: FullSyncSession = {
+      ...session,
+      status: 'abandoned',
+      errorMessage: reason,
+      updatedAt: new Date(),
+      completedAt: new Date(),
+    };
+    await this.saveFullSyncSession(abandonedSession);
+  }
+
+  private async stageTableExists(tableName: string): Promise<boolean> {
+    const rows = await this.duckdb.execute(`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'main'
+        AND table_name = ?
+        AND table_type = 'BASE TABLE'
+    `, [tableName]);
+
+    return rows.length > 0;
+  }
+
+  private async prepareFullSyncSession(
+    tableName: string,
+    schema: any[],
+    primaryKeyColumns: string[],
+  ): Promise<FullSyncSession> {
+    const schemaFingerprint = this.computeSchemaFingerprint(schema);
+    const existingSession = await this.getFullSyncSession(tableName);
+
+    if (!existingSession || existingSession.status === 'completed' || existingSession.status === 'abandoned') {
+      return this.createFreshFullSyncSession(tableName, schema, primaryKeyColumns, schemaFingerprint);
+    }
+
+    const sameSchema = existingSession.schemaFingerprint === schemaFingerprint;
+    const samePrimaryKeys = JSON.stringify(existingSession.pkColumns) === JSON.stringify(primaryKeyColumns);
+    const stagingExists = await this.stageTableExists(existingSession.stagingTable);
+    const hasValidCursorShape = existingSession.lastPkCursor === null
+      || existingSession.lastPkCursor.length === primaryKeyColumns.length;
+
+    if (!sameSchema || !samePrimaryKeys || !stagingExists || !hasValidCursorShape) {
+      const reasons = [
+        !sameSchema ? 'schema changed' : null,
+        !samePrimaryKeys ? 'primary key columns changed' : null,
+        !stagingExists ? 'staging table missing' : null,
+        !hasValidCursorShape ? 'stored cursor is invalid' : null,
+      ].filter((value): value is string => Boolean(value));
+
+      await this.abandonFullSyncSession(existingSession, reasons.join('; '));
+      return this.createFreshFullSyncSession(tableName, schema, primaryKeyColumns, schemaFingerprint);
+    }
+
+    return existingSession;
+  }
+
+  private buildLexicographicGreaterThanPredicate(columns: string[], values: any[]): { sql: string; params: any[] } {
+    const clauses: string[] = [];
+    const params: any[] = [];
+
+    for (let index = 0; index < columns.length; index++) {
+      const parts: string[] = [];
+      for (let prefix = 0; prefix < index; prefix++) {
+        parts.push(`${this.q(columns[prefix])} = ?`);
+        params.push(values[prefix]);
+      }
+      parts.push(`${this.q(columns[index])} > ?`);
+      params.push(values[index]);
+      clauses.push(parts.length > 1 ? `(${parts.join(' AND ')})` : parts[0]);
+    }
+
+    return { sql: clauses.join(' OR '), params };
+  }
+
+  private async prepareResumedFullSyncStaging(session: FullSyncSession): Promise<void> {
+    if (session.status !== 'loading') return;
+
+    if (!session.lastPkCursor || session.recordsProcessed <= 0) {
+      await this.duckdb.run(`DELETE FROM ${this.q(session.stagingTable)}`);
+      return;
+    }
+
+    const { sql, params } = this.buildLexicographicGreaterThanPredicate(session.pkColumns, session.lastPkCursor);
+    await this.duckdb.run(`DELETE FROM ${this.q(session.stagingTable)} WHERE ${sql}`, params);
+  }
+
+  private async updateFullSyncSessionProgress(
+    session: FullSyncSession,
+    lastPkCursor: any[] | null,
+    recordsProcessed: number,
+  ): Promise<FullSyncSession> {
+    const updatedSession: FullSyncSession = {
+      ...session,
+      lastPkCursor: lastPkCursor ? [...lastPkCursor] : null,
+      recordsProcessed,
+      updatedAt: new Date(),
+      errorMessage: null,
+    };
+
+    await this.saveFullSyncSession(updatedSession);
+    return updatedSession;
+  }
+
+  private async updateFullSyncSessionStatus(
+    session: FullSyncSession,
+    status: FullSyncSessionStatus,
+    errorMessage: string | null = null,
+  ): Promise<FullSyncSession> {
+    const updatedSession: FullSyncSession = {
+      ...session,
+      status,
+      errorMessage,
+      updatedAt: new Date(),
+      completedAt: status === 'completed' || status === 'abandoned' ? new Date() : session.completedAt,
+    };
+
+    await this.saveFullSyncSession(updatedSession);
+    return updatedSession;
+  }
+
   /** Best-effort table cleanup that never masks the original sync outcome. */
   private async dropTableIfExists(tableName: string, context: string): Promise<void> {
     try {
@@ -168,7 +476,7 @@ class SequentialAppenderService extends EventEmitter {
    * We intentionally do not drop them from the hot sync path. In damaged DB/WAL states,
    * even a best-effort DROP on crash residue has triggered native DuckDB failures.
    */
-  private async cleanupOrphanStagingTables(tableName: string): Promise<void> {
+  private async cleanupOrphanStagingTables(tableName: string, activeStagingTable?: string): Promise<void> {
     const stagingPrefix = this.getStagingTablePrefix(tableName);
 
     try {
@@ -180,9 +488,12 @@ class SequentialAppenderService extends EventEmitter {
       `, [stagingPrefix.length, stagingPrefix]);
 
       const staleTableNames: string[] = [];
+      const activeStagingTables = await this.getTrackedResumableStagingTables();
       for (const row of rows) {
         const staleTableName = typeof row?.table_name === 'string' ? row.table_name : null;
         if (!staleTableName) continue;
+        if (activeStagingTable && staleTableName === activeStagingTable) continue;
+        if (activeStagingTables.has(staleTableName)) continue;
         staleTableNames.push(staleTableName);
       }
 
@@ -224,9 +535,11 @@ class SequentialAppenderService extends EventEmitter {
         `);
 
         const staleTableNames: string[] = [];
+        const activeStagingTables = await this.getTrackedResumableStagingTables();
         for (const row of rows) {
           const staleTableName = typeof row?.table_name === 'string' ? row.table_name : null;
           if (!staleTableName) continue;
+          if (activeStagingTables.has(staleTableName)) continue;
           staleTableNames.push(staleTableName);
         }
 
@@ -1013,6 +1326,7 @@ class SequentialAppenderService extends EventEmitter {
    */
   private async syncTableSequentialWithAppender(tableName: string): Promise<AppenderSyncResult> {
     const startTime = Date.now();
+    let resumableSessionActive = false;
 
     try {
       logger.info(`Starting Appender-based sequential sync for table: ${tableName}`);
@@ -1038,7 +1352,6 @@ class SequentialAppenderService extends EventEmitter {
       await this.duckdb.checkpoint();
 
       let recordsProcessed = 0;
-      let lastFlushedAt = 0; // Track last flush point for periodic memory cleanup
       const watermarkBefore = await this.getTableWatermark(tableName);
 
       // Get estimated record count for progress tracking (fast, uses information_schema)
@@ -1049,136 +1362,176 @@ class SequentialAppenderService extends EventEmitter {
       const PROGRESS_LOG_INTERVAL = 10000;
 
       await this.ensureStartupStagingCleanup();
-      await this.cleanupOrphanStagingTables(tableName);
-      const stagingTable = this.buildStagingTableName(tableName);
-      await this.createTable(stagingTable, schema, { includePrimaryKey: false });
+      const primaryKeyColumns = this.getPrimaryKeyColumnsFromSchema(schema);
+      const resumableFullSync = this.isFullSyncResumeEnabled() && primaryKeyColumns.length > 0;
 
-      logger.info(`${tableName}: Starting Appender-based insert into staging table ${stagingTable}`);
+      let fullSyncSession: FullSyncSession | null = null;
+      let stagingTable: string;
+
+      if (resumableFullSync) {
+        fullSyncSession = await this.prepareFullSyncSession(tableName, schema, primaryKeyColumns);
+        resumableSessionActive = true;
+        stagingTable = fullSyncSession.stagingTable;
+        await this.cleanupOrphanStagingTables(tableName, stagingTable);
+
+        if (fullSyncSession.status === 'loading') {
+          await this.prepareResumedFullSyncStaging(fullSyncSession);
+          recordsProcessed = fullSyncSession.recordsProcessed;
+          lastLoggedAt = recordsProcessed;
+          logger.info(
+            `${tableName}: ${recordsProcessed > 0 ? 'Resuming' : 'Starting'} Appender-based insert into staging table ${stagingTable} ` +
+            `(session ${fullSyncSession.sessionId}, processed=${recordsProcessed.toLocaleString()})`
+          );
+        } else {
+          recordsProcessed = fullSyncSession.recordsProcessed;
+          lastLoggedAt = recordsProcessed;
+          logger.info(
+            `${tableName}: Resuming transactional swap from staging table ${stagingTable} ` +
+            `(session ${fullSyncSession.sessionId}, processed=${recordsProcessed.toLocaleString()})`
+          );
+        }
+      } else {
+        await this.cleanupOrphanStagingTables(tableName);
+        stagingTable = this.buildStagingTableName(tableName);
+        await this.createTable(stagingTable, schema, { includePrimaryKey: false });
+        logger.info(`${tableName}: Starting Appender-based insert into staging table ${stagingTable}`);
+      }
 
       let _appender: any = null;
       let _conn: any = null;
+      let lastStreamCursor: any[] | null = fullSyncSession?.lastPkCursor ?? null;
 
       try {
-        // Create Appender instance for this table using unified DuckDB connection
-        logger.debug(`${tableName}: Creating Appender instance for staging table ${stagingTable}...`);
-        const { appender, connection: conn } = await this.duckdb.createAppender(stagingTable);
-        _appender = appender;
-        _conn = conn;
-        logger.info(`${tableName}: Appender created successfully`);
-
-        // Get column names and types
         const columns = schema.map(col => col.Field);
         const columnTypes = new Map(schema.map(col => [col.Field, col.Type]));
-
-        // Stream records from MySQL and append
         const fetchBatchSize = config.sync.fullSyncBatchSize; // Configurable via FULL_SYNC_BATCH_SIZE env var
         const FLUSH_INTERVAL = config.sync.fullSyncAppenderFlushInterval; // Configurable via FULL_SYNC_APPENDER_FLUSH_INTERVAL env var
+        let lastFlushedAt = recordsProcessed;
 
         logger.info(`${tableName}: fetchBatchSize=${fetchBatchSize}, flushInterval=${FLUSH_INTERVAL}, using Appender API`);
 
-        for await (const fetchedBatch of this.mysql.streamTableData(tableName, fetchBatchSize)) {
-          // Sanitize batch: use worker threads if enabled, otherwise main thread
-          // (Appender API methods must run on main thread with DuckDB connection)
-          let sanitizedRows: any[][];
-          const pool = WorkerPool.getInstance();
-          let useMainThread = pool.isDisabled;
+        if (!fullSyncSession || fullSyncSession.status === 'loading') {
+          // Create Appender instance for this table using unified DuckDB connection
+          logger.debug(`${tableName}: Creating Appender instance for staging table ${stagingTable}...`);
+          const { appender, connection: conn } = await this.duckdb.createAppender(stagingTable);
+          _appender = appender;
+          _conn = conn;
+          logger.info(`${tableName}: Appender created successfully`);
 
-          if (!useMainThread) {
-            try {
-              const columnTypesObj: Record<string, string> = {};
-              for (const [k, v] of columnTypes) columnTypesObj[k] = v;
-              sanitizedRows = await pool.sanitizeBatch(fetchedBatch, columns, columnTypesObj);
-            } catch (workerErr) {
-              logger.warn(`${tableName}: Worker pool sanitization failed, falling back to main thread:`, workerErr);
-              useMainThread = true;
-            }
-          }
+          for await (const fetchedBatch of this.mysql.streamTableData(tableName, fetchBatchSize, lastStreamCursor)) {
+            // Sanitize batch: use worker threads if enabled, otherwise main thread
+            // (Appender API methods must run on main thread with DuckDB connection)
+            let sanitizedRows: any[][];
+            const pool = WorkerPool.getInstance();
+            let useMainThread = pool.isDisabled;
 
-          if (useMainThread) {
-            sanitizedRows = fetchedBatch.map(record =>
-              columns.map(col => this.sanitizeValue(record[col], columnTypes.get(col) || ''))
-            );
-          }
-
-          // Append each pre-sanitized row using Appender API
-          for (let r = 0; r < sanitizedRows.length; r++) {
-            const sanitizedRow = sanitizedRows[r];
-            for (let c = 0; c < columns.length; c++) {
-              const value = sanitizedRow[c];
-              const mysqlType = columnTypes.get(columns[c]) || '';
-
+            if (!useMainThread) {
               try {
-                this.appendValueByType(appender, value, mysqlType);
-              } catch (appendErr: any) {
-                logger.error(`Appender column error: table=${tableName} col=${columns[c]} mysqlType=${mysqlType} value=${JSON.stringify(value)}: ${appendErr.message}`);
-                throw appendErr;
+                const columnTypesObj: Record<string, string> = {};
+                for (const [k, v] of columnTypes) columnTypesObj[k] = v;
+                sanitizedRows = await pool.sanitizeBatch(fetchedBatch, columns, columnTypesObj);
+              } catch (workerErr) {
+                logger.warn(`${tableName}: Worker pool sanitization failed, falling back to main thread:`, workerErr);
+                useMainThread = true;
               }
             }
 
-            // End row after all columns appended
-            appender.endRow();
-          }
-
-          recordsProcessed += fetchedBatch.length;
-
-          // Flush appender periodically to prevent memory exhaustion
-          // This commits data to DuckDB and frees memory immediately
-          if (recordsProcessed - lastFlushedAt >= FLUSH_INTERVAL) {
-            logger.info(`${tableName}: Flushing appender at ${recordsProcessed.toLocaleString()} records to free memory...`);
-            appender.flushSync();
-            lastFlushedAt = recordsProcessed;
-
-            // Force garbage collection if available (helps in low memory situations)
-            if (global.gc) {
-              global.gc();
-              logger.debug(`${tableName}: Garbage collection triggered after flush`);
-            }
-
-            const memoryAfterFlush = process.memoryUsage();
-            const rssAfterFlushMB = (memoryAfterFlush.rss / 1024 / 1024).toFixed(1);
-            const heapAfterFlushMB = (memoryAfterFlush.heapUsed / 1024 / 1024).toFixed(1);
-            const externalAfterFlushMB = (memoryAfterFlush.external / 1024 / 1024).toFixed(1);
-
-            logger.info(
-              `${tableName}: Appender flushed successfully, memory freed | RSS: ${rssAfterFlushMB} MB | Heap: ${heapAfterFlushMB} MB | External: ${externalAfterFlushMB} MB`
-            );
-          }
-
-          // Log progress for large tables
-          if (totalRecords >= PROGRESS_LOG_INTERVAL && recordsProcessed - lastLoggedAt >= PROGRESS_LOG_INTERVAL) {
-            // Cap percentage at 100% (totalRecords is an estimate from information_schema, may be inaccurate)
-            const rawPercent = (recordsProcessed / totalRecords) * 100;
-            const percent = Math.min(rawPercent, 100).toFixed(1);
-            const memUsage = process.memoryUsage();
-            const rssMB = (memUsage.rss / 1024 / 1024).toFixed(1);
-            const heapUsedMB = (memUsage.heapUsed / 1024 / 1024).toFixed(1);
-            const heapTotalMB = (memUsage.heapTotal / 1024 / 1024).toFixed(1);
-            const externalMB = (memUsage.external / 1024 / 1024).toFixed(1);
-
-            // If estimate was wrong (>100%), show actual count without percentage
-            if (rawPercent > 100) {
-              logger.info(
-                `${tableName}: Processing... ${recordsProcessed.toLocaleString()} records (est. ${totalRecords.toLocaleString()}) | Memory: RSS ${rssMB} MB | Heap ${heapUsedMB}/${heapTotalMB} MB | External ${externalMB} MB`
-              );
-            } else {
-              logger.info(
-                `${tableName}: Processing... ${recordsProcessed.toLocaleString()}/${totalRecords.toLocaleString()} records (${percent}%) | Memory: RSS ${rssMB} MB | Heap ${heapUsedMB}/${heapTotalMB} MB | External ${externalMB} MB`
+            if (useMainThread) {
+              sanitizedRows = fetchedBatch.map(record =>
+                columns.map(col => this.sanitizeValue(record[col], columnTypes.get(col) || ''))
               );
             }
-            lastLoggedAt = recordsProcessed;
+
+            // Append each pre-sanitized row using Appender API
+            for (let r = 0; r < sanitizedRows.length; r++) {
+              const sanitizedRow = sanitizedRows[r];
+              for (let c = 0; c < columns.length; c++) {
+                const value = sanitizedRow[c];
+                const mysqlType = columnTypes.get(columns[c]) || '';
+
+                try {
+                  this.appendValueByType(appender, value, mysqlType);
+                } catch (appendErr: any) {
+                  logger.error(`Appender column error: table=${tableName} col=${columns[c]} mysqlType=${mysqlType} value=${JSON.stringify(value)}: ${appendErr.message}`);
+                  throw appendErr;
+                }
+              }
+
+              appender.endRow();
+            }
+
+            recordsProcessed += fetchedBatch.length;
+            if (primaryKeyColumns.length > 0) {
+              const lastRecord = fetchedBatch[fetchedBatch.length - 1];
+              lastStreamCursor = primaryKeyColumns.map((primaryKeyColumn) => lastRecord[primaryKeyColumn]);
+            }
+
+            // Flush appender periodically to prevent memory exhaustion
+            if (recordsProcessed - lastFlushedAt >= FLUSH_INTERVAL) {
+              logger.info(`${tableName}: Flushing appender at ${recordsProcessed.toLocaleString()} records to free memory...`);
+              appender.flushSync();
+              lastFlushedAt = recordsProcessed;
+
+              if (fullSyncSession) {
+                fullSyncSession = await this.updateFullSyncSessionProgress(fullSyncSession, lastStreamCursor, recordsProcessed);
+              }
+
+              // Force garbage collection if available (helps in low memory situations)
+              if (global.gc) {
+                global.gc();
+                logger.debug(`${tableName}: Garbage collection triggered after flush`);
+              }
+
+              const memoryAfterFlush = process.memoryUsage();
+              const rssAfterFlushMB = (memoryAfterFlush.rss / 1024 / 1024).toFixed(1);
+              const heapAfterFlushMB = (memoryAfterFlush.heapUsed / 1024 / 1024).toFixed(1);
+              const externalAfterFlushMB = (memoryAfterFlush.external / 1024 / 1024).toFixed(1);
+
+              logger.info(
+                `${tableName}: Appender flushed successfully, memory freed | RSS: ${rssAfterFlushMB} MB | Heap: ${heapAfterFlushMB} MB | External: ${externalAfterFlushMB} MB`
+              );
+            }
+
+            // Log progress for large tables
+            if (totalRecords >= PROGRESS_LOG_INTERVAL && recordsProcessed - lastLoggedAt >= PROGRESS_LOG_INTERVAL) {
+              const rawPercent = (recordsProcessed / totalRecords) * 100;
+              const percent = Math.min(rawPercent, 100).toFixed(1);
+              const memUsage = process.memoryUsage();
+              const rssMB = (memUsage.rss / 1024 / 1024).toFixed(1);
+              const heapUsedMB = (memUsage.heapUsed / 1024 / 1024).toFixed(1);
+              const heapTotalMB = (memUsage.heapTotal / 1024 / 1024).toFixed(1);
+              const externalMB = (memUsage.external / 1024 / 1024).toFixed(1);
+
+              if (rawPercent > 100) {
+                logger.info(
+                  `${tableName}: Processing... ${recordsProcessed.toLocaleString()} records (est. ${totalRecords.toLocaleString()}) | Memory: RSS ${rssMB} MB | Heap ${heapUsedMB}/${heapTotalMB} MB | External ${externalMB} MB`
+                );
+              } else {
+                logger.info(
+                  `${tableName}: Processing... ${recordsProcessed.toLocaleString()}/${totalRecords.toLocaleString()} records (${percent}%) | Memory: RSS ${rssMB} MB | Heap ${heapUsedMB}/${heapTotalMB} MB | External ${externalMB} MB`
+                );
+              }
+              lastLoggedAt = recordsProcessed;
+            }
+
+            logger.debug(`Appended ${fetchedBatch.length} records to ${tableName}, total: ${recordsProcessed}`);
           }
 
-          logger.debug(`Appended ${fetchedBatch.length} records to ${tableName}, total: ${recordsProcessed}`);
+          logger.debug(`${tableName}: Flushing Appender...`);
+          appender.flushSync();
+          if (fullSyncSession) {
+            fullSyncSession = await this.updateFullSyncSessionProgress(fullSyncSession, lastStreamCursor, recordsProcessed);
+          }
+          appender.closeSync();
+          conn.closeSync();
+          _appender = null;
+          _conn = null;
+          logger.info(`${tableName}: Appender flushed and closed successfully`);
         }
 
-        // Flush and close Appender (commits data)
-        logger.debug(`${tableName}: Flushing Appender...`);
-        appender.flushSync();
-        appender.closeSync();
-        conn.closeSync();
-        _appender = null;
-        _conn = null;
-        logger.info(`${tableName}: Appender flushed and closed successfully`);
+        if (fullSyncSession) {
+          fullSyncSession = await this.updateFullSyncSessionStatus(fullSyncSession, 'swapping');
+        }
 
         await this.duckdb.run('BEGIN TRANSACTION');
         try {
@@ -1191,9 +1544,14 @@ class SequentialAppenderService extends EventEmitter {
           } catch (rollbackError) {
             logger.error(`Failed to rollback staging swap for ${tableName}:`, rollbackError);
           }
+          if (fullSyncSession) {
+            fullSyncSession = await this.updateFullSyncSessionStatus(
+              fullSyncSession,
+              'swapping',
+              swapError instanceof Error ? swapError.message : String(swapError)
+            );
+          }
           throw swapError;
-        } finally {
-          await this.dropTableIfExists(stagingTable, `post-swap cleanup for ${tableName}`);
         }
 
         // Force CHECKPOINT to flush WAL and ensure data durability
@@ -1234,12 +1592,29 @@ class SequentialAppenderService extends EventEmitter {
           timestampColumn: await this.detectTimestampColumn(tableName, schema)
         });
 
+        if (fullSyncSession) {
+          fullSyncSession = await this.updateFullSyncSessionStatus(fullSyncSession, 'completed');
+        }
+        await this.dropTableIfExists(stagingTable, `post-swap cleanup for ${tableName}`);
+
         logger.info(`Appender-based sync completed for ${tableName}: ${recordsProcessed} records`);
 
       } catch (error) {
         if (_appender) { try { _appender.closeSync(); } catch {} }
         if (_conn) { try { _conn.closeSync(); } catch {} }
-        await this.dropTableIfExists(stagingTable, `error cleanup for ${tableName}`);
+        if (fullSyncSession) {
+          try {
+            fullSyncSession = await this.updateFullSyncSessionStatus(
+              fullSyncSession,
+              fullSyncSession.status,
+              error instanceof Error ? error.message : String(error)
+            );
+          } catch (sessionError) {
+            logger.warn(`Failed to persist resumable full sync session state for ${tableName}:`, sessionError);
+          }
+        } else {
+          await this.dropTableIfExists(stagingTable, `error cleanup for ${tableName}`);
+        }
         logger.error(`Appender sync failed for ${tableName}, error:`, error);
         throw error;
       }
@@ -1263,6 +1638,18 @@ class SequentialAppenderService extends EventEmitter {
 
       // Log error
       await this.logSyncOperation(tableName, 'sequential', 0, duration, 'error', undefined, errorMessage);
+
+      if (resumableSessionActive) {
+        logger.error(`Appender-based sync failed for ${tableName}; resumable session retained for retry:`, error);
+        return {
+          table: tableName,
+          recordsProcessed: 0,
+          duration,
+          status: 'error',
+          error: errorMessage,
+          syncType: 'sequential'
+        };
+      }
 
       logger.warn(`Appender-based sync failed for ${tableName}, falling back to INSERT method:`, error);
 

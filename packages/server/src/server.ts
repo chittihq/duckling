@@ -667,6 +667,9 @@ class DuckDBServer {
         }
       }
 
+      await duckdb.run('DELETE FROM appender_watermarks');
+      await duckdb.run('DELETE FROM full_sync_sessions');
+
       // Reinitialize database (watermark table, etc.)
       logger.info('Reinitializing database after clear');
       try {

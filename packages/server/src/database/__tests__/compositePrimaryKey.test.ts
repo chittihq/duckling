@@ -263,6 +263,46 @@ describe('MySQLConnection.streamTableData', () => {
     }
   });
 
+  test('resumes single-column PK pagination from provided cursor', async () => {
+    const conn = createMockedConnection(singlePkSchema);
+    const indexRows = schemaToShowIndexRows(singlePkSchema);
+
+    (conn as any).execute = vi.fn(async (query: string, params?: any[]) => {
+      if (query.startsWith('DESCRIBE')) return singlePkSchema;
+      if (query.startsWith('SHOW INDEX')) return indexRows;
+      return [];
+    });
+
+    for await (const _batch of conn.streamTableData('User', 10, [42])) {
+      void _batch;
+    }
+
+    const calls = (conn as any).execute.mock.calls;
+    const selectCalls = calls.filter((c: any[]) => c[0].startsWith('SELECT'));
+    expect(selectCalls[0][0]).toContain('WHERE (`id`) > (?)');
+    expect(selectCalls[0][1]).toEqual([42]);
+  });
+
+  test('resumes composite PK pagination from provided cursor', async () => {
+    const conn = createMockedConnection(compositePkSchema);
+    const indexRows = schemaToShowIndexRows(compositePkSchema);
+
+    (conn as any).execute = vi.fn(async (query: string, params?: any[]) => {
+      if (query.startsWith('DESCRIBE')) return compositePkSchema;
+      if (query.startsWith('SHOW INDEX')) return indexRows;
+      return [];
+    });
+
+    for await (const _batch of conn.streamTableData('UserRole', 10, [7, 9])) {
+      void _batch;
+    }
+
+    const calls = (conn as any).execute.mock.calls;
+    const selectCalls = calls.filter((c: any[]) => c[0].startsWith('SELECT'));
+    expect(selectCalls[0][0]).toContain('(`user_id`, `role_id`) > (?, ?)');
+    expect(selectCalls[0][1]).toEqual([7, 9]);
+  });
+
   test('falls back to OFFSET when no PK exists', async () => {
     const conn = createMockedConnection(noPkSchema);
 

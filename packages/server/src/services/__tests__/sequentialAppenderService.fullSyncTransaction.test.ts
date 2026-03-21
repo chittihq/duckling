@@ -13,6 +13,8 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     SequentialAppenderService.closeInstance('tx-test-sequential');
     SequentialAppenderService.closeInstance('tx-test-sequential-fail');
     SequentialAppenderService.closeInstance('tx-test-appender');
+    SequentialAppenderService.closeInstance('tx-test-appender-resume');
+    SequentialAppenderService.closeInstance('tx-test-appender-swap-resume');
     vi.restoreAllMocks();
   });
 
@@ -139,6 +141,140 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     expect(queries).toContain('DELETE FROM "users"');
     expect(queries).toContain(`INSERT INTO "users" SELECT * FROM "${createAppenderTable}"`);
     expect(queries).toContain(`DROP TABLE IF EXISTS "${createAppenderTable}"`);
+  });
+
+  test('resumes appender full sync from an existing staging table and cursor', async () => {
+    const runMock = vi.fn().mockResolvedValue(undefined);
+    const appender = {
+      flushSync: vi.fn(),
+      closeSync: vi.fn(),
+      endRow: vi.fn()
+    };
+    const duckdb: any = {
+      run: runMock,
+      execute: vi.fn().mockResolvedValue([{ max_id: 5 }]),
+      checkpoint: vi.fn().mockResolvedValue(undefined),
+      createAppender: vi.fn().mockResolvedValue({
+        appender,
+        connection: { closeSync: vi.fn() }
+      })
+    };
+    const mysql: any = {
+      getTableRowCountFast: vi.fn().mockResolvedValue(10),
+      streamTableData: vi.fn().mockReturnValue(streamBatches([[{ id: 4, name: 'Dave' }, { id: 5, name: 'Eve' }]]))
+    };
+
+    const service = SequentialAppenderService.getInstance('tx-test-appender-resume', mysql, duckdb) as any;
+    vi.spyOn(service, 'getSchemaOrCleanup').mockResolvedValue([
+      { Field: 'id', Type: 'int', Key: 'PRI' },
+      { Field: 'name', Type: 'varchar(255)', Key: '' }
+    ]);
+    vi.spyOn(service, 'ensureTableExists').mockResolvedValue(undefined);
+    vi.spyOn(service, 'prepareFullSyncSession').mockResolvedValue({
+      tableName: 'users',
+      sessionId: 'sess-1',
+      stagingTable: '__full_sync_staging_users_resume1234',
+      status: 'loading',
+      pkColumns: ['id'],
+      lastPkCursor: [3],
+      recordsProcessed: 3,
+      schemaFingerprint: 'fingerprint',
+      errorMessage: null,
+      startedAt: new Date('2026-03-21T00:00:00Z'),
+      updatedAt: new Date('2026-03-21T00:00:00Z'),
+      completedAt: null,
+    });
+    vi.spyOn(service, 'prepareResumedFullSyncStaging').mockResolvedValue(undefined);
+    vi.spyOn(service, 'cleanupOrphanStagingTables').mockResolvedValue(undefined);
+    vi.spyOn(service, 'appendValueByType').mockImplementation(() => undefined);
+    vi.spyOn(service, 'getTableWatermark').mockResolvedValue(undefined);
+    vi.spyOn(service, 'detectPrimaryKeyColumn').mockResolvedValue('id');
+    vi.spyOn(service, 'detectTimestampColumn').mockResolvedValue('updatedAt');
+    vi.spyOn(service, 'updateWatermark').mockResolvedValue(undefined);
+    vi.spyOn(service, 'logSyncOperation').mockResolvedValue(undefined);
+    vi.spyOn(service, 'updateFullSyncSessionProgress').mockImplementation(async (_session: any, lastPkCursor: any[] | null, processed: number) => ({
+      tableName: 'users',
+      sessionId: 'sess-1',
+      stagingTable: '__full_sync_staging_users_resume1234',
+      status: 'loading',
+      pkColumns: ['id'],
+      lastPkCursor,
+      recordsProcessed: processed,
+      schemaFingerprint: 'fingerprint',
+      errorMessage: null,
+      startedAt: new Date('2026-03-21T00:00:00Z'),
+      updatedAt: new Date('2026-03-21T00:00:00Z'),
+      completedAt: null,
+    }));
+    vi.spyOn(service, 'updateFullSyncSessionStatus').mockImplementation(async (session: any, status: string) => ({
+      ...session,
+      status,
+    }));
+    const createTableSpy = vi.spyOn(service, 'createTable').mockResolvedValue(undefined);
+
+    const result = await service.syncTableSequentialWithAppender('users');
+
+    expect(result.status).toBe('success');
+    expect(createTableSpy).not.toHaveBeenCalled();
+    expect(service.prepareResumedFullSyncStaging).toHaveBeenCalled();
+    expect(mysql.streamTableData).toHaveBeenCalledWith('users', config.sync.fullSyncBatchSize, [3]);
+    expect(duckdb.createAppender).toHaveBeenCalledWith('__full_sync_staging_users_resume1234');
+  });
+
+  test('retries a swapping full sync session without rereading MySQL', async () => {
+    const runMock = vi.fn().mockResolvedValue(undefined);
+    const duckdb: any = {
+      run: runMock,
+      execute: vi.fn().mockResolvedValue([{ max_id: 5 }]),
+      checkpoint: vi.fn().mockResolvedValue(undefined),
+      createAppender: vi.fn(),
+    };
+    const mysql: any = {
+      getTableRowCountFast: vi.fn().mockResolvedValue(10),
+      streamTableData: vi.fn(),
+    };
+
+    const service = SequentialAppenderService.getInstance('tx-test-appender-swap-resume', mysql, duckdb) as any;
+    vi.spyOn(service, 'getSchemaOrCleanup').mockResolvedValue([
+      { Field: 'id', Type: 'int', Key: 'PRI' },
+      { Field: 'name', Type: 'varchar(255)', Key: '' }
+    ]);
+    vi.spyOn(service, 'ensureTableExists').mockResolvedValue(undefined);
+    vi.spyOn(service, 'prepareFullSyncSession').mockResolvedValue({
+      tableName: 'users',
+      sessionId: 'sess-2',
+      stagingTable: '__full_sync_staging_users_swap1234',
+      status: 'swapping',
+      pkColumns: ['id'],
+      lastPkCursor: [5],
+      recordsProcessed: 5,
+      schemaFingerprint: 'fingerprint',
+      errorMessage: null,
+      startedAt: new Date('2026-03-21T00:00:00Z'),
+      updatedAt: new Date('2026-03-21T00:00:00Z'),
+      completedAt: null,
+    });
+    vi.spyOn(service, 'cleanupOrphanStagingTables').mockResolvedValue(undefined);
+    vi.spyOn(service, 'getTableWatermark').mockResolvedValue(undefined);
+    vi.spyOn(service, 'detectPrimaryKeyColumn').mockResolvedValue('id');
+    vi.spyOn(service, 'detectTimestampColumn').mockResolvedValue('updatedAt');
+    vi.spyOn(service, 'updateWatermark').mockResolvedValue(undefined);
+    vi.spyOn(service, 'logSyncOperation').mockResolvedValue(undefined);
+    vi.spyOn(service, 'updateFullSyncSessionStatus').mockImplementation(async (session: any, status: string) => ({
+      ...session,
+      status,
+    }));
+
+    const result = await service.syncTableSequentialWithAppender('users');
+    const queries = runMock.mock.calls.map(([query]) => query);
+
+    expect(result.status).toBe('success');
+    expect(mysql.streamTableData).not.toHaveBeenCalled();
+    expect(duckdb.createAppender).not.toHaveBeenCalled();
+    expect(queries).toContain('BEGIN TRANSACTION');
+    expect(queries).toContain('COMMIT');
+    expect(queries).toContain('DELETE FROM "users"');
+    expect(queries).toContain('INSERT INTO "users" SELECT * FROM "__full_sync_staging_users_swap1234"');
   });
 
   test('does not fail sync when staging cleanup drop fails after commit', async () => {
@@ -281,7 +417,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
       const result = await service.syncTableSequentialWithAppender('users');
 
       expect(result.status).toBe('success');
-      expect(mysql.streamTableData).toHaveBeenCalledWith('users', 123);
+      expect(mysql.streamTableData).toHaveBeenCalledWith('users', 123, null);
     } finally {
       Object.assign(config.sync, originalSyncConfig);
     }
