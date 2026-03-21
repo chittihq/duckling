@@ -119,6 +119,16 @@ describe('QueryGovernor', () => {
     expect(stats.totalTimedOut).toBe(1);
   });
 
+  test('allows per-query timeout override to disable timeouts', async () => {
+    const result = await governor.execute(
+      () => new Promise<string>(resolve => setTimeout(() => resolve('ok'), 600)),
+      { sql: 'slow-but-allowed', timeoutMs: 0 }
+    );
+
+    expect(result).toBe('ok');
+    expect(governor.getStats().totalTimedOut).toBe(0);
+  });
+
   test('QueryGovernorError has statusCode', async () => {
     try {
       // Fill everything to get 503

@@ -310,6 +310,57 @@ describe('AutomationService scheduling guards', () => {
     expect(syncServiceMock.incrementalSync).not.toHaveBeenCalled();
   });
 
+  test('performHealthCheck skips recovery while sync is in progress', async () => {
+    const syncServiceMock = {
+      incrementalSync: vi.fn(),
+      fullSync: vi.fn(),
+    };
+
+    const service = AutomationService.getInstance(
+      databaseId,
+      syncServiceMock as any,
+      { checkpoint: vi.fn(), query: vi.fn() } as any,
+      { query: vi.fn() } as any
+    );
+
+    (service as any).isSyncInProgress = true;
+    const checkDuckDBHealthSpy = vi.spyOn(service as any, 'checkDuckDBHealth');
+    const checkMySQLHealthSpy = vi.spyOn(service as any, 'checkMySQLHealth');
+    const attemptRecoverySpy = vi.spyOn(service as any, 'attemptRecovery');
+
+    await (service as any).performHealthCheck();
+
+    expect(checkDuckDBHealthSpy).not.toHaveBeenCalled();
+    expect(checkMySQLHealthSpy).not.toHaveBeenCalled();
+    expect(attemptRecoverySpy).not.toHaveBeenCalled();
+  });
+
+  test('attemptRecovery exits early while backup is in progress', async () => {
+    const syncServiceMock = {
+      incrementalSync: vi.fn(),
+      fullSync: vi.fn(),
+    };
+
+    const service = AutomationService.getInstance(
+      databaseId,
+      syncServiceMock as any,
+      { checkpoint: vi.fn(), query: vi.fn() } as any,
+      { query: vi.fn() } as any
+    );
+
+    (service as any).isBackupInProgress = true;
+    const performIncrementalSyncSpy = vi.spyOn(service as any, 'performIncrementalSync');
+    const checkDuckDBHealthSpy = vi.spyOn(service as any, 'checkDuckDBHealth');
+    const checkMySQLHealthSpy = vi.spyOn(service as any, 'checkMySQLHealth');
+
+    await (service as any).attemptRecovery();
+
+    expect(checkDuckDBHealthSpy).not.toHaveBeenCalled();
+    expect(checkMySQLHealthSpy).not.toHaveBeenCalled();
+    expect(performIncrementalSyncSpy).not.toHaveBeenCalled();
+    expect((service as any).restartAttempts).toBe(0);
+  });
+
   test('performFullSyncWithStats returns stats on success and clears in-progress flag', async () => {
     const syncStats = {
       successfulTables: 2,

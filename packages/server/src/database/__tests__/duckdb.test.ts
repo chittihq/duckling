@@ -174,3 +174,33 @@ describe('DuckDBConnection waitForConnection', () => {
     expect(connection.executeRaw).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('DuckDBConnection governor integration', () => {
+  test('run disables governor timeouts for internal high-priority work by default', async () => {
+    const governorExecute = vi.fn(async (fn: () => Promise<void>, opts?: { timeoutMs?: number }) => {
+      await fn();
+      return opts;
+    });
+    const ctx: any = {
+      ensureInitialized: vi.fn().mockResolvedValue(undefined),
+      runRaw: vi.fn().mockResolvedValue(undefined),
+      normalizeExecutionOptions: (DuckDBConnection.prototype as any).normalizeExecutionOptions,
+    };
+
+    const getQueryGovernorModule = await import('../../services/queryGovernor');
+    const getQueryGovernorSpy = vi.spyOn(getQueryGovernorModule, 'getQueryGovernor').mockReturnValue({
+      execute: governorExecute,
+    } as any);
+
+    try {
+      await (DuckDBConnection.prototype as any).run.call(ctx, 'CHECKPOINT');
+      expect(governorExecute).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({
+        sql: 'CHECKPOINT',
+        priority: 'high',
+        timeoutMs: 0,
+      }));
+    } finally {
+      getQueryGovernorSpy.mockRestore();
+    }
+  });
+});

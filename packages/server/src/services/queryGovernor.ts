@@ -84,10 +84,11 @@ export class QueryGovernor {
    */
   async execute<T>(
     fn: () => Promise<T>,
-    opts?: { sql?: string; priority?: QueryPriority }
+    opts?: { sql?: string; priority?: QueryPriority; timeoutMs?: number }
   ): Promise<T> {
     const priority = opts?.priority ?? 'normal';
     const sql = opts?.sql ?? '<unknown>';
+    const timeoutMs = opts?.timeoutMs ?? this.timeoutMs;
     const queryId = `q-${++this.queryCounter}`;
 
     // Check if queue is full — reject with 503-appropriate error
@@ -111,7 +112,7 @@ export class QueryGovernor {
     this.activeQueries.set(queryId, info);
 
     try {
-      const result = await this.withTimeout(fn(), queryId);
+      const result = await this.withTimeout(fn(), queryId, timeoutMs);
       this.totalExecuted++;
       return result;
     } finally {
@@ -207,18 +208,18 @@ export class QueryGovernor {
    * (DuckDB does not support query cancellation via node-api), but the
    * governor slot is released so new queries can proceed.
    */
-  private withTimeout<T>(promise: Promise<T>, queryId: string): Promise<T> {
-    if (this.timeoutMs <= 0) return promise;
+  private withTimeout<T>(promise: Promise<T>, queryId: string, timeoutMs: number): Promise<T> {
+    if (timeoutMs <= 0) return promise;
 
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.totalTimedOut++;
-        logger.warn(`Query governor: query ${queryId} timed out after ${this.timeoutMs}ms`);
+        logger.warn(`Query governor: query ${queryId} timed out after ${timeoutMs}ms`);
         reject(new QueryGovernorError(
-          `Query timed out after ${this.timeoutMs}ms. The query may still be running in DuckDB.`,
+          `Query timed out after ${timeoutMs}ms. The query may still be running in DuckDB.`,
           408
         ));
-      }, this.timeoutMs);
+      }, timeoutMs);
 
       promise
         .then(result => { clearTimeout(timer); resolve(result); })

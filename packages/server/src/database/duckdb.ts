@@ -8,6 +8,14 @@ import QueryMetricsService from '../services/queryMetricsService';
 import { getQueryGovernor, QueryPriority } from '../services/queryGovernor';
 
 const DUCKDB_FILE_LOCK_RETRY_DELAY_MS = 2000;
+const INTERNAL_QUERY_TIMEOUT_MS = 0;
+
+type QueryExecutionOptions = {
+  priority?: QueryPriority;
+  timeoutMs?: number;
+};
+
+type QueryPriorityOrOptions = QueryPriority | QueryExecutionOptions;
 
 export function sanitizeLogParams(params?: any[]): any[] | undefined {
   if (!params) return params;
@@ -154,6 +162,24 @@ class DuckDBConnection {
     } catch (error) {
       logger.warn('Failed to destroy DuckDB prepared statement:', error);
     }
+  }
+
+  private normalizeExecutionOptions(
+    input: QueryPriorityOrOptions | undefined,
+    defaultPriority: QueryPriority,
+    defaultTimeoutMs?: number,
+  ): Required<QueryExecutionOptions> {
+    if (typeof input === 'string') {
+      return {
+        priority: input,
+        timeoutMs: defaultTimeoutMs ?? config.governor.queryTimeoutMs,
+      };
+    }
+
+    return {
+      priority: input?.priority ?? defaultPriority,
+      timeoutMs: input?.timeoutMs ?? defaultTimeoutMs ?? config.governor.queryTimeoutMs,
+    };
   }
 
   /**
@@ -533,17 +559,18 @@ class DuckDBConnection {
     }
   }
 
-  async execute(query: string, params?: any[], priority?: QueryPriority): Promise<any[]> {
+  async execute(query: string, params?: any[], priorityOrOptions?: QueryPriorityOrOptions): Promise<any[]> {
     await this.ensureInitialized();
     const governor = getQueryGovernor();
     const metrics = QueryMetricsService.getInstance();
     const id = crypto.randomUUID();
     const start = Date.now();
+    const executionOptions = this.normalizeExecutionOptions(priorityOrOptions, 'normal');
     metrics.trackStart(id, query, this.databaseId);
     try {
       const result = await governor.execute(
         () => this.executeRaw(query, params, false),
-        { sql: query, priority: priority ?? 'normal' }
+        { sql: query, priority: executionOptions.priority, timeoutMs: executionOptions.timeoutMs }
       );
       metrics.trackEnd(id, Date.now() - start);
       return result;
@@ -585,12 +612,13 @@ class DuckDBConnection {
    * Returns raw arrays without conversion for better memory efficiency
    * Uses 'high' priority by default since sync operations are critical
    */
-  async executeInternal(query: string, params?: any[], priority?: QueryPriority): Promise<any[]> {
+  async executeInternal(query: string, params?: any[], priorityOrOptions?: QueryPriorityOrOptions): Promise<any[]> {
     await this.ensureInitialized();
     const governor = getQueryGovernor();
+    const executionOptions = this.normalizeExecutionOptions(priorityOrOptions, 'high', INTERNAL_QUERY_TIMEOUT_MS);
     return governor.execute(
       () => this.executeRaw(query, params, true),
-      { sql: query, priority: priority ?? 'high' }
+      { sql: query, priority: executionOptions.priority, timeoutMs: executionOptions.timeoutMs }
     );
   }
 
@@ -660,12 +688,13 @@ class DuckDBConnection {
     }
   }
 
-  async run(query: string, params?: any[], priority?: QueryPriority): Promise<void> {
+  async run(query: string, params?: any[], priorityOrOptions?: QueryPriorityOrOptions): Promise<void> {
     await this.ensureInitialized();
     const governor = getQueryGovernor();
+    const executionOptions = this.normalizeExecutionOptions(priorityOrOptions, 'high', INTERNAL_QUERY_TIMEOUT_MS);
     return governor.execute(
       () => this.runRaw(query, params),
-      { sql: query, priority: priority ?? 'high' }
+      { sql: query, priority: executionOptions.priority, timeoutMs: executionOptions.timeoutMs }
     );
   }
 
@@ -722,8 +751,8 @@ class DuckDBConnection {
     }
   }
 
-  async query(sql: string, params?: any[], priority?: QueryPriority): Promise<any[]> {
-    return this.execute(sql, params, priority);
+  async query(sql: string, params?: any[], priorityOrOptions?: QueryPriorityOrOptions): Promise<any[]> {
+    return this.execute(sql, params, priorityOrOptions);
   }
 
   /**
@@ -732,7 +761,7 @@ class DuckDBConnection {
    */
   async checkpoint(): Promise<void> {
     try {
-      await this.run('CHECKPOINT');
+      await this.run('CHECKPOINT', undefined, { priority: 'high', timeoutMs: INTERNAL_QUERY_TIMEOUT_MS });
       logger.info('DuckDB checkpoint completed - WAL merged into database file');
     } catch (error) {
       logger.warn('Failed to checkpoint DuckDB:', error);

@@ -111,6 +111,10 @@ class AutomationService {
     return null;
   }
 
+  private hasLongRunningMaintenanceInProgress(): boolean {
+    return this.isSyncInProgress || this.isBackupInProgress;
+  }
+
   private toError(error: unknown): Error {
     return error instanceof Error ? error : new Error(String(error));
   }
@@ -615,6 +619,11 @@ class AutomationService {
    */
   private async performHealthCheck(): Promise<void> {
     try {
+      if (this.hasLongRunningMaintenanceInProgress()) {
+        logger.info('Skipping health check: sync or backup is currently in progress');
+        return;
+      }
+
       // Check database connections
       const duckdbHealthy = await this.checkDuckDBHealth();
       const mysqlHealthy = await this.checkMySQLHealth();
@@ -666,6 +675,10 @@ class AutomationService {
    */
   private async checkSyncHealth(): Promise<boolean> {
     try {
+      if (this.isSyncInProgress) {
+        return true;
+      }
+
       // Check if sync has run in the last 30 minutes
       const timeSinceLastSync = Date.now() - this.lastSuccessfulSync.getTime();
       const maxSyncDelay = 30 * 60 * 1000; // 30 minutes
@@ -686,6 +699,12 @@ class AutomationService {
    * Attempt recovery from failures
    */
   private async attemptRecovery(): Promise<void> {
+    const blockReason = this.getSyncBlockReason();
+    if (blockReason) {
+      logger.info(`Skipping recovery attempt: ${blockReason}`);
+      return;
+    }
+
     if (this.restartAttempts >= config.automation.maxRestartAttempts) {
       logger.error(`❌ Max restart attempts (${config.automation.maxRestartAttempts}) reached, manual intervention required`);
       return;
