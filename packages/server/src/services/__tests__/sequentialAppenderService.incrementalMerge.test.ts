@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import SequentialAppenderService from '../sequentialAppenderService';
 
+function createDuckDBColumnsExecuteMock(columns: string[]) {
+  return vi.fn(async (query: string) => {
+    if (query.includes('FROM information_schema.columns')) {
+      return columns.map((column_name) => ({ column_name }));
+    }
+    return [];
+  });
+}
+
 describe('SequentialAppenderService incremental staging merge', () => {
   afterEach(() => {
     SequentialAppenderService.closeInstance('incremental-merge-test');
@@ -32,6 +41,7 @@ describe('SequentialAppenderService incremental staging merge', () => {
     const duckdb: any = {
       createAppender: vi.fn(async () => ({ appender, connection: conn })),
       run: vi.fn(async () => undefined),
+      execute: createDuckDBColumnsExecuteMock(['name', 'id', 'updatedAt']),
     };
 
     const service = SequentialAppenderService.getInstance('incremental-merge-test', mysql, duckdb) as any;
@@ -68,7 +78,7 @@ describe('SequentialAppenderService incremental staging merge', () => {
     const runSql = duckdb.run.mock.calls.map((call: any[]) => call[0]);
     expect(runSql).toContain('BEGIN TRANSACTION');
     expect(runSql.some((sql: string) => sql.includes('DELETE FROM "users" AS target USING "'))).toBe(true);
-    expect(runSql).toContainEqual(expect.stringContaining('INSERT INTO "users" SELECT * FROM "'));
+    expect(runSql).toContainEqual(expect.stringContaining('INSERT INTO "users" ("id", "name", "updatedAt") SELECT "id", "name", "updatedAt" FROM "'));
     expect(runSql).toContain('COMMIT');
     expect(runSql.some((sql: string) => sql.includes('INSERT OR REPLACE INTO "users"'))).toBe(false);
   });
@@ -128,6 +138,13 @@ describe('SequentialAppenderService incremental staging merge', () => {
       createAppender: vi.fn(async () => ({ appender, connection: conn })),
       run: vi.fn(async () => undefined),
       execute: vi.fn(async (query: string) => {
+        if (query.includes('FROM information_schema.columns')) {
+          return [
+            { column_name: 'name' },
+            { column_name: 'id' },
+            { column_name: 'updatedAt' },
+          ];
+        }
         if (query.includes("substr(table_name, 1, 20) = '__full_sync_staging_'")) {
           return [{ table_name: unrelatedStaleTable }];
         }
@@ -176,6 +193,13 @@ describe('SequentialAppenderService incremental staging merge', () => {
       createAppender: vi.fn(async () => ({ appender: {}, connection: {} })),
       run: vi.fn(async () => undefined),
       execute: vi.fn(async (query: string) => {
+        if (query.includes('FROM information_schema.columns')) {
+          return [
+            { column_name: 'id' },
+            { column_name: 'name' },
+            { column_name: 'updatedAt' },
+          ];
+        }
         if (query.includes("substr(table_name, 1, 20) = '__full_sync_staging_'")) {
           return [{ table_name: sameTableStaleTable }];
         }

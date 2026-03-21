@@ -8,6 +8,15 @@ async function* streamBatches(batches: any[][]) {
   }
 }
 
+function createDuckDBExecuteMock(columns: string[], fallbackRows: any[] = [{ max_id: 1 }]) {
+  return vi.fn(async (query: string) => {
+    if (query.includes('FROM information_schema.columns')) {
+      return columns.map((column_name) => ({ column_name }));
+    }
+    return fallbackRows;
+  });
+}
+
 describe('SequentialAppenderService full sync transaction safety', () => {
   afterEach(() => {
     SequentialAppenderService.closeInstance('tx-test-sequential');
@@ -99,7 +108,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     };
     const duckdb: any = {
       run: runMock,
-      execute: vi.fn().mockResolvedValue([{ max_id: 1 }]),
+      execute: createDuckDBExecuteMock(['name', 'id'], [{ max_id: 1 }]),
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn().mockResolvedValue({
         appender,
@@ -139,7 +148,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     expect(queries).toContain('BEGIN TRANSACTION');
     expect(queries).toContain('COMMIT');
     expect(queries).toContain('DELETE FROM "users"');
-    expect(queries).toContain(`INSERT INTO "users" SELECT * FROM "${createAppenderTable}"`);
+    expect(queries).toContain(`INSERT INTO "users" ("id", "name") SELECT "id", "name" FROM "${createAppenderTable}"`);
     expect(queries).toContain(`DROP TABLE IF EXISTS "${createAppenderTable}"`);
   });
 
@@ -152,7 +161,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     };
     const duckdb: any = {
       run: runMock,
-      execute: vi.fn().mockResolvedValue([{ max_id: 5 }]),
+      execute: createDuckDBExecuteMock(['id', 'name'], [{ max_id: 5 }]),
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn().mockResolvedValue({
         appender,
@@ -225,7 +234,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     const runMock = vi.fn().mockResolvedValue(undefined);
     const duckdb: any = {
       run: runMock,
-      execute: vi.fn().mockResolvedValue([{ max_id: 5 }]),
+      execute: createDuckDBExecuteMock(['id', 'name'], [{ max_id: 5 }]),
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn(),
     };
@@ -274,7 +283,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     expect(queries).toContain('BEGIN TRANSACTION');
     expect(queries).toContain('COMMIT');
     expect(queries).toContain('DELETE FROM "users"');
-    expect(queries).toContain('INSERT INTO "users" SELECT * FROM "__full_sync_staging_users_swap1234"');
+    expect(queries).toContain('INSERT INTO "users" ("id", "name") SELECT "id", "name" FROM "__full_sync_staging_users_swap1234"');
   });
 
   test('does not fail sync when staging cleanup drop fails after commit', async () => {
@@ -290,7 +299,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     };
     const duckdb: any = {
       run: runMock,
-      execute: vi.fn().mockResolvedValue([{ max_id: 1 }]),
+      execute: createDuckDBExecuteMock(['id', 'name'], [{ max_id: 1 }]),
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn().mockResolvedValue({
         appender,
@@ -334,6 +343,12 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     const duckdb: any = {
       run: runMock,
       execute: vi.fn().mockImplementation(async (query: string) => {
+        if (query.includes('FROM information_schema.columns')) {
+          return [
+            { column_name: 'id' },
+            { column_name: 'name' },
+          ];
+        }
         if (query.includes('FROM information_schema.tables')) {
           return [{ table_name: staleTable }];
         }
@@ -380,7 +395,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     };
     const duckdb: any = {
       run: vi.fn().mockResolvedValue(undefined),
-      execute: vi.fn().mockResolvedValue([{ max_id: 1 }]),
+      execute: createDuckDBExecuteMock(['id', 'name'], [{ max_id: 1 }]),
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn().mockResolvedValue({
         appender,

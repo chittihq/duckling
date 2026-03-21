@@ -170,6 +170,39 @@ class SequentialAppenderService extends EventEmitter {
       .join(' AND ');
   }
 
+  private async buildAlignedInsertSql(targetTable: string, sourceTable: string, sourceColumns: string[]): Promise<string> {
+    const targetRows = await this.duckdb.execute(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'main' AND table_name = ?
+      ORDER BY ordinal_position
+    `, [targetTable]);
+
+    const targetColumns = targetRows
+      .map((row) => (typeof row.column_name === 'string' ? row.column_name : null))
+      .filter((column): column is string => Boolean(column));
+
+    if (targetColumns.length === 0) {
+      throw new Error(`Target table ${targetTable} has no columns in DuckDB metadata`);
+    }
+
+    const targetColumnsByLower = new Map(targetColumns.map((column) => [column.toLowerCase(), column]));
+    const missingTargetColumns = sourceColumns.filter((column) => !targetColumnsByLower.has(column.toLowerCase()));
+
+    if (missingTargetColumns.length > 0) {
+      throw new Error(
+        `Target table ${targetTable} is missing source column(s): ${missingTargetColumns.join(', ')}. ` +
+        `A rebuild is required before syncing from staging table ${sourceTable}.`
+      );
+    }
+
+    const alignedTargetColumns = sourceColumns.map((column) => targetColumnsByLower.get(column.toLowerCase())!);
+    const targetColumnList = alignedTargetColumns.map((column) => this.q(column)).join(', ');
+    const sourceColumnList = sourceColumns.map((column) => this.q(column)).join(', ');
+
+    return `INSERT INTO ${this.q(targetTable)} (${targetColumnList}) SELECT ${sourceColumnList} FROM ${this.q(sourceTable)}`;
+  }
+
   private isFullSyncResumeEnabled(): boolean {
     return config.sync.fullSyncResumeEnabled;
   }
@@ -1533,10 +1566,11 @@ class SequentialAppenderService extends EventEmitter {
           fullSyncSession = await this.updateFullSyncSessionStatus(fullSyncSession, 'swapping');
         }
 
+        const alignedFullSyncInsertSql = await this.buildAlignedInsertSql(tableName, stagingTable, columns);
         await this.duckdb.run('BEGIN TRANSACTION');
         try {
           await this.duckdb.run(`DELETE FROM ${this.q(tableName)}`);
-          await this.duckdb.run(`INSERT INTO ${this.q(tableName)} SELECT * FROM ${this.q(stagingTable)}`);
+          await this.duckdb.run(alignedFullSyncInsertSql);
           await this.duckdb.run('COMMIT');
         } catch (swapError) {
           try {
@@ -1877,11 +1911,12 @@ class SequentialAppenderService extends EventEmitter {
           _conn = null;
 
           const joinPredicate = this.buildPrimaryKeyJoinPredicate('target', 'staging', primaryKeyColumns);
+          const alignedIncrementalInsertSql = await this.buildAlignedInsertSql(tableName, activeStagingTable, columns);
 
           await this.duckdb.run('BEGIN TRANSACTION');
           try {
             await this.duckdb.run(`DELETE FROM ${this.q(tableName)} AS target USING ${this.q(activeStagingTable)} AS staging WHERE ${joinPredicate}`);
-            await this.duckdb.run(`INSERT INTO ${this.q(tableName)} SELECT * FROM ${this.q(activeStagingTable)}`);
+            await this.duckdb.run(alignedIncrementalInsertSql);
             await this.duckdb.run('COMMIT');
           } catch (mergeError) {
             try {
