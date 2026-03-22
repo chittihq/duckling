@@ -62,10 +62,15 @@ export class DatabaseConfigManager {
         this.databases.set(config.id, config);
       });
     } catch (error) {
-      const backupPath = this.backupCorruptedConfig();
-      console.error(`Failed to load database config from ${CONFIG_FILE}. Corrupted file moved to ${backupPath}.`, error);
+      let backupPath = CONFIG_FILE;
+      try {
+        backupPath = this.backupCorruptedConfig();
+        console.error(`Failed to load database config from ${CONFIG_FILE}. Corrupted file moved to ${backupPath}.`, error);
+      } catch (backupError) {
+        console.error(`Failed to load database config from ${CONFIG_FILE} and backup also failed:`, backupError);
+      }
       throw new Error(
-        `Database config is corrupted and was moved to ${backupPath}. Please repair or restore the config file before continuing.`
+        `Database config is corrupted (backup attempted at ${backupPath}). Please repair or restore the config file before continuing.`
       );
     }
   }
@@ -94,9 +99,7 @@ export class DatabaseConfigManager {
       fs.writeFileSync(tempFile, JSON.stringify(configs, null, 2));
       fs.renameSync(tempFile, CONFIG_FILE);
     } catch (error) {
-      if (fs.existsSync(tempFile)) {
-        fs.unlinkSync(tempFile);
-      }
+      try { fs.unlinkSync(tempFile); } catch {}
       console.error('Failed to save database config:', error);
       throw error;
     }

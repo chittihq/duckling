@@ -55,7 +55,7 @@ describe('DatabaseConfigManager safety', () => {
   });
 
   test('deletes temp file if atomic rename fails', () => {
-    vi.mocked(fs.existsSync).mockImplementation((filePath: fs.PathLike) => filePath === CONFIG_FILE ? false : true);
+    vi.mocked(fs.existsSync).mockImplementation(() => false);
     vi.mocked(fs.renameSync).mockImplementation(() => {
       throw new Error('rename failed');
     });
@@ -73,6 +73,17 @@ describe('DatabaseConfigManager safety', () => {
       CONFIG_FILE,
       expect.stringMatching(/^\/tmp\/duckling-config-test\/databases\.json\.corrupted\./)
     );
+    expect(fs.writeFileSync).not.toHaveBeenCalled();
+  });
+
+  test('still throws corruption error when backup rename itself fails', () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath: fs.PathLike) => filePath === CONFIG_FILE);
+    vi.mocked(fs.readFileSync).mockReturnValue('{"invalid_json"');
+    vi.mocked(fs.renameSync).mockImplementation(() => {
+      throw new Error('disk full');
+    });
+
+    expect(() => DatabaseConfigManager.getInstance()).toThrow(/Database config is corrupted/);
     expect(fs.writeFileSync).not.toHaveBeenCalled();
   });
 });
