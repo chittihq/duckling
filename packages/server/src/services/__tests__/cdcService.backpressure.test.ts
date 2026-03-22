@@ -545,5 +545,56 @@ describe('CDCService backpressure', () => {
       clearTimeout(priv.reconnectTimeoutId);
       priv.reconnectTimeoutId = null;
     });
+
+    test('callback clears reconnectTimeoutId so future schedules are not blocked', async () => {
+      vi.useFakeTimers();
+      const service = createService();
+      const priv = getPrivate(service);
+      priv.isStopped = false;
+      priv.reconnectAttempts = 0;
+
+      // Stub stop/start so the callback doesn't do real work
+      priv.stop = vi.fn().mockResolvedValue(undefined);
+      priv.start = vi.fn().mockResolvedValue(undefined);
+
+      priv.scheduleReconnect();
+      expect(priv.reconnectTimeoutId).not.toBeNull();
+
+      // Fire the timer
+      await vi.advanceTimersByTimeAsync(60000);
+
+      // After callback fires, reconnectTimeoutId should be cleared
+      expect(priv.reconnectTimeoutId).toBeNull();
+
+      vi.useRealTimers();
+    });
+
+    test('callback allows retry scheduling when stop() throws', async () => {
+      vi.useFakeTimers();
+      const service = createService();
+      const priv = getPrivate(service);
+      priv.isStopped = false;
+      priv.reconnectAttempts = 0;
+
+      // stop() throws, so the catch block calls scheduleReconnect() again
+      priv.stop = vi.fn().mockRejectedValue(new Error('stop failed'));
+      priv.start = vi.fn().mockResolvedValue(undefined);
+
+      priv.scheduleReconnect();
+      expect(priv.reconnectAttempts).toBe(1);
+
+      // Fire only the first timer (delay = 5000ms * 2^0 = 5000ms)
+      await vi.advanceTimersByTimeAsync(5000);
+
+      // The catch should have called scheduleReconnect() again successfully
+      // (reconnectTimeoutId was cleared at the top of the callback)
+      expect(priv.reconnectAttempts).toBe(2);
+      expect(priv.reconnectTimeoutId).not.toBeNull();
+
+      // Cleanup
+      clearTimeout(priv.reconnectTimeoutId);
+      priv.reconnectTimeoutId = null;
+      vi.useRealTimers();
+    });
   });
 });

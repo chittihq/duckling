@@ -908,6 +908,10 @@ export class CDCService {
     logger.info(`CDC reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
 
     this.reconnectTimeoutId = setTimeout(async () => {
+      // Clear the timer ID now that the callback is executing, so the dedup
+      // guard in scheduleReconnect() won't block future attempts.
+      this.reconnectTimeoutId = null;
+
       // Check if stopped before attempting reconnect
       if (this.isStopped) {
         logger.debug(`CDC reconnect cancelled - service was stopped for ${this.databaseId}`);
