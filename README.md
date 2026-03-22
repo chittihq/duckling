@@ -1,6 +1,6 @@
 # Duckling
 
-![Duckling Banner](docs/images/banner.png)
+![Duckling Banner](docs/images/banner.jpg)
 
 DuckDB server that replicates your MySQL data. Columnar storage makes analytical queries 100-13,000x faster depending on query shape. Writes are ACID, no partial syncs, no duplicates.
 
