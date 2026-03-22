@@ -64,6 +64,47 @@ function getPrivate(service: CDCService): any {
   return service as any;
 }
 
+function createWriteRowsEvent(id: number) {
+  return {
+    getTypeName: () => 'WriteRows',
+    tableMap: {
+      1: {
+        tableName: 'users',
+        parentSchema: 'testdb',
+      },
+    },
+    tableId: 1,
+    rows: [
+      {
+        id,
+        name: `user-${id}`,
+      },
+    ],
+    nextPosition: id,
+  };
+}
+
+async function waitForAssertion(assertion: () => void, timeoutMs = 2000, intervalMs = 10): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+
+  while (Date.now() < deadline) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise(resolve => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  assertion();
+}
+
 describe('CDCService backpressure', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -433,6 +474,119 @@ describe('CDCService backpressure', () => {
       expect(priv.backpressureAvailable).toBe(false);
       // isPaused should NOT be set since pause failed
       expect(priv.isPaused).toBe(false);
+    });
+
+    test('uses real queue processing to pause at soft limit and resume after drain', async () => {
+      const service = createService();
+      const priv = getPrivate(service);
+      priv.maxQueueSize = 3;
+      priv.criticalQueueMultiplier = 10;
+
+      const handlers: Record<string, Function> = {};
+      const pause = vi.fn();
+      const resume = vi.fn();
+      priv.currentBinlogFilename = 'mysql-bin.000001';
+      priv.zongji = {
+        on: vi.fn((event: string, handler: Function) => {
+          handlers[event] = handler;
+        }),
+        connection: {
+          pause,
+          resume,
+        },
+      };
+
+      let releaseFirstInsert!: () => void;
+      const firstInsertGate = new Promise<void>((resolve) => {
+        releaseFirstInsert = resolve;
+      });
+      let insertCalls = 0;
+      vi.spyOn(priv, 'handleInsert').mockImplementation(async () => {
+        insertCalls += 1;
+        if (insertCalls === 1) {
+          await firstInsertGate;
+        }
+      });
+      vi.spyOn(priv, 'savePosition').mockResolvedValue(undefined);
+
+      priv.setupEventHandlers();
+      handlers['ready']();
+
+      handlers['binlog'](createWriteRowsEvent(1));
+      handlers['binlog'](createWriteRowsEvent(2));
+      handlers['binlog'](createWriteRowsEvent(3));
+      handlers['binlog'](createWriteRowsEvent(4));
+      handlers['binlog'](createWriteRowsEvent(5));
+
+      expect(pause).toHaveBeenCalledTimes(1);
+      expect(priv.isPaused).toBe(true);
+      expect(priv.eventQueue.length).toBe(4);
+
+      releaseFirstInsert();
+
+      await waitForAssertion(() => {
+        expect(resume).toHaveBeenCalledTimes(1);
+      });
+
+      expect(priv.isPaused).toBe(false);
+      expect(priv.eventQueue.length).toBe(0);
+      expect(insertCalls).toBe(5);
+    });
+
+    test('uses real queue processing to force reconnect and clear backlog at critical limit', async () => {
+      const service = createService();
+      const priv = getPrivate(service);
+      priv.maxQueueSize = 2;
+      priv.criticalQueueMultiplier = 2;
+      priv.isRunning = true;
+      priv.stats.isRunning = true;
+      priv.currentBinlogFilename = 'mysql-bin.000001';
+
+      const handlers: Record<string, Function> = {};
+      const stop = vi.fn();
+      priv.zongji = {
+        on: vi.fn((event: string, handler: Function) => {
+          handlers[event] = handler;
+        }),
+        stop,
+        connection: {},
+      };
+
+      let releaseFirstInsert!: () => void;
+      const firstInsertGate = new Promise<void>((resolve) => {
+        releaseFirstInsert = resolve;
+      });
+      let insertCalls = 0;
+      vi.spyOn(priv, 'handleInsert').mockImplementation(async () => {
+        insertCalls += 1;
+        if (insertCalls === 1) {
+          await firstInsertGate;
+        }
+      });
+      vi.spyOn(priv, 'savePosition').mockResolvedValue(undefined);
+
+      priv.setupEventHandlers();
+      handlers['ready']();
+
+      handlers['binlog'](createWriteRowsEvent(1));
+      handlers['binlog'](createWriteRowsEvent(2));
+      handlers['binlog'](createWriteRowsEvent(3));
+      handlers['binlog'](createWriteRowsEvent(4));
+      handlers['binlog'](createWriteRowsEvent(5));
+      handlers['binlog'](createWriteRowsEvent(6));
+
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(priv.zongji).toBeNull();
+      expect(priv.eventQueue.length).toBe(0);
+      expect(priv.reconnectTimeoutId).not.toBeNull();
+
+      clearTimeout(priv.reconnectTimeoutId);
+      priv.reconnectTimeoutId = null;
+      releaseFirstInsert();
+
+      await waitForAssertion(() => {
+        expect(priv.isProcessingQueue).toBe(false);
+      });
     });
   });
 
