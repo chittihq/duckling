@@ -39,7 +39,7 @@ describe('DatabaseConfigManager safety', () => {
   });
 
   test('writes configs atomically via temp file + rename', () => {
-    vi.mocked(fs.existsSync).mockImplementation((filePath: fs.PathLike) => filePath === CONFIG_FILE ? false : false);
+    vi.mocked(fs.existsSync).mockImplementation(() => false);
 
     DatabaseConfigManager.getInstance();
 
