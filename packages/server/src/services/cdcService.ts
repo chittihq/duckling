@@ -77,6 +77,8 @@ export class CDCService {
   // Backpressure: pause binlog stream when queue exceeds limit
   private readonly maxQueueSize: number;
   private isPaused: boolean = false;
+  private backpressureAvailable: boolean = false; // Set true once pause/resume verified
+  private readonly criticalQueueMultiplier: number = 2; // Force reconnect at 2× maxQueueSize
 
   constructor(config: CDCConfig) {
     this.databaseId = config.databaseId;
@@ -255,25 +257,80 @@ export class CDCService {
   }
 
   /**
-   * Pause the underlying binlog connection to apply backpressure
+   * Pause the underlying binlog connection to apply backpressure.
+   * Tries connection.pause() first (mysql library level), then falls back
+   * to connection.stream.pause() (raw TCP socket level).
+   * Returns true if pause succeeded via either method.
    */
-  private pauseBinlogStream(): void {
+  private pauseBinlogStream(): boolean {
+    const conn = (this.zongji as any)?.connection;
     try {
-      (this.zongji as any)?.connection?.pause();
+      if (typeof conn?.pause === 'function') {
+        conn.pause();
+        return true;
+      }
+      // Fallback: pause the raw TCP socket directly
+      if (typeof conn?.stream?.pause === 'function') {
+        conn.stream.pause();
+        logger.debug(`CDC used TCP socket fallback to pause binlog stream for ${this.databaseId}`);
+        return true;
+      }
     } catch (error) {
       logger.warn(`Failed to pause binlog stream for ${this.databaseId}:`, error);
+    }
+    return false;
+  }
+
+  /**
+   * Resume the underlying binlog connection after queue drains.
+   * Tries connection.resume() first, then falls back to connection.stream.resume().
+   */
+  private resumeBinlogStream(): void {
+    const conn = (this.zongji as any)?.connection;
+    try {
+      if (typeof conn?.resume === 'function') {
+        conn.resume();
+        return;
+      }
+      // Fallback: resume the raw TCP socket directly
+      if (typeof conn?.stream?.resume === 'function') {
+        conn.stream.resume();
+        logger.debug(`CDC used TCP socket fallback to resume binlog stream for ${this.databaseId}`);
+        return;
+      }
+    } catch (error) {
+      logger.warn(`Failed to resume binlog stream for ${this.databaseId}:`, error);
     }
   }
 
   /**
-   * Resume the underlying binlog connection after queue drains
+   * Force disconnect and reconnect when the queue hits critical capacity
+   * and native backpressure is unavailable. This trades a brief disconnect
+   * for system stability, preventing OOM crashes.
    */
-  private resumeBinlogStream(): void {
-    try {
-      (this.zongji as any)?.connection?.resume();
-    } catch (error) {
-      logger.warn(`Failed to resume binlog stream for ${this.databaseId}:`, error);
+  private forceReconnectForBackpressure(): void {
+    const criticalSize = this.maxQueueSize * this.criticalQueueMultiplier;
+    logger.error(
+      `CDC critical queue overflow for ${this.databaseId}: queue size ${this.eventQueue.length} exceeded critical limit ${criticalSize}. ` +
+      `Forcing disconnect to prevent OOM. Will reconnect from last saved binlog position.`
+    );
+
+    // Stop zongji to sever the connection and prevent further events
+    if (this.zongji) {
+      try {
+        this.zongji.stop();
+      } catch (error) {
+        logger.warn(`Error stopping zongji during forced backpressure disconnect for ${this.databaseId}:`, error);
+      }
+      this.zongji = null;
     }
+
+    this.isPaused = false;
+    this.isRunning = false;
+    this.stats.isRunning = false;
+
+    // Schedule reconnect from last saved position (same as error recovery path)
+    this.scheduleReconnect();
   }
 
   /**
@@ -627,6 +684,7 @@ export class CDCService {
 
     this.isStopped = false; // Reset stopped flag
     this.isPaused = false;
+    this.backpressureAvailable = false; // Will be set in 'ready' event after connection check
     logger.info(`Starting CDC service for ${this.databaseId}...`);
 
     try {
@@ -700,8 +758,18 @@ export class CDCService {
 
       // Verify backpressure capability (pause/resume are used by ZongJi itself at index.js:258/263)
       const conn = (this.zongji as any)?.connection;
-      if (typeof conn?.pause !== 'function' || typeof conn?.resume !== 'function') {
-        logger.warn(`CDC backpressure unavailable for ${this.databaseId}: connection.pause/resume not found. Queue will grow unbounded under high write load.`);
+      if (typeof conn?.pause === 'function' && typeof conn?.resume === 'function') {
+        this.backpressureAvailable = true;
+      } else if (typeof conn?.stream?.pause === 'function' && typeof conn?.stream?.resume === 'function') {
+        this.backpressureAvailable = true;
+        logger.info(`CDC backpressure for ${this.databaseId} will use TCP socket fallback (connection.stream.pause/resume).`);
+      } else {
+        this.backpressureAvailable = false;
+        const criticalSize = this.maxQueueSize * this.criticalQueueMultiplier;
+        logger.warn(
+          `CDC backpressure unavailable for ${this.databaseId}: connection.pause/resume not found. ` +
+          `Will force disconnect at critical queue size (${criticalSize}) to prevent OOM.`
+        );
       }
     });
 
@@ -710,8 +778,19 @@ export class CDCService {
       // Backpressure: pause binlog stream if queue is full
       if (!this.isPaused && this.eventQueue.length >= this.maxQueueSize) {
         this.isPaused = true;
-        this.pauseBinlogStream();
-        logger.warn(`CDC queue full (${this.eventQueue.length}/${this.maxQueueSize}), pausing binlog stream for ${this.databaseId}`);
+        const paused = this.pauseBinlogStream();
+        if (paused) {
+          logger.warn(`CDC queue full (${this.eventQueue.length}/${this.maxQueueSize}), pausing binlog stream for ${this.databaseId}`);
+        } else {
+          logger.warn(`CDC queue full (${this.eventQueue.length}/${this.maxQueueSize}), pause failed for ${this.databaseId}. Queue may continue to grow.`);
+        }
+      }
+
+      // Critical limit: force reconnect if backpressure is unavailable and queue is dangerously large
+      const criticalSize = this.maxQueueSize * this.criticalQueueMultiplier;
+      if (this.eventQueue.length >= criticalSize && !this.backpressureAvailable) {
+        this.forceReconnectForBackpressure();
+        return; // Drop this event; it will be re-read from saved binlog position after reconnect
       }
 
       // Track high water mark for observability
