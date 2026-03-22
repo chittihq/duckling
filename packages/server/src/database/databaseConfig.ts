@@ -49,20 +49,24 @@ export class DatabaseConfigManager {
   }
 
   private loadConfig(): void {
-    try {
-      if (fs.existsSync(CONFIG_FILE)) {
-        const data = fs.readFileSync(CONFIG_FILE, 'utf-8');
-        const configs: DatabaseConfig[] = JSON.parse(data);
-        configs.forEach(config => {
-          this.databases.set(config.id, config);
-        });
-      } else {
-        // Create default database from env
-        this.createDefaultDatabase();
-      }
-    } catch (error) {
-      console.error('Failed to load database config:', error);
+    if (!fs.existsSync(CONFIG_FILE)) {
+      // Create default database from env
       this.createDefaultDatabase();
+      return;
+    }
+
+    try {
+      const data = fs.readFileSync(CONFIG_FILE, 'utf-8');
+      const configs: DatabaseConfig[] = JSON.parse(data);
+      configs.forEach(config => {
+        this.databases.set(config.id, config);
+      });
+    } catch (error) {
+      const backupPath = this.backupCorruptedConfig();
+      console.error(`Failed to load database config from ${CONFIG_FILE}. Corrupted file moved to ${backupPath}.`, error);
+      throw new Error(
+        `Database config is corrupted and was moved to ${backupPath}. Please repair or restore the config file before continuing.`
+      );
     }
   }
 
@@ -80,17 +84,28 @@ export class DatabaseConfigManager {
   }
 
   private saveConfig(): void {
+    const tempFile = `${CONFIG_FILE}.tmp`;
     try {
       const dir = path.dirname(CONFIG_FILE);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
       const configs = Array.from(this.databases.values());
-      fs.writeFileSync(CONFIG_FILE, JSON.stringify(configs, null, 2));
+      fs.writeFileSync(tempFile, JSON.stringify(configs, null, 2));
+      fs.renameSync(tempFile, CONFIG_FILE);
     } catch (error) {
+      if (fs.existsSync(tempFile)) {
+        fs.unlinkSync(tempFile);
+      }
       console.error('Failed to save database config:', error);
       throw error;
     }
+  }
+
+  private backupCorruptedConfig(): string {
+    const backupPath = `${CONFIG_FILE}.corrupted.${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    fs.renameSync(CONFIG_FILE, backupPath);
+    return backupPath;
   }
 
   getAllDatabases(): DatabaseConfig[] {
