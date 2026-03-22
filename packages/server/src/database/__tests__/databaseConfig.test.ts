@@ -86,4 +86,17 @@ describe('DatabaseConfigManager safety', () => {
     expect(() => DatabaseConfigManager.getInstance()).toThrow(/Database config is corrupted/);
     expect(fs.writeFileSync).not.toHaveBeenCalled();
   });
+
+  test('I/O read error throws without backing up or overwriting the config file', () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath: fs.PathLike) => filePath === CONFIG_FILE);
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    });
+
+    expect(() => DatabaseConfigManager.getInstance()).toThrow(/Cannot read database config/);
+    // Must NOT rename the (potentially valid) config file
+    expect(fs.renameSync).not.toHaveBeenCalled();
+    // Must NOT overwrite with a default config
+    expect(fs.writeFileSync).not.toHaveBeenCalled();
+  });
 });

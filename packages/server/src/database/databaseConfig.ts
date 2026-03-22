@@ -55,13 +55,22 @@ export class DatabaseConfigManager {
       return;
     }
 
+    let data: string;
     try {
-      const data = fs.readFileSync(CONFIG_FILE, 'utf-8');
+      data = fs.readFileSync(CONFIG_FILE, 'utf-8');
+    } catch (error) {
+      // I/O error (EACCES, EIO, EMFILE, etc.) — the file may be perfectly valid.
+      // Do NOT rename or overwrite it; just crash so the operator can fix the environment.
+      throw new Error(`Cannot read database config at ${CONFIG_FILE}: ${error instanceof Error ? error.message : error}`);
+    }
+
+    try {
       const configs: DatabaseConfig[] = JSON.parse(data);
       configs.forEach(config => {
         this.databases.set(config.id, config);
       });
     } catch (error) {
+      // Parse/validation failure — the file content is genuinely corrupt.
       let backupPath = CONFIG_FILE;
       try {
         backupPath = this.backupCorruptedConfig();
