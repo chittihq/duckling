@@ -186,7 +186,7 @@ describe('CDCService backpressure', () => {
   });
 
   describe('forceReconnectForBackpressure', () => {
-    test('stops zongji, resets state, and schedules reconnect', () => {
+    test('stops zongji, clears queue, resets state, and schedules reconnect', () => {
       const service = createService();
       const priv = getPrivate(service);
       const stopMock = vi.fn();
@@ -205,6 +205,7 @@ describe('CDCService backpressure', () => {
       expect(priv.isPaused).toBe(false);
       expect(priv.isRunning).toBe(false);
       expect(priv.stats.isRunning).toBe(false);
+      expect(priv.eventQueue.length).toBe(0); // Queue must be cleared to prevent duplicates
       expect(reconnectSpy).toHaveBeenCalled();
     });
 
@@ -271,7 +272,6 @@ describe('CDCService backpressure', () => {
       };
 
       priv.backpressureAvailable = false;
-      priv.maxQueueSize; // 100 from config mock
 
       // Call setupEventHandlers to register handlers
       priv.setupEventHandlers();

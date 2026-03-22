@@ -311,7 +311,7 @@ export class CDCService {
   private forceReconnectForBackpressure(): void {
     const criticalSize = this.maxQueueSize * this.criticalQueueMultiplier;
     logger.error(
-      `CDC critical queue overflow for ${this.databaseId}: queue size ${this.eventQueue.length} exceeded critical limit ${criticalSize}. ` +
+      `CDC critical queue overflow for ${this.databaseId}: queue size ${this.eventQueue.length} reached critical limit ${criticalSize}. ` +
       `Forcing disconnect to prevent OOM. Will reconnect from last saved binlog position.`
     );
 
@@ -324,6 +324,10 @@ export class CDCService {
       }
       this.zongji = null;
     }
+
+    // Clear queued events to prevent duplicate processing after reconnect;
+    // these events will be re-read from the last saved binlog position.
+    this.eventQueue.length = 0;
 
     this.isPaused = false;
     this.isRunning = false;
@@ -790,7 +794,7 @@ export class CDCService {
       const criticalSize = this.maxQueueSize * this.criticalQueueMultiplier;
       if (this.eventQueue.length >= criticalSize && !this.backpressureAvailable) {
         this.forceReconnectForBackpressure();
-        return; // Drop this event; it will be re-read from saved binlog position after reconnect
+        return; // Skip this event; queue was cleared and events will be re-read from last saved binlog position after reconnect
       }
 
       // Track high water mark for observability
