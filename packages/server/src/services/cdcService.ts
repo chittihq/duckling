@@ -307,6 +307,13 @@ export class CDCService {
    * Force disconnect and reconnect when the queue hits critical capacity
    * and native backpressure is unavailable. This trades a brief disconnect
    * for system stability, preventing OOM crashes.
+   *
+   * Note on reprocessing: Binlog position is saved every 100 events inside
+   * the queued async handlers. When the queue is cleared, up to 99 events'
+   * worth of position advancement may not yet be persisted. On reconnect,
+   * those events will be re-read from the last saved position and reprocessed.
+   * This is safe because the DuckDB handlers are idempotent via primary keys
+   * (INSERT OR REPLACE), so duplicate processing produces correct results.
    */
   private forceReconnectForBackpressure(): void {
     const criticalSize = this.maxQueueSize * this.criticalQueueMultiplier;
@@ -779,20 +786,26 @@ export class CDCService {
 
     // Binlog event - queue events for serial processing to ensure correct ordering
     this.zongji.on('binlog', (event: any) => {
-      // Backpressure: pause binlog stream if queue is full
-      if (!this.isPaused && this.eventQueue.length >= this.maxQueueSize) {
-        this.isPaused = true;
+      // Soft backpressure: pause binlog stream if queue is full and pause is known to work.
+      // Only attempt when backpressureAvailable is true to avoid log spam from
+      // repeated pause/unpause cycles when the underlying connection can't actually pause.
+      if (this.backpressureAvailable && !this.isPaused && this.eventQueue.length >= this.maxQueueSize) {
         const paused = this.pauseBinlogStream();
         if (paused) {
+          this.isPaused = true;
           logger.warn(`CDC queue full (${this.eventQueue.length}/${this.maxQueueSize}), pausing binlog stream for ${this.databaseId}`);
         } else {
-          logger.warn(`CDC queue full (${this.eventQueue.length}/${this.maxQueueSize}), pause failed for ${this.databaseId}. Queue may continue to grow.`);
+          // Pause was probed as available in the 'ready' handler but failed at runtime — downgrade
+          this.backpressureAvailable = false;
+          logger.warn(`CDC queue full (${this.eventQueue.length}/${this.maxQueueSize}), runtime pause failed for ${this.databaseId}. Will force disconnect at critical queue size.`);
         }
       }
 
-      // Critical limit: force reconnect if backpressure is unavailable and queue is dangerously large
+      // Critical limit: force reconnect if queue is dangerously large.
+      // This fires regardless of backpressureAvailable — if the queue reached 2× maxQueueSize,
+      // then pause clearly isn't working (either it was never available, or it failed at runtime).
       const criticalSize = this.maxQueueSize * this.criticalQueueMultiplier;
-      if (this.eventQueue.length >= criticalSize && !this.backpressureAvailable) {
+      if (this.eventQueue.length >= criticalSize) {
         this.forceReconnectForBackpressure();
         return; // Skip this event; queue was cleared and events will be re-read from last saved binlog position after reconnect
       }
@@ -875,6 +888,12 @@ export class CDCService {
   private scheduleReconnect(): void {
     if (this.isStopped) {
       logger.debug(`CDC reconnect skipped - service was explicitly stopped for ${this.databaseId}`);
+      return;
+    }
+
+    // Guard against overlapping reconnect timers (e.g. force disconnect + error callback)
+    if (this.reconnectTimeoutId) {
+      logger.debug(`CDC reconnect already scheduled for ${this.databaseId}, skipping duplicate`);
       return;
     }
 

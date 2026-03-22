@@ -255,7 +255,7 @@ describe('CDCService backpressure', () => {
   });
 
   describe('critical queue limit in binlog handler', () => {
-    test('setupEventHandlers registers binlog handler that triggers force reconnect at critical limit', () => {
+    test('setupEventHandlers registers binlog handler that triggers force reconnect at critical limit when backpressure unavailable', () => {
       const service = createService();
       const priv = getPrivate(service);
 
@@ -292,7 +292,7 @@ describe('CDCService backpressure', () => {
       expect(forceSpy).toHaveBeenCalled();
     });
 
-    test('binlog handler does NOT force reconnect when backpressure is available', () => {
+    test('triggers force reconnect even when backpressure was probed as available (runtime failure)', () => {
       const service = createService();
       const priv = getPrivate(service);
 
@@ -308,11 +308,13 @@ describe('CDCService backpressure', () => {
         },
       };
 
+      // Backpressure was probed as available, but queue still grew to critical
+      // (e.g. pause succeeded but didn't actually stop data flow)
       priv.backpressureAvailable = true;
 
       priv.setupEventHandlers();
 
-      // Fill queue to critical level
+      // Fill queue to critical level (2× maxQueueSize = 200)
       priv.eventQueue = new Array(200).fill(() => Promise.resolve());
 
       const forceSpy = vi.spyOn(priv, 'forceReconnectForBackpressure').mockImplementation(() => {});
@@ -320,8 +322,8 @@ describe('CDCService backpressure', () => {
       const mockEvent = { getTypeName: () => 'WriteRows' };
       handlers['binlog'](mockEvent);
 
-      // Should NOT force reconnect since backpressure IS available
-      expect(forceSpy).not.toHaveBeenCalled();
+      // MUST force reconnect — if queue reached 2×, pause clearly didn't work
+      expect(forceSpy).toHaveBeenCalled();
     });
 
     test('binlog handler does NOT force reconnect when queue is below critical limit', () => {
@@ -355,6 +357,82 @@ describe('CDCService backpressure', () => {
       handlers['binlog'](mockEvent);
 
       expect(forceSpy).not.toHaveBeenCalled();
+    });
+
+    test('soft pause block is skipped when backpressure is unavailable (no log spam)', () => {
+      const service = createService();
+      const priv = getPrivate(service);
+
+      const handlers: Record<string, Function> = {};
+      const pauseMock = vi.fn();
+      priv.zongji = {
+        on: vi.fn((event: string, handler: Function) => {
+          handlers[event] = handler;
+        }),
+        stop: vi.fn(),
+        connection: {},
+      };
+
+      priv.backpressureAvailable = false;
+      priv.isPaused = false;
+
+      priv.setupEventHandlers();
+
+      // Fill queue above maxQueueSize but below critical
+      priv.eventQueue = new Array(150).fill(() => Promise.resolve());
+
+      // Spy to ensure pauseBinlogStream is never called
+      const pauseSpy = vi.spyOn(priv, 'pauseBinlogStream');
+
+      const mockEvent = {
+        getTypeName: () => 'WriteRows',
+        tableMap: {},
+        tableId: 1,
+        nextPosition: 100,
+      };
+      handlers['binlog'](mockEvent);
+
+      // Should NOT attempt to pause since backpressure is unavailable
+      expect(pauseSpy).not.toHaveBeenCalled();
+      // isPaused should remain false
+      expect(priv.isPaused).toBe(false);
+    });
+
+    test('runtime pause failure downgrades backpressureAvailable', () => {
+      const service = createService();
+      const priv = getPrivate(service);
+
+      const handlers: Record<string, Function> = {};
+      priv.zongji = {
+        on: vi.fn((event: string, handler: Function) => {
+          handlers[event] = handler;
+        }),
+        stop: vi.fn(),
+        connection: {
+          // connection has no pause/resume, but was initially probed via stream
+          // Simulating stream.pause() breaking at runtime
+        },
+      };
+
+      priv.backpressureAvailable = true; // Was probed as available
+
+      priv.setupEventHandlers();
+
+      // Fill queue above maxQueueSize
+      priv.eventQueue = new Array(100).fill(() => Promise.resolve());
+
+      const mockEvent = {
+        getTypeName: () => 'WriteRows',
+        tableMap: {},
+        tableId: 1,
+        nextPosition: 100,
+      };
+      handlers['binlog'](mockEvent);
+
+      // pauseBinlogStream() returns false → backpressureAvailable should be downgraded
+      expect(priv.backpressureAvailable).toBe(false);
+      // isPaused should NOT be set since pause failed
+      expect(priv.isPaused).toBe(false);
     });
   });
 
@@ -419,6 +497,53 @@ describe('CDCService backpressure', () => {
       handlers['ready']();
 
       expect(priv.backpressureAvailable).toBe(false);
+    });
+  });
+
+  describe('scheduleReconnect timer dedupe', () => {
+    test('skips scheduling when a reconnect timer is already armed', () => {
+      const service = createService();
+      const priv = getPrivate(service);
+      priv.isStopped = false;
+      priv.reconnectAttempts = 0;
+
+      // First call arms the timer
+      priv.scheduleReconnect();
+      expect(priv.reconnectTimeoutId).not.toBeNull();
+      const firstTimerId = priv.reconnectTimeoutId;
+      const firstAttempts = priv.reconnectAttempts;
+
+      // Second call should be a no-op (timer already armed)
+      priv.scheduleReconnect();
+      expect(priv.reconnectTimeoutId).toBe(firstTimerId);
+      expect(priv.reconnectAttempts).toBe(firstAttempts);
+
+      // Cleanup
+      clearTimeout(priv.reconnectTimeoutId);
+      priv.reconnectTimeoutId = null;
+    });
+
+    test('allows scheduling after previous timer is cleared', () => {
+      const service = createService();
+      const priv = getPrivate(service);
+      priv.isStopped = false;
+      priv.reconnectAttempts = 0;
+
+      // First call arms the timer
+      priv.scheduleReconnect();
+      expect(priv.reconnectTimeoutId).not.toBeNull();
+
+      // Clear the timer (simulating stop() or timer firing)
+      clearTimeout(priv.reconnectTimeoutId);
+      priv.reconnectTimeoutId = null;
+
+      // Now a second call should succeed
+      priv.scheduleReconnect();
+      expect(priv.reconnectTimeoutId).not.toBeNull();
+
+      // Cleanup
+      clearTimeout(priv.reconnectTimeoutId);
+      priv.reconnectTimeoutId = null;
     });
   });
 });
