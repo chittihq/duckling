@@ -1568,9 +1568,8 @@ class SequentialAppenderService extends EventEmitter {
             fullSyncSession = await this.updateFullSyncSessionProgress(fullSyncSession, lastStreamCursor, recordsProcessed);
           }
           appender.closeSync();
-          conn.closeSync();
+          // Keep the appender connection open for the merge (DuckDB issue #17802)
           _appender = null;
-          _conn = null;
           logger.info(`${tableName}: Appender flushed and closed successfully`);
         }
 
@@ -1579,13 +1578,28 @@ class SequentialAppenderService extends EventEmitter {
         }
 
         const alignedFullSyncInsertSql = await this.buildAlignedInsertSql(tableName, stagingTable, columns);
-        // Run the staging swap on a dedicated connection so BEGIN/DELETE/INSERT/COMMIT
-        // cannot be interleaved with other queries by the governor.
+
+        // Reuse the appender connection for the merge to avoid cross-connection
+        // write-write conflicts (DuckDB issue #17802). If no appender connection
+        // exists (e.g., resumed "swapping" session), fall back to runTransaction.
+        const swapConn = _conn;
         try {
-          await this.duckdb.runTransaction(async (run) => {
-            await run(`DELETE FROM ${this.q(tableName)}`);
-            await run(alignedFullSyncInsertSql);
-          });
+          if (swapConn) {
+            await swapConn.run('BEGIN TRANSACTION');
+            try {
+              await swapConn.run(`DELETE FROM ${this.q(tableName)}`);
+              await swapConn.run(alignedFullSyncInsertSql);
+              await swapConn.run('COMMIT');
+            } catch (innerError) {
+              try { await swapConn.run('ROLLBACK'); } catch {}
+              throw innerError;
+            }
+          } else {
+            await this.duckdb.runTransaction(async (run) => {
+              await run(`DELETE FROM ${this.q(tableName)}`);
+              await run(alignedFullSyncInsertSql);
+            });
+          }
         } catch (swapError) {
           if (fullSyncSession) {
             fullSyncSession = await this.updateFullSyncSessionStatus(
@@ -1595,6 +1609,11 @@ class SequentialAppenderService extends EventEmitter {
             );
           }
           throw swapError;
+        } finally {
+          if (swapConn) {
+            try { swapConn.closeSync(); } catch {}
+            _conn = null;
+          }
         }
 
         // Force CHECKPOINT to flush WAL and ensure data durability
@@ -1915,21 +1934,31 @@ class SequentialAppenderService extends EventEmitter {
 
           appender.flushSync();
           appender.closeSync();
-          conn.closeSync();
+          // Keep the appender connection open — reuse it for the merge transaction
+          // to avoid cross-connection write-write conflicts (DuckDB issue #17802).
           _appender = null;
-          _conn = null;
 
           const joinPredicate = this.buildPrimaryKeyJoinPredicate('target', 'staging', primaryKeyColumns);
           const alignedIncrementalInsertSql = await this.buildAlignedInsertSql(tableName, activeStagingTable, columns);
 
-          // Run the merge on a dedicated connection so BEGIN/DELETE/INSERT/COMMIT
-          // cannot be interleaved with other queries by the governor.
+          // Run the merge on the SAME connection that wrote the staging data.
+          // DuckDB's MVCC can produce spurious write-write conflicts when
+          // concurrent connections touch overlapping keys (even reads vs writes).
+          // Using a single connection for both staging writes and the merge
+          // eliminates cross-connection conflicts entirely.
           try {
-            await this.duckdb.runTransaction(async (run) => {
-              await run(`DELETE FROM ${this.q(tableName)} AS target USING ${this.q(activeStagingTable)} AS staging WHERE ${joinPredicate}`);
-              await run(alignedIncrementalInsertSql);
-            });
+            await conn.run('BEGIN TRANSACTION');
+            try {
+              await conn.run(`DELETE FROM ${this.q(tableName)} AS target USING ${this.q(activeStagingTable)} AS staging WHERE ${joinPredicate}`);
+              await conn.run(alignedIncrementalInsertSql);
+              await conn.run('COMMIT');
+            } catch (mergeError) {
+              try { await conn.run('ROLLBACK'); } catch {}
+              throw mergeError;
+            }
           } finally {
+            try { conn.closeSync(); } catch {}
+            _conn = null;
             await this.dropTableIfExists(activeStagingTable, `incremental staging cleanup for ${tableName}`);
           }
 

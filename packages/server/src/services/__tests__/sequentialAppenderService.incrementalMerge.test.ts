@@ -52,8 +52,8 @@ describe('SequentialAppenderService incremental staging merge', () => {
       flushSync: vi.fn(),
       closeSync: vi.fn(),
     };
-    const conn = { closeSync: vi.fn() };
     const runMock = vi.fn(async () => undefined);
+    const conn = { closeSync: vi.fn(), run: vi.fn(async (sql: string) => { await runMock(sql); }) };
     const duckdb: any = {
       createAppender: vi.fn(async () => ({ appender, connection: conn })),
       run: runMock,
@@ -150,8 +150,8 @@ describe('SequentialAppenderService incremental staging merge', () => {
       flushSync: vi.fn(),
       closeSync: vi.fn(),
     };
-    const conn = { closeSync: vi.fn() };
     const runMock = vi.fn(async () => undefined);
+    const conn = { closeSync: vi.fn(), run: vi.fn(async (sql: string) => { await runMock(sql); }) };
     const duckdb: any = {
       createAppender: vi.fn(async () => ({ appender, connection: conn })),
       run: runMock,

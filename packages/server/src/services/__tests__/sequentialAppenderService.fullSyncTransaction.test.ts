@@ -135,7 +135,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn().mockResolvedValue({
         appender,
-        connection: { closeSync: vi.fn() }
+        connection: { closeSync: vi.fn(), run: vi.fn(async (sql: string) => { await runMock(sql); }) }
       })
     };
     const mysql: any = {
@@ -189,7 +189,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn().mockResolvedValue({
         appender,
-        connection: { closeSync: vi.fn() }
+        connection: { closeSync: vi.fn(), run: vi.fn(async (sql: string) => { await runMock(sql); }) }
       })
     };
     const mysql: any = {
@@ -329,7 +329,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn().mockResolvedValue({
         appender,
-        connection: { closeSync: vi.fn() }
+        connection: { closeSync: vi.fn(), run: vi.fn(async (sql: string) => { await runMock(sql); }) }
       })
     };
     const mysql: any = {
@@ -384,7 +384,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn().mockResolvedValue({
         appender,
-        connection: { closeSync: vi.fn() }
+        connection: { closeSync: vi.fn(), run: vi.fn(async (sql: string) => { await runMock(sql); }) }
       })
     };
     const mysql: any = {
@@ -428,7 +428,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn().mockResolvedValue({
         appender,
-        connection: { closeSync: vi.fn() }
+        connection: { closeSync: vi.fn(), run: vi.fn(async (sql: string) => { await runMock(sql); }) }
       })
     };
     const mysql: any = {
