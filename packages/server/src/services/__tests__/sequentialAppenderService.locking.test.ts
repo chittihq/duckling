@@ -95,7 +95,7 @@ describe('SequentialAppenderService lock behavior', () => {
     const mysql: any = {
       getTables: vi.fn().mockResolvedValue(['users', 'orders']),
     };
-    const duckdb: any = {};
+    const duckdb: any = { run: vi.fn().mockResolvedValue(undefined) };
     const service = SequentialAppenderService.getInstance('lock-test-progress', mysql, duckdb) as any;
 
     vi.spyOn(service, 'cleanupDeletedTables').mockResolvedValue(undefined);
@@ -115,6 +115,9 @@ describe('SequentialAppenderService lock behavior', () => {
       });
 
     const syncPromise = service.fullSync();
+    // Extra ticks needed for disableAutoCheckpoint + getTables + progress setup
+    await Promise.resolve();
+    await Promise.resolve();
     await Promise.resolve();
 
     expect(service.getSyncProgress()).toMatchObject({

@@ -736,12 +736,35 @@ class SequentialAppenderService extends EventEmitter {
     this.tableSyncLocks.delete(tableName);
   }
 
+  private async disableAutoCheckpoint(): Promise<void> {
+    try {
+      await this.duckdb.run("PRAGMA wal_autocheckpoint='1TB'");
+      logger.info('DuckDB auto-checkpoint disabled for sync window');
+    } catch (error) {
+      logger.warn('Failed to disable auto-checkpoint:', error);
+    }
+  }
+
+  private async restoreAutoCheckpoint(): Promise<void> {
+    try {
+      await this.duckdb.run("PRAGMA wal_autocheckpoint='10MB'");
+      logger.info('DuckDB auto-checkpoint restored (10MB threshold)');
+    } catch (error) {
+      logger.warn('Failed to restore auto-checkpoint:', error);
+    }
+  }
+
   /**
    * Full sync using sequential processing for all tables
    */
   async fullSync(): Promise<AppenderSyncStats> {
     const startTime = Date.now();
     logger.info('Starting full sequential sync...');
+
+    // Disable auto-checkpoint for the entire sync window to prevent
+    // background checkpoint writes from conflicting with merge transactions.
+    // A manual CHECKPOINT is issued by the caller (automationService) after sync completes.
+    await this.disableAutoCheckpoint();
 
     const stats: AppenderSyncStats = {
       totalTables: 0,
@@ -823,6 +846,7 @@ class SequentialAppenderService extends EventEmitter {
       this.emit('syncProgress');
       throw error;
     } finally {
+      await this.restoreAutoCheckpoint();
       this.syncProgress.inProgress = false;
       this.syncProgress.currentTable = null;
       this.syncProgress.type = null;
@@ -836,6 +860,10 @@ class SequentialAppenderService extends EventEmitter {
   async incrementalSync(): Promise<AppenderSyncStats> {
     const startTime = Date.now();
     logger.info('Starting incremental watermark-based sync...');
+
+    // Disable auto-checkpoint for the entire sync window to prevent
+    // background checkpoint writes from conflicting with merge transactions.
+    await this.disableAutoCheckpoint();
 
     const stats: AppenderSyncStats = {
       totalTables: 0,
@@ -925,6 +953,7 @@ class SequentialAppenderService extends EventEmitter {
       this.emit('syncProgress');
       throw error;
     } finally {
+      await this.restoreAutoCheckpoint();
       this.syncProgress.inProgress = false;
       this.syncProgress.currentTable = null;
       this.syncProgress.type = null;
