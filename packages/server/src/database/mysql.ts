@@ -304,6 +304,32 @@ class MySQLConnection {
    * Uses keyset pagination for O(1) performance on large result sets
    * Supports composite primary keys via row-value tuple comparison for tie-breaking
    */
+  private async executeWithSortMemoryRetry(
+    tableName: string,
+    query: string,
+    params: any[],
+    batchSize: number
+  ): Promise<{ rows: any[]; reducedBatchSize: number | null }> {
+    try {
+      const rows = await this.execute(query, params);
+      return { rows, reducedBatchSize: null };
+    } catch (error: any) {
+      if (error?.code === 'ER_OUT_OF_SORTMEMORY' || error?.errno === 1038) {
+        const smallerLimit = Math.max(100, Math.floor(batchSize / 10));
+        logger.warn(
+          `${tableName}: sort memory exceeded with LIMIT ${batchSize}, retrying with LIMIT ${smallerLimit}`
+        );
+        const reducedQuery = query.replace(
+          new RegExp(`LIMIT ${batchSize}$`),
+          `LIMIT ${smallerLimit}`
+        );
+        const rows = await this.execute(reducedQuery, params);
+        return { rows, reducedBatchSize: smallerLimit };
+      }
+      throw error;
+    }
+  }
+
   async *streamIncrementalData(
     tableName: string,
     watermarkColumn: string,
@@ -311,6 +337,7 @@ class MySQLConnection {
     batchSize: number = 10000
   ): AsyncGenerator<any[], void, unknown> {
     const pkColumns = await this.getPrimaryKeyColumns(tableName);
+    let effectiveBatchSize = batchSize;
 
     if (pkColumns.length > 0) {
       // Keyset pagination using primary key(s) for ordering within same watermark values
@@ -328,7 +355,7 @@ class MySQLConnection {
 
         if (lastPkValues === null) {
           // First batch
-          query = `SELECT * FROM ${this.q(tableName)} WHERE ${this.q(watermarkColumn)} >= ? ORDER BY ${this.q(watermarkColumn)} ASC, ${pkOrderByClause} LIMIT ${batchSize}`;
+          query = `SELECT * FROM ${this.q(tableName)} WHERE ${this.q(watermarkColumn)} >= ? ORDER BY ${this.q(watermarkColumn)} ASC, ${pkOrderByClause} LIMIT ${effectiveBatchSize}`;
           params = [watermarkValue];
         } else {
           // Subsequent batches - handle tie-breaking with primary key(s).
@@ -338,11 +365,15 @@ class MySQLConnection {
           // across rows that share the same watermark value.
           const tupleCols = `(${pkColumns.map(pk => this.q(pk)).join(', ')})`;
           const tuplePlaceholders = `(${pkColumns.map(() => '?').join(', ')})`;
-          query = `SELECT * FROM ${this.q(tableName)} WHERE (${this.q(watermarkColumn)} > ?) OR (${this.q(watermarkColumn)} = ? AND ${tupleCols} > ${tuplePlaceholders}) ORDER BY ${this.q(watermarkColumn)} ASC, ${pkOrderByClause} LIMIT ${batchSize}`;
+          query = `SELECT * FROM ${this.q(tableName)} WHERE (${this.q(watermarkColumn)} > ?) OR (${this.q(watermarkColumn)} = ? AND ${tupleCols} > ${tuplePlaceholders}) ORDER BY ${this.q(watermarkColumn)} ASC, ${pkOrderByClause} LIMIT ${effectiveBatchSize}`;
           params = [lastWatermark, lastWatermark, ...lastPkValues];
         }
 
-        batch = await this.execute(query, params);
+        const result = await this.executeWithSortMemoryRetry(tableName, query, params, effectiveBatchSize);
+        batch = result.rows;
+        if (result.reducedBatchSize) {
+          effectiveBatchSize = result.reducedBatchSize;
+        }
 
         if (batch.length > 0) {
           const lastRecord = batch[batch.length - 1];
@@ -350,7 +381,7 @@ class MySQLConnection {
           lastWatermark = lastRecord[watermarkColumn];
           yield batch;
         }
-      } while (batch.length === batchSize);
+      } while (batch.length === effectiveBatchSize);
     } else {
       // Fallback to OFFSET pagination for tables without any primary key
       let offset = 0;
@@ -359,14 +390,19 @@ class MySQLConnection {
       logger.warn(`MySQL streamIncrementalData for ${tableName}: no primary key, falling back to OFFSET pagination`);
 
       do {
-        const query = `SELECT * FROM ${this.q(tableName)} WHERE ${this.q(watermarkColumn)} >= ? ORDER BY ${this.q(watermarkColumn)} ASC LIMIT ${batchSize} OFFSET ${offset}`;
-        batch = await this.execute(query, [watermarkValue]);
+        const query = `SELECT * FROM ${this.q(tableName)} WHERE ${this.q(watermarkColumn)} >= ? ORDER BY ${this.q(watermarkColumn)} ASC LIMIT ${effectiveBatchSize} OFFSET ${offset}`;
+
+        const result = await this.executeWithSortMemoryRetry(tableName, query, [watermarkValue], effectiveBatchSize);
+        batch = result.rows;
+        if (result.reducedBatchSize) {
+          effectiveBatchSize = result.reducedBatchSize;
+        }
 
         if (batch.length > 0) {
           yield batch;
-          offset += batchSize;
+          offset += effectiveBatchSize;
         }
-      } while (batch.length === batchSize);
+      } while (batch.length === effectiveBatchSize);
     }
   }
 
