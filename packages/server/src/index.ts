@@ -156,9 +156,7 @@ async function gracefulShutdown(signal: string, server: DuckDBServer): Promise<v
 
 async function main() {
   try {
-    console.log('Starting DuckDB Parquet Server...');
-    console.log('Architecture: Micro-batch Parquet with partitioned storage');
-    console.log('Features: Columnar storage, partition pruning, schema evolution, view management');
+    console.log('Starting Duckling Server...');
 
     // Check data directory for persistence debugging
     const dataDir = config.paths.data;
