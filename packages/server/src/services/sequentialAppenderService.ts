@@ -1455,6 +1455,12 @@ class SequentialAppenderService extends EventEmitter {
 
         logger.info(`${tableName}: fetchBatchSize=${fetchBatchSize}, flushInterval=${FLUSH_INTERVAL}, using Appender API`);
 
+        // Pre-compute the merge SQL BEFORE the appender starts.
+        // buildAlignedInsertSql hits the persistent connection; running it
+        // between appender-close and merge-COMMIT opens a concurrent read
+        // that triggers DuckDB's write-write conflict bug (#17802 / #20053).
+        const alignedFullSyncInsertSql = await this.buildAlignedInsertSql(tableName, stagingTable, columns);
+
         if (!fullSyncSession || fullSyncSession.status === 'loading') {
           // Create Appender instance for this table using unified DuckDB connection
           logger.debug(`${tableName}: Creating Appender instance for staging table ${stagingTable}...`);
@@ -1577,8 +1583,7 @@ class SequentialAppenderService extends EventEmitter {
           fullSyncSession = await this.updateFullSyncSessionStatus(fullSyncSession, 'swapping');
         }
 
-        const alignedFullSyncInsertSql = await this.buildAlignedInsertSql(tableName, stagingTable, columns);
-
+        // alignedFullSyncInsertSql was pre-computed before the appender started.
         // Reuse the appender connection for the merge to avoid cross-connection
         // write-write conflicts (DuckDB issue #17802). If no appender connection
         // exists (e.g., resumed "swapping" session), fall back to runTransaction.
@@ -1814,8 +1819,16 @@ class SequentialAppenderService extends EventEmitter {
         await this.ensureStartupStagingCleanup();
         await this.cleanupOrphanStagingTables(tableName);
 
+        // Pre-compute the staging table name and merge SQL BEFORE any appender
+        // work starts. buildAlignedInsertSql does a SELECT on the persistent
+        // connection; if that runs between appender-close and merge-COMMIT it
+        // opens a concurrent read transaction that triggers DuckDB's write-write
+        // conflict bug (#17802 / #20053).
+        const stagingTable = this.buildStagingTableName(tableName);
+        const joinPredicate = this.buildPrimaryKeyJoinPredicate('target', 'staging', primaryKeyColumns);
+        const alignedIncrementalInsertSql = await this.buildAlignedInsertSql(tableName, stagingTable, columns);
+
         let totalBatches = 0;
-        let stagingTable: string | null = null;
         let _appender: any = null;
         let _conn: any = null;
 
@@ -1824,8 +1837,7 @@ class SequentialAppenderService extends EventEmitter {
           for await (const streamBatch of this.mysql.streamIncrementalData(tableName, watermarkColumn, watermarkValue, fetchBatchSize)) {
             if (streamBatch.length === 0) continue;
 
-            if (!_appender || !_conn || !stagingTable) {
-              stagingTable = this.buildStagingTableName(tableName);
+            if (!_appender || !_conn) {
               await this.createTable(stagingTable, schema, { includePrimaryKey: false });
 
               logger.info(`${tableName}: watermark sync - columns=${columnCount}, fetchBatchSize=${fetchBatchSize}, flushInterval=${flushInterval}, primaryKeys=${primaryKeyColumns.join(', ')}, strategy=staging-merge`);
@@ -1938,14 +1950,9 @@ class SequentialAppenderService extends EventEmitter {
           // to avoid cross-connection write-write conflicts (DuckDB issue #17802).
           _appender = null;
 
-          const joinPredicate = this.buildPrimaryKeyJoinPredicate('target', 'staging', primaryKeyColumns);
-          const alignedIncrementalInsertSql = await this.buildAlignedInsertSql(tableName, activeStagingTable, columns);
-
-          // Run the merge on the SAME connection that wrote the staging data.
-          // DuckDB's MVCC can produce spurious write-write conflicts when
-          // concurrent connections touch overlapping keys (even reads vs writes).
-          // Using a single connection for both staging writes and the merge
-          // eliminates cross-connection conflicts entirely.
+          // joinPredicate and alignedIncrementalInsertSql were pre-computed
+          // before the appender started — no persistent-connection activity
+          // between appender-close and COMMIT.
           try {
             await conn.run('BEGIN TRANSACTION');
             try {
