@@ -2276,7 +2276,8 @@ class DuckDBServer {
 
       // Get total count
       const countQuery = `SELECT COUNT(*) as count FROM sync_log ${whereClause}`;
-      const countResult = await duckdb.query(countQuery);
+      const countParams = params.slice(0, conditions.length);
+      const countResult = await duckdb.query(countQuery, countParams);
       const total = countResult?.[0]?.count || 0;
 
       // Serialize BigInt values for JSON
