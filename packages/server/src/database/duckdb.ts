@@ -923,45 +923,63 @@ class DuckDBConnection {
    * The method handles BEGIN TRANSACTION / COMMIT / ROLLBACK automatically.
    */
   async runTransaction(
-    fn: (runStatement: (sql: string, params?: any[]) => Promise<void>) => Promise<void>
+    fn: (runStatement: (sql: string, params?: any[]) => Promise<void>) => Promise<void>,
+    { maxRetries = 3, retryDelayMs = 200 }: { maxRetries?: number; retryDelayMs?: number } = {}
   ): Promise<void> {
     await this.ensureInitialized();
     const dbInstance = await this.getDbInstance();
-    const connection = await dbInstance.connect();
 
-    const runStatement = async (sql: string, params?: any[]): Promise<void> => {
-      if (params && params.length > 0) {
-        const prepared = await connection.prepare(sql);
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const connection = await dbInstance.connect();
+
+      const runStatement = async (sql: string, params?: any[]): Promise<void> => {
+        if (params && params.length > 0) {
+          const prepared = await connection.prepare(sql);
+          try {
+            this.bindParams(prepared, params);
+            await prepared.run();
+          } finally {
+            this.destroyPreparedStatement(prepared);
+          }
+        } else {
+          await connection.run(sql);
+        }
+      };
+
+      try {
+        await runStatement('BEGIN TRANSACTION');
+        await fn(runStatement);
+        await runStatement('COMMIT');
+        return; // Success — exit retry loop
+      } catch (error) {
         try {
-          this.bindParams(prepared, params);
-          await prepared.run();
-        } finally {
-          this.destroyPreparedStatement(prepared);
+          await runStatement('ROLLBACK');
+        } catch (rollbackError) {
+          const msg = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+          if (!msg.includes('no transaction is active')) {
+            logger.error('Failed to rollback transaction:', rollbackError);
+          }
         }
-      } else {
-        await connection.run(sql);
-      }
-    };
 
-    try {
-      await runStatement('BEGIN TRANSACTION');
-      await fn(runStatement);
-      await runStatement('COMMIT');
-    } catch (error) {
-      try {
-        await runStatement('ROLLBACK');
-      } catch (rollbackError) {
-        const msg = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-        if (!msg.includes('no transaction is active')) {
-          logger.error('Failed to rollback transaction:', rollbackError);
+        const isWriteConflict =
+          error instanceof Error && error.message.includes('write-write conflict');
+
+        if (isWriteConflict && attempt < maxRetries) {
+          const delay = retryDelayMs * (2 ** (attempt - 1));
+          logger.warn(
+            `Write-write conflict on attempt ${attempt}/${maxRetries}, retrying in ${delay}ms...`
+          );
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
         }
-      }
-      throw error;
-    } finally {
-      try {
-        connection.closeSync();
-      } catch {
-        // Ignore close failures
+
+        throw error;
+      } finally {
+        try {
+          connection.closeSync();
+        } catch {
+          // Ignore close failures
+        }
       }
     }
   }
