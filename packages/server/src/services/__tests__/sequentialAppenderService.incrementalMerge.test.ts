@@ -93,11 +93,11 @@ describe('SequentialAppenderService incremental staging merge', () => {
     );
 
     const runSql = duckdb.run.mock.calls.map((call: any[]) => call[0]);
-    expect(runSql).toContain('BEGIN TRANSACTION');
-    expect(runSql.some((sql: string) => sql.includes('DELETE FROM "users" AS target USING "'))).toBe(true);
-    expect(runSql).toContainEqual(expect.stringContaining('INSERT INTO "users" ("id", "name", "updatedAt") SELECT "id", "name", "updatedAt" FROM "'));
-    expect(runSql).toContain('COMMIT');
-    expect(runSql.some((sql: string) => sql.includes('INSERT OR REPLACE INTO "users"'))).toBe(false);
+    // Incremental merge uses a single INSERT OR REPLACE (no explicit transaction)
+    // to avoid DuckDB's write-write conflict bug (#17802 / #20053).
+    expect(runSql).not.toContain('BEGIN TRANSACTION');
+    expect(runSql.some((sql: string) => sql.includes('INSERT OR REPLACE INTO "users"'))).toBe(true);
+    expect(runSql).toContainEqual(expect.stringContaining('INSERT OR REPLACE INTO "users" ("id", "name", "updatedAt") SELECT "id", "name", "updatedAt" FROM "'));
   });
 
   test('falls back to sequential appender sync when incremental table has no primary key', async () => {

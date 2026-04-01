@@ -170,7 +170,7 @@ class SequentialAppenderService extends EventEmitter {
       .join(' AND ');
   }
 
-  private async buildAlignedInsertSql(targetTable: string, sourceTable: string, sourceColumns: string[]): Promise<string> {
+  private async buildAlignedInsertSql(targetTable: string, sourceTable: string, sourceColumns: string[], { orReplace = false }: { orReplace?: boolean } = {}): Promise<string> {
     const targetRows = await this.duckdb.execute(`
       SELECT column_name
       FROM information_schema.columns
@@ -200,7 +200,8 @@ class SequentialAppenderService extends EventEmitter {
     const targetColumnList = alignedTargetColumns.map((column) => this.q(column)).join(', ');
     const sourceColumnList = sourceColumns.map((column) => this.q(column)).join(', ');
 
-    return `INSERT INTO ${this.q(targetTable)} (${targetColumnList}) SELECT ${sourceColumnList} FROM ${this.q(sourceTable)}`;
+    const verb = orReplace ? 'INSERT OR REPLACE INTO' : 'INSERT INTO';
+    return `${verb} ${this.q(targetTable)} (${targetColumnList}) SELECT ${sourceColumnList} FROM ${this.q(sourceTable)}`;
   }
 
   private isFullSyncResumeEnabled(): boolean {
@@ -1825,8 +1826,7 @@ class SequentialAppenderService extends EventEmitter {
         // opens a concurrent read transaction that triggers DuckDB's write-write
         // conflict bug (#17802 / #20053).
         const stagingTable = this.buildStagingTableName(tableName);
-        const joinPredicate = this.buildPrimaryKeyJoinPredicate('target', 'staging', primaryKeyColumns);
-        const alignedIncrementalInsertSql = await this.buildAlignedInsertSql(tableName, stagingTable, columns);
+        const alignedIncrementalInsertSql = await this.buildAlignedInsertSql(tableName, stagingTable, columns, { orReplace: true });
 
         let totalBatches = 0;
         let _appender: any = null;
@@ -1946,26 +1946,18 @@ class SequentialAppenderService extends EventEmitter {
 
           appender.flushSync();
           appender.closeSync();
-          // Keep the appender connection open — reuse it for the merge transaction
-          // to avoid cross-connection write-write conflicts (DuckDB issue #17802).
+          conn.closeSync();
           _appender = null;
+          _conn = null;
 
-          // joinPredicate and alignedIncrementalInsertSql were pre-computed
-          // before the appender started — no persistent-connection activity
-          // between appender-close and COMMIT.
+          // Use INSERT OR REPLACE instead of DELETE + INSERT in a transaction.
+          // The multi-statement transaction pattern (BEGIN/DELETE/INSERT/COMMIT)
+          // triggers DuckDB's write-write conflict bug (#17802 / #20053) when any
+          // other connection has an open transaction — even a read. A single
+          // INSERT OR REPLACE is auto-committed and immune to this bug.
           try {
-            await conn.run('BEGIN TRANSACTION');
-            try {
-              await conn.run(`DELETE FROM ${this.q(tableName)} AS target USING ${this.q(activeStagingTable)} AS staging WHERE ${joinPredicate}`);
-              await conn.run(alignedIncrementalInsertSql);
-              await conn.run('COMMIT');
-            } catch (mergeError) {
-              try { await conn.run('ROLLBACK'); } catch {}
-              throw mergeError;
-            }
+            await this.duckdb.run(alignedIncrementalInsertSql);
           } finally {
-            try { conn.closeSync(); } catch {}
-            _conn = null;
             await this.dropTableIfExists(activeStagingTable, `incremental staging cleanup for ${tableName}`);
           }
 
