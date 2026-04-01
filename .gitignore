@@ -53,3 +53,4 @@ deploy.zip
 benchmark/benchmark-results.md
 /packages/server/coverage
 TODO.md
+packages/sdk/.claude/settings.local.json

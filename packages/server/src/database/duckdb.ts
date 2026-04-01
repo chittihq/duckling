@@ -643,6 +643,39 @@ class DuckDBConnection {
    * Run query without waiting for initialization (internal use only during initialization)
    * For queries that don't return results (INSERT, UPDATE, DELETE, CREATE, etc.)
    */
+  /**
+   * Bind parameters to a prepared statement. Shared by runRaw and runTransaction
+   * to ensure identical type-mapping across both write paths.
+   */
+  private bindParams(prepared: any, params: any[]): void {
+    for (let i = 0; i < params.length; i++) {
+      const value = params[i];
+      if (value === null || value === undefined) {
+        prepared.bindNull(i + 1);
+      } else if (typeof value === 'bigint') {
+        prepared.bindBigInt(i + 1, value);
+      } else if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+        prepared.bindBlob(i + 1, value);
+      } else if (typeof value === 'string') {
+        prepared.bindVarchar(i + 1, value);
+      } else if (typeof value === 'number') {
+        if (Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) {
+          prepared.bindInteger(i + 1, value);
+        } else if (Number.isInteger(value)) {
+          prepared.bindBigInt(i + 1, BigInt(value));
+        } else {
+          prepared.bindDouble(i + 1, value);
+        }
+      } else if (typeof value === 'boolean') {
+        prepared.bindBoolean(i + 1, value);
+      } else if (value instanceof Date) {
+        prepared.bindVarchar(i + 1, value.toISOString());
+      } else {
+        prepared.bindVarchar(i + 1, String(value));
+      }
+    }
+  }
+
   private async runRaw(query: string, params?: any[]): Promise<void> {
     // Use persistent connection to avoid exhausting DuckDB resources
     const connection = await this.getPersistentConnection();
@@ -652,34 +685,7 @@ class DuckDBConnection {
         const prepared = await connection.prepare(query);
 
         try {
-          // Bind parameters
-          for (let i = 0; i < params.length; i++) {
-            const value = params[i];
-            if (value === null || value === undefined) {
-              prepared.bindNull(i + 1);
-            } else if (typeof value === 'bigint') {
-              prepared.bindBigInt(i + 1, value);
-            } else if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
-              prepared.bindBlob(i + 1, value);
-            } else if (typeof value === 'string') {
-              prepared.bindVarchar(i + 1, value);
-            } else if (typeof value === 'number') {
-              if (Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) {
-                prepared.bindInteger(i + 1, value);
-              } else if (Number.isInteger(value)) {
-                prepared.bindBigInt(i + 1, BigInt(value));
-              } else {
-                prepared.bindDouble(i + 1, value);
-              }
-            } else if (typeof value === 'boolean') {
-              prepared.bindBoolean(i + 1, value);
-            } else if (value instanceof Date) {
-              prepared.bindVarchar(i + 1, value.toISOString());
-            } else {
-              prepared.bindVarchar(i + 1, String(value));
-            }
-          }
-
+          this.bindParams(prepared, params);
           await prepared.run();
         } finally {
           this.destroyPreparedStatement(prepared);
@@ -904,6 +910,59 @@ class DuckDBConnection {
       logger.debug(`Checkpoint cleared for ${tableName}`);
     } catch (error) {
       logger.warn(`Failed to clear checkpoint for ${tableName}:`, error);
+    }
+  }
+
+  /**
+   * Run a series of SQL statements inside a single transaction on a dedicated
+   * connection.  This prevents the governor from interleaving other queries
+   * between BEGIN and COMMIT, which is the root cause of write-write conflicts
+   * when the persistent connection is shared across concurrent governor slots.
+   *
+   * The caller supplies a callback that receives a `runStatement` helper.
+   * The method handles BEGIN TRANSACTION / COMMIT / ROLLBACK automatically.
+   */
+  async runTransaction(
+    fn: (runStatement: (sql: string, params?: any[]) => Promise<void>) => Promise<void>
+  ): Promise<void> {
+    await this.ensureInitialized();
+    const dbInstance = await this.getDbInstance();
+    const connection = await dbInstance.connect();
+
+    const runStatement = async (sql: string, params?: any[]): Promise<void> => {
+      if (params && params.length > 0) {
+        const prepared = await connection.prepare(sql);
+        try {
+          this.bindParams(prepared, params);
+          await prepared.run();
+        } finally {
+          this.destroyPreparedStatement(prepared);
+        }
+      } else {
+        await connection.run(sql);
+      }
+    };
+
+    try {
+      await runStatement('BEGIN TRANSACTION');
+      await fn(runStatement);
+      await runStatement('COMMIT');
+    } catch (error) {
+      try {
+        await runStatement('ROLLBACK');
+      } catch (rollbackError) {
+        const msg = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+        if (!msg.includes('no transaction is active')) {
+          logger.error('Failed to rollback transaction:', rollbackError);
+        }
+      }
+      throw error;
+    } finally {
+      try {
+        connection.closeSync();
+      } catch {
+        // Ignore close failures
+      }
     }
   }
 

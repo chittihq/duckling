@@ -8,6 +8,26 @@ async function* streamBatches(batches: any[][]) {
   }
 }
 
+/**
+ * Build a runTransaction mock that delegates to the given runMock,
+ * framing calls with BEGIN TRANSACTION / COMMIT / ROLLBACK so
+ * existing query-sequence assertions keep working.
+ */
+function createRunTransactionMock(runMock: ReturnType<typeof vi.fn>) {
+  return vi.fn(async (fn: (run: (sql: string, params?: any[]) => Promise<void>) => Promise<void>) => {
+    await runMock('BEGIN TRANSACTION');
+    try {
+      await fn(async (sql: string, params?: any[]) => {
+        await runMock(sql, params);
+      });
+      await runMock('COMMIT');
+    } catch (error) {
+      try { await runMock('ROLLBACK'); } catch {}
+      throw error;
+    }
+  });
+}
+
 function createDuckDBExecuteMock(columns: string[], fallbackRows: any[] = [{ max_id: 1 }]) {
   return vi.fn(async (query: string) => {
     if (query.includes('FROM information_schema.columns')) {
@@ -31,6 +51,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     const runMock = vi.fn().mockResolvedValue(undefined);
     const duckdb: any = {
       run: runMock,
+      runTransaction: createRunTransactionMock(runMock),
       execute: vi.fn().mockResolvedValue([{ max_id: 1 }])
     };
     const mysql: any = {
@@ -74,6 +95,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     });
     const duckdb: any = {
       run: runMock,
+      runTransaction: createRunTransactionMock(runMock),
       execute: vi.fn().mockResolvedValue([])
     };
     const mysql: any = {
@@ -108,6 +130,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     };
     const duckdb: any = {
       run: runMock,
+      runTransaction: createRunTransactionMock(runMock),
       execute: createDuckDBExecuteMock(['name', 'id'], [{ max_id: 1 }]),
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn().mockResolvedValue({
@@ -161,6 +184,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     };
     const duckdb: any = {
       run: runMock,
+      runTransaction: createRunTransactionMock(runMock),
       execute: createDuckDBExecuteMock(['id', 'name'], [{ max_id: 5 }]),
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn().mockResolvedValue({
@@ -234,6 +258,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     const runMock = vi.fn().mockResolvedValue(undefined);
     const duckdb: any = {
       run: runMock,
+      runTransaction: createRunTransactionMock(runMock),
       execute: createDuckDBExecuteMock(['id', 'name'], [{ max_id: 5 }]),
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn(),
@@ -299,6 +324,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     };
     const duckdb: any = {
       run: runMock,
+      runTransaction: createRunTransactionMock(runMock),
       execute: createDuckDBExecuteMock(['id', 'name'], [{ max_id: 1 }]),
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn().mockResolvedValue({
@@ -342,6 +368,7 @@ describe('SequentialAppenderService full sync transaction safety', () => {
     };
     const duckdb: any = {
       run: runMock,
+      runTransaction: createRunTransactionMock(runMock),
       execute: vi.fn().mockImplementation(async (query: string) => {
         if (query.includes('FROM information_schema.columns')) {
           return [
@@ -393,8 +420,10 @@ describe('SequentialAppenderService full sync transaction safety', () => {
       closeSync: vi.fn(),
       endRow: vi.fn()
     };
+    const runMock = vi.fn().mockResolvedValue(undefined);
     const duckdb: any = {
-      run: vi.fn().mockResolvedValue(undefined),
+      run: runMock,
+      runTransaction: createRunTransactionMock(runMock),
       execute: createDuckDBExecuteMock(['id', 'name'], [{ max_id: 1 }]),
       checkpoint: vi.fn().mockResolvedValue(undefined),
       createAppender: vi.fn().mockResolvedValue({

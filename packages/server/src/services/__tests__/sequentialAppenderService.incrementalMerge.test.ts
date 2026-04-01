@@ -10,6 +10,21 @@ function createDuckDBColumnsExecuteMock(columns: string[]) {
   });
 }
 
+function createRunTransactionMock(runMock: ReturnType<typeof vi.fn>) {
+  return vi.fn(async (fn: (run: (sql: string, params?: any[]) => Promise<void>) => Promise<void>) => {
+    await runMock('BEGIN TRANSACTION');
+    try {
+      await fn(async (sql: string, params?: any[]) => {
+        await runMock(sql, params);
+      });
+      await runMock('COMMIT');
+    } catch (error) {
+      try { await runMock('ROLLBACK'); } catch {}
+      throw error;
+    }
+  });
+}
+
 describe('SequentialAppenderService incremental staging merge', () => {
   afterEach(() => {
     SequentialAppenderService.closeInstance('incremental-merge-test');
@@ -38,9 +53,11 @@ describe('SequentialAppenderService incremental staging merge', () => {
       closeSync: vi.fn(),
     };
     const conn = { closeSync: vi.fn() };
+    const runMock = vi.fn(async () => undefined);
     const duckdb: any = {
       createAppender: vi.fn(async () => ({ appender, connection: conn })),
-      run: vi.fn(async () => undefined),
+      run: runMock,
+      runTransaction: createRunTransactionMock(runMock),
       execute: createDuckDBColumnsExecuteMock(['name', 'id', 'updatedAt']),
     };
 
@@ -134,9 +151,11 @@ describe('SequentialAppenderService incremental staging merge', () => {
       closeSync: vi.fn(),
     };
     const conn = { closeSync: vi.fn() };
+    const runMock = vi.fn(async () => undefined);
     const duckdb: any = {
       createAppender: vi.fn(async () => ({ appender, connection: conn })),
-      run: vi.fn(async () => undefined),
+      run: runMock,
+      runTransaction: createRunTransactionMock(runMock),
       execute: vi.fn(async (query: string) => {
         if (query.includes('FROM information_schema.columns')) {
           return [
@@ -189,9 +208,11 @@ describe('SequentialAppenderService incremental staging merge', () => {
       }),
     };
 
+    const runMock = vi.fn(async () => undefined);
     const duckdb: any = {
       createAppender: vi.fn(async () => ({ appender: {}, connection: {} })),
-      run: vi.fn(async () => undefined),
+      run: runMock,
+      runTransaction: createRunTransactionMock(runMock),
       execute: vi.fn(async (query: string) => {
         if (query.includes('FROM information_schema.columns')) {
           return [

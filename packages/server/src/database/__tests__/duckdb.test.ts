@@ -123,6 +123,7 @@ describe('DuckDBConnection prepared statement cleanup', () => {
       getPersistentConnection: vi.fn(async () => ({
         prepare: vi.fn(async () => prepared),
       })),
+      bindParams: (DuckDBConnection.prototype as any).bindParams,
       destroyPreparedStatement: vi.fn(),
       closePersistentConnection: vi.fn(),
       dbInstance: null,

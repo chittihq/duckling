@@ -1177,33 +1177,29 @@ class SequentialAppenderService extends EventEmitter {
 
       logger.info(`${tableName}: Starting transactional full refresh`);
 
-      let transactionStarted = false;
-      try {
-        await this.duckdb.run('BEGIN TRANSACTION');
-        transactionStarted = true;
+      // Get column names for INSERT statement
+      const columns = schema.map(col => col.Field);
+      const quotedColumns = columns.map(col => this.q(col)).join(', ');
 
+      // Create column type map for sanitization
+      const columnTypes = new Map(schema.map(col => [col.Field, col.Type]));
+
+      // Stream records from MySQL and insert in bulk
+      const fetchBatchSize = config.sync.batchSize; // Configurable via BATCH_SIZE env var
+
+      // Calculate safe insert batch size based on column count
+      // JavaScript/Node.js has ~65K function argument limit
+      const columnCount = schema.length;
+      const maxSafeBatchSize = Math.floor(65000 / columnCount); // Safety margin for parameter binding
+      const insertBatchSize = Math.min(config.sync.insertBatchSize, maxSafeBatchSize);
+
+      logger.info(`${tableName}: columns=${columnCount}, fetchBatchSize=${fetchBatchSize}, insertBatchSize=${insertBatchSize} (max safe: ${maxSafeBatchSize})`);
+
+      // Run the entire streaming INSERT loop inside a dedicated connection transaction
+      // so the governor cannot interleave other queries between BEGIN and COMMIT.
+      await this.duckdb.runTransaction(async (run) => {
         // Clear existing data for full sync and repopulate atomically
-        await this.duckdb.run(`DELETE FROM ${this.q(tableName)}`);
-
-        // Get column names for INSERT statement
-        const columns = schema.map(col => col.Field);
-        const quotedColumns = columns.map(col => this.q(col)).join(', ');
-        const placeholders = columns.map(() => '?').join(', ');
-        const insertQuery = `INSERT INTO ${this.q(tableName)} (${quotedColumns}) VALUES (${placeholders})`;
-
-        // Create column type map for sanitization
-        const columnTypes = new Map(schema.map(col => [col.Field, col.Type]));
-
-        // Stream records from MySQL and insert in bulk
-        const fetchBatchSize = config.sync.batchSize; // Configurable via BATCH_SIZE env var
-
-        // Calculate safe insert batch size based on column count
-        // JavaScript/Node.js has ~65K function argument limit
-        const columnCount = schema.length;
-        const maxSafeBatchSize = Math.floor(65000 / columnCount); // Safety margin for parameter binding
-        const insertBatchSize = Math.min(config.sync.insertBatchSize, maxSafeBatchSize);
-
-        logger.info(`${tableName}: columns=${columnCount}, fetchBatchSize=${fetchBatchSize}, insertBatchSize=${insertBatchSize} (max safe: ${maxSafeBatchSize})`);
+        await run(`DELETE FROM ${this.q(tableName)}`);
 
         for await (const fetchedBatch of this.mysql.streamTableData(tableName, fetchBatchSize)) {
           // Process fetched batch in smaller bulk inserts to avoid stack overflow
@@ -1249,7 +1245,7 @@ class SequentialAppenderService extends EventEmitter {
             }
 
             // Execute bulk insert (10-100x faster than individual inserts)
-            await this.duckdb.run(bulkInsertQuery, allValues!);
+            await run(bulkInsertQuery, allValues!);
 
             recordsProcessed += batch.length;
 
@@ -1263,54 +1259,41 @@ class SequentialAppenderService extends EventEmitter {
 
           logger.debug(`Bulk inserted ${fetchedBatch.length} records to ${tableName}, total: ${recordsProcessed}`);
         }
+      });
 
-        await this.duckdb.run('COMMIT');
-        transactionStarted = false;
+      // Get max ID for watermark (supports both numeric and string IDs)
+      const primaryKeyColumn = await this.detectPrimaryKeyColumn(tableName, schema);
+      let maxId: string | number | undefined = undefined;
 
-        // Get max ID for watermark (supports both numeric and string IDs)
-        const primaryKeyColumn = await this.detectPrimaryKeyColumn(tableName, schema);
-        let maxId: string | number | undefined = undefined;
-
-        if (primaryKeyColumn && recordsProcessed > 0) {
-          try {
-            const maxResult = await this.duckdb.execute(`SELECT MAX(${this.q(primaryKeyColumn)}) as max_id FROM ${this.q(tableName)}`);
-            // execute() returns objects with column names
-            if (maxResult.length > 0 && maxResult[0]?.max_id !== null && maxResult[0]?.max_id !== undefined) {
-              // Convert BigInt to number for numeric IDs, keep strings as-is
-              const value = maxResult[0].max_id;
-              if (typeof value === 'bigint') {
-                maxId = Number(value);
-              } else if (typeof value === 'string' || typeof value === 'number') {
-                maxId = value;
-              } else {
-                maxId = String(value);
-              }
+      if (primaryKeyColumn && recordsProcessed > 0) {
+        try {
+          const maxResult = await this.duckdb.execute(`SELECT MAX(${this.q(primaryKeyColumn)}) as max_id FROM ${this.q(tableName)}`);
+          // execute() returns objects with column names
+          if (maxResult.length > 0 && maxResult[0]?.max_id !== null && maxResult[0]?.max_id !== undefined) {
+            // Convert BigInt to number for numeric IDs, keep strings as-is
+            const value = maxResult[0].max_id;
+            if (typeof value === 'bigint') {
+              maxId = Number(value);
+            } else if (typeof value === 'string' || typeof value === 'number') {
+              maxId = value;
+            } else {
+              maxId = String(value);
             }
-          } catch (error) {
-            logger.warn(`Failed to get max ID for ${tableName}:`, error);
           }
+        } catch (error) {
+          logger.warn(`Failed to get max ID for ${tableName}:`, error);
         }
-
-        // Update watermark
-        await this.updateWatermark(tableName, {
-          lastProcessedId: maxId,
-          lastProcessedTimestamp: new Date(),
-          primaryKeyColumn: primaryKeyColumn,
-          timestampColumn: await this.detectTimestampColumn(tableName, schema)
-        });
-
-        logger.info(`Sequential sync completed for ${tableName}: ${recordsProcessed} records`);
-
-      } catch (error) {
-        if (transactionStarted) {
-          try {
-            await this.duckdb.run('ROLLBACK');
-          } catch (rollbackError) {
-            logger.error(`Failed to rollback transaction for ${tableName}:`, rollbackError);
-          }
-        }
-        throw error;
       }
+
+      // Update watermark
+      await this.updateWatermark(tableName, {
+        lastProcessedId: maxId,
+        lastProcessedTimestamp: new Date(),
+        primaryKeyColumn: primaryKeyColumn,
+        timestampColumn: await this.detectTimestampColumn(tableName, schema)
+      });
+
+      logger.info(`Sequential sync completed for ${tableName}: ${recordsProcessed} records`);
 
       const duration = Date.now() - startTime;
 
@@ -1567,17 +1550,14 @@ class SequentialAppenderService extends EventEmitter {
         }
 
         const alignedFullSyncInsertSql = await this.buildAlignedInsertSql(tableName, stagingTable, columns);
-        await this.duckdb.run('BEGIN TRANSACTION');
+        // Run the staging swap on a dedicated connection so BEGIN/DELETE/INSERT/COMMIT
+        // cannot be interleaved with other queries by the governor.
         try {
-          await this.duckdb.run(`DELETE FROM ${this.q(tableName)}`);
-          await this.duckdb.run(alignedFullSyncInsertSql);
-          await this.duckdb.run('COMMIT');
+          await this.duckdb.runTransaction(async (run) => {
+            await run(`DELETE FROM ${this.q(tableName)}`);
+            await run(alignedFullSyncInsertSql);
+          });
         } catch (swapError) {
-          try {
-            await this.duckdb.run('ROLLBACK');
-          } catch (rollbackError) {
-            logger.error(`Failed to rollback staging swap for ${tableName}:`, rollbackError);
-          }
           if (fullSyncSession) {
             fullSyncSession = await this.updateFullSyncSessionStatus(
               fullSyncSession,
@@ -1913,18 +1893,13 @@ class SequentialAppenderService extends EventEmitter {
           const joinPredicate = this.buildPrimaryKeyJoinPredicate('target', 'staging', primaryKeyColumns);
           const alignedIncrementalInsertSql = await this.buildAlignedInsertSql(tableName, activeStagingTable, columns);
 
-          await this.duckdb.run('BEGIN TRANSACTION');
+          // Run the merge on a dedicated connection so BEGIN/DELETE/INSERT/COMMIT
+          // cannot be interleaved with other queries by the governor.
           try {
-            await this.duckdb.run(`DELETE FROM ${this.q(tableName)} AS target USING ${this.q(activeStagingTable)} AS staging WHERE ${joinPredicate}`);
-            await this.duckdb.run(alignedIncrementalInsertSql);
-            await this.duckdb.run('COMMIT');
-          } catch (mergeError) {
-            try {
-              await this.duckdb.run('ROLLBACK');
-            } catch (rollbackError) {
-              logger.error(`Failed to rollback incremental staging merge for ${tableName}:`, rollbackError);
-            }
-            throw mergeError;
+            await this.duckdb.runTransaction(async (run) => {
+              await run(`DELETE FROM ${this.q(tableName)} AS target USING ${this.q(activeStagingTable)} AS staging WHERE ${joinPredicate}`);
+              await run(alignedIncrementalInsertSql);
+            });
           } finally {
             await this.dropTableIfExists(activeStagingTable, `incremental staging cleanup for ${tableName}`);
           }
