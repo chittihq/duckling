@@ -2023,15 +2023,7 @@ class DuckDBServer {
         try {
           console.log(`Initializing database: ${dbConfig.name} (${dbConfig.id})`);
 
-          // Resolve duckdbPath
-          let resolvedDuckdbPath = dbConfig.duckdbPath;
-          if (resolvedDuckdbPath.startsWith('data/')) {
-            resolvedDuckdbPath = `/app/${resolvedDuckdbPath}`;
-          }
-
           const mysql = MySQLConnection.getInstance(dbConfig.id, dbConfig.mysqlConnectionString);
-          const duckdb = DuckDBConnection.getInstance(dbConfig.id, resolvedDuckdbPath);
-          await duckdb.initializeDatabase();
           const clickhouse = ClickHouseConnection.getInstance(dbConfig.id, dbConfig.clickhouseDatabase || dbConfig.id);
           await clickhouse.initializeDatabase();
 
