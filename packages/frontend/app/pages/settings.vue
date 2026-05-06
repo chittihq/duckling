@@ -1028,7 +1028,7 @@ async function triggerLocalBackup() {
 
 async function executeRestore(backup: Backup) {
   if (!selectedBackupDb.value) return;
-  if (!confirm(`This will replace the current DuckDB database for "${selectedBackupDb.value.name}" with:\n\n${backup.name}\n\nThis cannot be undone. Continue?`)) return;
+  if (!confirm(`This will replace the current ClickHouse database state for "${selectedBackupDb.value.name}" with:\n\n${backup.name}\n\nThis cannot be undone. Continue?`)) return;
   try {
     restoring.value = true;
     const data = await post<{ success: boolean; error?: string }>(

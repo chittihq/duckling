@@ -110,7 +110,7 @@ export function validateDatabaseUpdatePayload(body: unknown): { updates?: Databa
   return { updates };
 }
 
-class DuckDBServer {
+class ClickHouseServer {
   private app: express.Application;
   private server: http.Server;
   private websocketService: WebSocketService;
@@ -339,7 +339,7 @@ class DuckDBServer {
     // Validation endpoints
     this.app.get('/api/validation/mysql-tables', attachDatabaseContext, this.getMySQLTables.bind(this));
     this.app.post('/api/validation/table-details', attachDatabaseContext, this.getTableValidationDetails.bind(this));
-    this.app.delete('/api/validation/table/:tableName', attachDatabaseContext, this.deleteTableFromDuckDB.bind(this));
+    this.app.delete('/api/validation/table/:tableName', attachDatabaseContext, this.deleteTableFromClickHouse.bind(this));
 
     // SPA catch-all route - serve index.html for all non-API routes (production)
     // This enables client-side routing for Nuxt (/login, /tables, etc.)
@@ -959,7 +959,7 @@ class DuckDBServer {
     try {
       res.status(501).json({
         success: false,
-        error: 'DuckDB read-replica mode is not available in the ClickHouse migration yet'
+        error: 'Read-replica mode is not available in the ClickHouse migration yet'
       });
     } catch (error) {
       logger.error('Get replica status failed:', error);
@@ -1800,7 +1800,7 @@ class DuckDBServer {
         logger.warn(`Failed to get MySQL details for ${tableName}:`, error);
       }
 
-      // Check if columns match (allow DuckDB to have exactly 1 extra column for ingest_date)
+      // Check if column sets match exactly between ClickHouse and MySQL
       const columnsMatch =
         clickhouseColumnCount === mysqlColumnCount;
 
@@ -1879,16 +1879,16 @@ class DuckDBServer {
           errorMessage = `Record count mismatch: ClickHouse (${clickhouseRecordCount}) vs MySQL (${mysqlRecordCount})`;
         }
       } else if (!clickhouseExists && mysqlExists) {
-        errorType = 'missing_in_duckdb';
+        errorType = 'missing_in_clickhouse';
         errorMessage = 'Table exists in MySQL but not in ClickHouse';
       } else if (clickhouseExists && !mysqlExists) {
-        errorType = 'orphaned_in_duckdb';
+        errorType = 'orphaned_in_clickhouse';
         errorMessage = 'Table exists in ClickHouse but not in MySQL';
       }
 
       res.json({
         primaryKey,
-        duckdb: {
+        clickhouse: {
           exists: clickhouseExists,
           columnCount: clickhouseColumnCount,
           recordCount: clickhouseRecordCount,
@@ -1918,10 +1918,10 @@ class DuckDBServer {
   }
 
   /**
-   * Delete a table from DuckDB
+   * Delete a table from ClickHouse
    * Useful for handling schema changes - delete the table and let sync recreate it
    */
-  private async deleteTableFromDuckDB(req: express.Request, res: express.Response): Promise<void> {
+  private async deleteTableFromClickHouse(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { clickhouse } = req as RequestWithDatabase;
       const { tableName } = req.params;
@@ -1983,13 +1983,13 @@ class DuckDBServer {
     res.status(500).json({
       error: 'Internal server error',
       message: err.message,
-      architecture: 'sequential-appender'
-    });
+        architecture: 'clickhouse'
+      });
   }
 
   async start(): Promise<void> {
     try {
-      console.log('Starting DuckDB Server...');
+      console.log('Starting ClickHouse Server...');
 
       const authSecurityIssues = getAuthSecurityIssues();
       if (authSecurityIssues.length > 0) {
@@ -2047,7 +2047,7 @@ class DuckDBServer {
       this.server = http.createServer(this.app);
 
       this.server.listen(config.port, () => {
-        console.log(`DuckDB Server running on port ${config.port}`);
+        console.log(`ClickHouse Server running on port ${config.port}`);
         console.log(`WebSocket available at ws://localhost:${config.port}/ws`);
         console.log('Architecture: Sequential Appender with ACID transactions');
         console.log('Features: Atomic sync, watermark-based incremental, streaming batches, WebSocket, multi-database');
@@ -2239,4 +2239,4 @@ class DuckDBServer {
 
 }
 
-export default DuckDBServer;
+export default ClickHouseServer;

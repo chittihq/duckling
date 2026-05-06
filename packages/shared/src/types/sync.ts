@@ -46,5 +46,5 @@ export interface SyncStatusResponse {
   errorCount?: number;
   watermarks?: Watermark[];
   recentLogs?: SyncLog[];
-  architecture: 'sequential-appender';
+  architecture: 'clickhouse';
 }

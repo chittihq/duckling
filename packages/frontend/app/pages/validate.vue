@@ -17,7 +17,7 @@ interface TableValidation {
   deleting: boolean
   countingMySQL: boolean // Loading state for MySQL count
   primaryKey: string | null
-  duckdb: { exists: boolean; columnCount: number; recordCount: number; maxId: string | null; checksum: string | null }
+  clickhouse: { exists: boolean; columnCount: number; recordCount: number; maxId: string | null; checksum: string | null }
   mysql: { exists: boolean; columnCount: number; recordCount: number | null; maxId: string | null; checksum: string | null } // null = not counted yet
   status: 'pending' | 'loading' | 'match' | 'mismatch' | 'missing' | 'error' | 'uncounted'
   columnsMatch?: boolean
@@ -41,15 +41,15 @@ const loadTables = async () => {
   initialLoading.value = true
 
   try {
-    const [duckdbTablesRes, mysqlTablesRes] = await Promise.all([
+    const [clickhouseTablesRes, mysqlTablesRes] = await Promise.all([
       get<any[]>(getApiUrlWithDatabase('/api/tables')),
       get<string[]>(getApiUrlWithDatabase('/api/validation/mysql-tables'))
     ])
 
-    const duckdbTables = duckdbTablesRes.map(t => t.name || t).filter((name: string) => !name.startsWith('temp_'))
+    const clickhouseTables = clickhouseTablesRes.map(t => t.name || t).filter((name: string) => !name.startsWith('temp_'))
     const mysqlTables = mysqlTablesRes.filter(name => !name.startsWith('temp_'))
 
-    const allTableNames = new Set([...duckdbTables, ...mysqlTables])
+    const allTableNames = new Set([...clickhouseTables, ...mysqlTables])
 
     tables.value = Array.from(allTableNames)
       .map(name => ({
@@ -59,7 +59,7 @@ const loadTables = async () => {
         deleting: false,
         countingMySQL: false,
         primaryKey: null,
-        duckdb: { exists: false, columnCount: 0, recordCount: 0, maxId: null, checksum: null },
+        clickhouse: { exists: false, columnCount: 0, recordCount: 0, maxId: null, checksum: null },
         mysql: { exists: false, columnCount: 0, recordCount: null, maxId: null, checksum: null }, // null = not counted
         status: 'pending' as const
       }))
@@ -114,7 +114,7 @@ const loadTableDetails = async (table: TableValidation, skipMySQLCount: boolean 
     )
 
     table.primaryKey = response.primaryKey || null
-    table.duckdb = response.duckdb
+    table.clickhouse = response.clickhouse
     table.mysql = response.mysql
     table.columnsMatch = response.columnsMatch
     table.errorType = response.errorType
@@ -124,7 +124,7 @@ const loadTableDetails = async (table: TableValidation, skipMySQLCount: boolean 
     table.mysqlCountSkipped = response.mysqlCountSkipped
     table.loading = false
 
-    if (!response.duckdb.exists || !response.mysql.exists) {
+    if (!response.clickhouse.exists || !response.mysql.exists) {
       table.status = 'missing'
     } else if (response.errorType === 'schema_mismatch' || response.errorType === 'max_id_mismatch' || response.errorType === 'checksum_mismatch') {
       table.status = 'mismatch'
@@ -132,7 +132,7 @@ const loadTableDetails = async (table: TableValidation, skipMySQLCount: boolean 
       // MySQL count was skipped - can't determine match status yet
       table.status = response.columnsMatch ? 'uncounted' : 'mismatch'
     } else if (
-      response.duckdb.recordCount === response.mysql.recordCount &&
+      response.clickhouse.recordCount === response.mysql.recordCount &&
       response.columnsMatch
     ) {
       table.status = 'match'
@@ -229,19 +229,19 @@ const countMySQLRecordsForTable = async (table: TableValidation) => {
     table.countingMySQL = false
 
     // Update status now that we have MySQL count
-    if (!response.duckdb.exists || !response.mysql.exists) {
+    if (!response.clickhouse.exists || !response.mysql.exists) {
       table.status = 'missing'
     } else if (
-      table.duckdb.recordCount === response.mysql.recordCount &&
+      table.clickhouse.recordCount === response.mysql.recordCount &&
       table.columnsMatch
     ) {
       table.status = 'match'
       table.errorType = undefined
       table.errorMessage = undefined
-    } else if (table.duckdb.recordCount !== response.mysql.recordCount) {
+    } else if (table.clickhouse.recordCount !== response.mysql.recordCount) {
       table.status = 'mismatch'
       table.errorType = 'record_count_mismatch'
-      table.errorMessage = `Record count mismatch: ClickHouse (${table.duckdb.recordCount}) vs MySQL (${response.mysql.recordCount})`
+      table.errorMessage = `Record count mismatch: ClickHouse (${table.clickhouse.recordCount}) vs MySQL (${response.mysql.recordCount})`
     }
   } catch (error: any) {
     console.error(`Failed to count MySQL records for ${table.name}:`, error)
@@ -265,7 +265,7 @@ const deleteTable = async (table: TableValidation) => {
 
     if (response.success) {
       table.deleting = false
-      table.duckdb = { exists: false, columnCount: 0, recordCount: 0, maxId: null, checksum: null }
+      table.clickhouse = { exists: false, columnCount: 0, recordCount: 0, maxId: null, checksum: null }
       table.status = 'missing'
       toast({
         title: 'Success',
@@ -290,7 +290,7 @@ const resetValidation = () => {
 }
 
 const bulkDeleteFiltered = async () => {
-  const tablesToDelete = filteredTables.value.filter(t => t.duckdb.exists)
+  const tablesToDelete = filteredTables.value.filter(t => t.clickhouse.exists)
 
   if (tablesToDelete.length === 0) {
     toast({
@@ -327,9 +327,9 @@ const bulkDeleteFiltered = async () => {
       if (promiseResult.status === 'fulfilled') {
         const { table, response } = promiseResult.value
         if (response.success) {
-          table.duckdb = { exists: false, columnCount: 0, recordCount: 0, maxId: null, checksum: null }
+          table.clickhouse = { exists: false, columnCount: 0, recordCount: 0, maxId: null, checksum: null }
           table.status = 'missing'
-          table.errorType = 'missing_in_duckdb'
+          table.errorType = 'missing_in_clickhouse'
           table.errorMessage = 'Table exists in MySQL but not in ClickHouse'
           deleted++
         } else {
@@ -359,8 +359,8 @@ const formatErrorType = (errorType: string) => {
     max_id_mismatch: 'Max ID Mismatch',
     checksum_mismatch: 'Checksum Mismatch',
     record_count_mismatch: 'Record Count Mismatch',
-    missing_in_duckdb: 'Missing in ClickHouse',
-    orphaned_in_duckdb: 'Orphaned in ClickHouse'
+    missing_in_clickhouse: 'Missing in ClickHouse',
+    orphaned_in_clickhouse: 'Orphaned in ClickHouse'
   }
   return errorTypes[errorType] || errorType
 }
@@ -489,11 +489,11 @@ watch(selectedDatabaseId, () => {
             </Button>
             <Button
               @click="bulkDeleteFiltered()"
-              :disabled="validating || bulkDeleting || countingAllMySQL || filteredTables.filter(t => t.duckdb.exists).length === 0"
+              :disabled="validating || bulkDeleting || countingAllMySQL || filteredTables.filter(t => t.clickhouse.exists).length === 0"
               variant="destructive"
               size="sm"
             >
-              {{ bulkDeleting ? 'Deleting...' : `Delete Filtered (${filteredTables.filter(t => t.duckdb.exists).length})` }}
+              {{ bulkDeleting ? 'Deleting...' : `Delete Filtered (${filteredTables.filter(t => t.clickhouse.exists).length})` }}
             </Button>
             <input
               v-model="searchQuery"
@@ -511,8 +511,8 @@ watch(selectedDatabaseId, () => {
                 <SelectItem value="max_id_mismatch">Max ID Mismatch</SelectItem>
                 <SelectItem value="checksum_mismatch">Checksum Mismatch</SelectItem>
                 <SelectItem value="record_count_mismatch">Record Count Mismatch</SelectItem>
-                <SelectItem value="missing_in_duckdb">Missing in ClickHouse</SelectItem>
-                <SelectItem value="orphaned_in_duckdb">Orphaned in ClickHouse</SelectItem>
+                <SelectItem value="missing_in_clickhouse">Missing in ClickHouse</SelectItem>
+                <SelectItem value="orphaned_in_clickhouse">Orphaned in ClickHouse</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -554,7 +554,7 @@ watch(selectedDatabaseId, () => {
               </td>
               <td class="px-4 py-3 text-center">
                 <span v-if="table.loading" class="text-muted-foreground">...</span>
-                <span v-else-if="table.duckdb.exists" class="text-green-600 text-lg">✓</span>
+                <span v-else-if="table.clickhouse.exists" class="text-green-600 text-lg">✓</span>
                 <span v-else class="text-red-600 text-lg">✗</span>
               </td>
               <td class="px-4 py-3 text-center">
@@ -567,7 +567,7 @@ watch(selectedDatabaseId, () => {
                   v-if="!table.loading"
                   :class="!table.columnsMatch && !table.loading ? 'text-red-600 font-semibold' : ''"
                 >
-                  {{ table.duckdb.columnCount || 0 }}
+                  {{ table.clickhouse.columnCount || 0 }}
                 </span>
                 <span v-else class="text-muted-foreground">-</span>
               </td>
@@ -583,9 +583,9 @@ watch(selectedDatabaseId, () => {
               <td class="px-4 py-3 text-right">
                 <span
                   v-if="!table.loading"
-                  :class="table.duckdb.recordCount !== table.mysql.recordCount && !table.loading ? 'text-red-600 font-semibold' : ''"
+                  :class="table.clickhouse.recordCount !== table.mysql.recordCount && !table.loading ? 'text-red-600 font-semibold' : ''"
                 >
-                  {{ formatNumber(table.duckdb.recordCount) }}
+                  {{ formatNumber(table.clickhouse.recordCount) }}
                 </span>
                 <span v-else class="text-muted-foreground">-</span>
               </td>
@@ -597,7 +597,7 @@ watch(selectedDatabaseId, () => {
                 </span>
                 <span
                   v-else
-                  :class="table.duckdb.recordCount !== table.mysql.recordCount ? 'text-red-600 font-semibold' : ''"
+                  :class="table.clickhouse.recordCount !== table.mysql.recordCount ? 'text-red-600 font-semibold' : ''"
                 >
                   {{ formatNumber(table.mysql.recordCount) }}
                 </span>
@@ -605,12 +605,12 @@ watch(selectedDatabaseId, () => {
               <td class="px-4 py-3 text-center">
                 <span v-if="table.loading" class="text-muted-foreground">-</span>
                 <span v-else-if="!table.primaryKey" class="text-muted-foreground text-xs">No PK</span>
-                <span v-else-if="table.duckdb.maxId != null || table.mysql.maxId != null">
+                <span v-else-if="table.clickhouse.maxId != null || table.mysql.maxId != null">
                   <span
                     :class="table.errorType === 'max_id_mismatch' ? 'text-red-600 font-semibold' : ''"
                     class="text-xs"
                   >
-                    {{ table.duckdb.maxId ?? '-' }} / {{ table.mysql.maxId ?? '-' }}
+                    {{ table.clickhouse.maxId ?? '-' }} / {{ table.mysql.maxId ?? '-' }}
                   </span>
                 </span>
                 <span v-else class="text-muted-foreground">-</span>
@@ -618,8 +618,8 @@ watch(selectedDatabaseId, () => {
               <td class="px-4 py-3 text-center">
                 <span v-if="table.loading" class="text-muted-foreground">-</span>
                 <span v-else-if="!table.primaryKey" class="text-muted-foreground text-xs">-</span>
-                <span v-else-if="table.duckdb.checksum == null && table.mysql.checksum == null" class="text-muted-foreground text-xs">N/A</span>
-                <span v-else-if="table.duckdb.checksum === table.mysql.checksum" class="text-green-600 text-lg">✓</span>
+                <span v-else-if="table.clickhouse.checksum == null && table.mysql.checksum == null" class="text-muted-foreground text-xs">N/A</span>
+                <span v-else-if="table.clickhouse.checksum === table.mysql.checksum" class="text-green-600 text-lg">✓</span>
                 <span v-else class="text-red-600 text-lg font-semibold">✗</span>
               </td>
               <td class="px-4 py-3 text-center">
@@ -628,8 +628,8 @@ watch(selectedDatabaseId, () => {
                     :class="{
                       'text-red-600 font-semibold': table.errorType === 'schema_mismatch' || table.errorType === 'max_id_mismatch' || table.errorType === 'checksum_mismatch',
                       'text-orange-600 font-semibold': table.errorType === 'record_count_mismatch',
-                      'text-blue-600': table.errorType === 'missing_in_duckdb',
-                      'text-muted-foreground': table.errorType === 'orphaned_in_duckdb'
+                      'text-blue-600': table.errorType === 'missing_in_clickhouse',
+                      'text-muted-foreground': table.errorType === 'orphaned_in_clickhouse'
                     }"
                   >
                     {{ formatErrorType(table.errorType) }}
@@ -683,7 +683,7 @@ watch(selectedDatabaseId, () => {
                   </Button>
                   <Button
                     @click="deleteTable(table)"
-                    :disabled="table.deleting || table.loading || table.syncing || validating || !table.duckdb.exists"
+                    :disabled="table.deleting || table.loading || table.syncing || validating || !table.clickhouse.exists"
                     size="sm"
                     variant="destructive"
                     title="Delete table from ClickHouse (useful for schema changes)"

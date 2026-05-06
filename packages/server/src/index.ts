@@ -1,6 +1,6 @@
 import './instrument';
 import * as Sentry from '@sentry/node';
-import DuckDBServer from './server';
+import ClickHouseServer from './server';
 import logger from './logger';
 import config from './config';
 import * as fs from 'fs';
@@ -122,7 +122,7 @@ let isShuttingDown = false;
 /**
  * Graceful shutdown handler - stops CDC pipeline, closes HTTP server
  */
-async function gracefulShutdown(signal: string, server: DuckDBServer): Promise<void> {
+async function gracefulShutdown(signal: string, server: ClickHouseServer): Promise<void> {
   if (isShuttingDown) {
     console.log('Shutdown already in progress...');
     return;
@@ -189,7 +189,7 @@ async function main() {
     console.log('Logs directory created');
     installRuntimeDiagnostics(logsDir);
 
-    const server = new DuckDBServer();
+    const server = new ClickHouseServer();
     console.log('ClickHouse Server instance created');
 
     await server.start();

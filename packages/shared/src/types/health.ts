@@ -16,7 +16,7 @@ export interface HealthResponse {
   uptime: number;
   clickhouse?: DatabaseHealth;
   mysql: DatabaseHealth;
-  architecture: 'sequential-appender' | 'clickhouse';
+  architecture: 'clickhouse';
   version?: string;
 }
 
@@ -31,6 +31,6 @@ export interface StatusResponse {
   clickhouseConnected?: boolean;
   mysqlConnected: boolean;
   lastSync?: Date;
-  architecture: 'sequential-appender' | 'clickhouse';
+  architecture: 'clickhouse';
   version?: string;
 }

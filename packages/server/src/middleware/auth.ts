@@ -28,7 +28,7 @@ export const verifyJWT = (req: Request, res: Response, next: NextFunction): void
     res.status(401).json({
       error: 'Unauthorized',
       message: 'Authentication token required',
-      architecture: 'sequential-appender'
+      architecture: 'clickhouse'
     });
     return;
   }
@@ -38,7 +38,7 @@ export const verifyJWT = (req: Request, res: Response, next: NextFunction): void
     res.status(401).json({
       error: 'Unauthorized',
       message: 'Invalid or expired token',
-      architecture: 'sequential-appender'
+      architecture: 'clickhouse'
     });
     return;
   }
@@ -59,7 +59,7 @@ export const requireAuth = (req: Request, res: Response, next: NextFunction): vo
     res.status(401).json({
       error: 'Unauthorized',
       message: 'Authentication required. Provide JWT token or API key.',
-      architecture: 'sequential-appender'
+      architecture: 'clickhouse'
     });
     return;
   }
@@ -85,7 +85,7 @@ export const requireAuth = (req: Request, res: Response, next: NextFunction): vo
   res.status(401).json({
     error: 'Unauthorized',
     message: 'Invalid or expired token',
-    architecture: 'sequential-appender'
+    architecture: 'clickhouse'
   });
 };
 
