@@ -14,7 +14,6 @@ export interface HealthResponse {
   status: 'healthy' | 'degraded' | 'unhealthy';
   timestamp: string;
   uptime: number;
-  duckdb: DatabaseHealth;
   clickhouse?: DatabaseHealth;
   mysql: DatabaseHealth;
   architecture: 'sequential-appender' | 'clickhouse';
@@ -29,7 +28,6 @@ export interface StatusResponse {
   uptime: number;
   tableCount: number;
   totalRecords: number;
-  duckdbConnected: boolean;
   clickhouseConnected?: boolean;
   mysqlConnected: boolean;
   lastSync?: Date;

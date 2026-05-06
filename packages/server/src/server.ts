@@ -374,18 +374,10 @@ class DuckDBServer {
       const databaseHealthChecks = await Promise.all(
         allDatabases.map(async (dbConfig) => {
           try {
-            // Resolve duckdbPath
-            let resolvedDuckdbPath = dbConfig.duckdbPath;
-            if (resolvedDuckdbPath.startsWith('data/')) {
-              resolvedDuckdbPath = `/app/${resolvedDuckdbPath}`;
-            }
-
             const mysql = MySQLConnection.getInstance(dbConfig.id, dbConfig.mysqlConnectionString);
-            const duckdb = DuckDBConnection.getInstance(dbConfig.id, resolvedDuckdbPath);
             const clickhouse = ClickHouseConnection.getInstance(dbConfig.id, dbConfig.clickhouseDatabase || dbConfig.id);
 
             const mysqlHealthy = await mysql.testConnection();
-            const duckdbHealthy = await duckdb.testConnection();
             await clickhouse.initializeDatabase();
             const clickhouseHealthy = await clickhouse.testConnection();
 
@@ -396,7 +388,6 @@ class DuckDBServer {
               services: {
                 mysql: mysqlHealthy ? 'healthy' : 'unhealthy',
                 clickhouse: clickhouseHealthy ? 'healthy' : 'unhealthy',
-                duckdb: duckdbHealthy ? 'healthy' : 'unhealthy',
               }
             };
           } catch (error) {
@@ -417,8 +408,8 @@ class DuckDBServer {
         status: overallStatus,
         timestamp: new Date().toISOString(),
         databases: databaseHealthChecks,
-        architecture: 'sequential-appender',
-        features: ['atomic-transactions', 'watermark-sync', 'streaming-batches', 'acid-compliance', 'multi-database']
+        architecture: 'clickhouse',
+        features: ['clickhouse-storage', 'watermark-sync', 'streaming-batches', 'schema-evolution', 'multi-database']
       };
 
       res.status(health.status === 'healthy' ? 200 : 503).json(health);
@@ -427,7 +418,7 @@ class DuckDBServer {
       res.status(503).json({
         status: 'unhealthy',
         error: error instanceof Error ? error.message : 'Unknown error',
-        architecture: 'sequential-appender'
+        architecture: 'clickhouse'
       });
     }
   }
@@ -441,18 +432,10 @@ class DuckDBServer {
       const databaseStatuses = await Promise.all(
         allDatabases.map(async (dbConfig) => {
           try {
-            // Resolve duckdbPath
-            let resolvedDuckdbPath = dbConfig.duckdbPath;
-            if (resolvedDuckdbPath.startsWith('data/')) {
-              resolvedDuckdbPath = `/app/${resolvedDuckdbPath}`;
-            }
-
             const mysql = MySQLConnection.getInstance(dbConfig.id, dbConfig.mysqlConnectionString);
-            const duckdb = DuckDBConnection.getInstance(dbConfig.id, resolvedDuckdbPath);
             const clickhouse = ClickHouseConnection.getInstance(dbConfig.id, dbConfig.clickhouseDatabase || dbConfig.id);
 
             const mysqlTables = await mysql.getTables();
-            const duckdbTables = await duckdb.getTables();
             await clickhouse.initializeDatabase();
             const clickhouseTables = await clickhouse.getTables();
 
@@ -462,7 +445,6 @@ class DuckDBServer {
               tables: {
                 mysql: mysqlTables.length,
                 clickhouse: clickhouseTables.length,
-                duckdb: duckdbTables.length
               }
             };
           } catch (error) {
@@ -478,7 +460,7 @@ class DuckDBServer {
       const status = {
         uptime: process.uptime(),
         memory: process.memoryUsage(),
-        architecture: 'sequential-appender',
+        architecture: 'clickhouse',
         config: {
           syncInterval: config.sync.intervalMinutes,
           batchSize: config.sync.batchSize,
@@ -709,7 +691,7 @@ class DuckDBServer {
   // Data access endpoints
   private async executeQuery(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { mysql, duckdb, clickhouse, databaseId } = req as RequestWithDatabase;
+      const { mysql, clickhouse, databaseId } = req as RequestWithDatabase;
       const { sql, params, database = 'clickhouse' } = req.body;
 
       if (!sql) {
@@ -718,8 +700,8 @@ class DuckDBServer {
       }
 
       // Validate database parameter
-      if (!['clickhouse', 'duckdb', 'mysql'].includes(database)) {
-        res.status(400).json({ error: 'Invalid database. Must be "clickhouse", "duckdb", or "mysql"' });
+      if (!['clickhouse', 'mysql'].includes(database)) {
+        res.status(400).json({ error: 'Invalid database. Must be "clickhouse" or "mysql"' });
         return;
       }
 
@@ -733,8 +715,6 @@ class DuckDBServer {
           return;
         }
         result = await mysql.execute(sql, params);
-      } else if (database === 'duckdb') {
-        result = await duckdb.query(sql, params);
       } else {
         result = await clickhouse.query(sql, params);
       }
@@ -756,11 +736,7 @@ class DuckDBServer {
       res.json({
         result: serializedResult,
         database,
-        architecture: database === 'mysql'
-          ? 'mysql'
-          : database === 'duckdb'
-            ? 'duckdb-sequential-appender'
-            : 'clickhouse'
+        architecture: database === 'mysql' ? 'mysql' : 'clickhouse'
       });
     } catch (error) {
       logger.error('Query execution failed:', error);
@@ -892,14 +868,7 @@ class DuckDBServer {
       const databaseMetrics = await Promise.all(
         allDatabases.map(async (dbConfig) => {
           try {
-            // Resolve duckdbPath
-            let resolvedDuckdbPath = dbConfig.duckdbPath;
-            if (resolvedDuckdbPath.startsWith('data/')) {
-              resolvedDuckdbPath = `/app/${resolvedDuckdbPath}`;
-            }
-
             const mysql = MySQLConnection.getInstance(dbConfig.id, dbConfig.mysqlConnectionString);
-            const duckdb = DuckDBConnection.getInstance(dbConfig.id, resolvedDuckdbPath);
             const clickhouse = ClickHouseConnection.getInstance(dbConfig.id, dbConfig.clickhouseDatabase || dbConfig.id);
             const syncService = ClickHouseSyncService.getInstance(dbConfig.id, mysql, clickhouse);
 
@@ -922,7 +891,7 @@ class DuckDBServer {
 
       res.json(this.serializeBigInt({
         databases: databaseMetrics,
-        architecture: 'sequential-appender',
+        architecture: 'clickhouse',
         governor: getQueryGovernor().getStats(),
         workerPool: WorkerPool.getInstance().getStats(),
         timestamp: new Date().toISOString()
@@ -1458,9 +1427,6 @@ class DuckDBServer {
       const mysqlHealthy = await mysqlConn.testConnection();
       await mysqlConn.close();
 
-      const duckdbConn = DuckDBConnection.getInstance(id, dbConfig.duckdbPath);
-      const duckdbHealthy = await duckdbConn.testConnection();
-
       const clickhouseConn = ClickHouseConnection.getInstance(id, dbConfig.clickhouseDatabase || id);
       await clickhouseConn.initializeDatabase();
       const clickhouseHealthy = await clickhouseConn.testConnection();
@@ -1470,7 +1436,6 @@ class DuckDBServer {
         connections: {
           mysql: mysqlHealthy ? 'healthy' : 'unhealthy',
           clickhouse: clickhouseHealthy ? 'healthy' : 'unhealthy',
-          duckdb: duckdbHealthy ? 'healthy' : 'unhealthy'
         }
       });
     } catch (error) {

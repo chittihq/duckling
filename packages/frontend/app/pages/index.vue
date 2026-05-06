@@ -15,7 +15,6 @@ interface HealthData {
   services?: {
     mysql: string
     clickhouse?: string
-    duckdb: string
   }
 }
 
@@ -25,7 +24,6 @@ interface StatusData {
   tables?: {
     mysql: number
     clickhouse?: number
-    duckdb: number
     synced?: number
   }
 }
@@ -41,7 +39,7 @@ const queryResultColumns = ref<string[]>([])
 const queryError = ref('')
 const queryExecuting = ref(false)
 const queryExecutionTime = ref<number | null>(null)
-const selectedDatabase = ref<'clickhouse' | 'duckdb' | 'mysql'>('clickhouse')
+const selectedDatabase = ref<'clickhouse' | 'mysql'>('clickhouse')
 const selectedExample = ref('')
 const queryCurrentPage = ref(1)
 const queryItemsPerPage = ref(100)
@@ -198,7 +196,7 @@ const validateSync = async () => {
 }
 
 const clearAllData = async () => {
-  if (!confirm('WARNING: This will delete ALL DuckDB data and tables. This action cannot be undone. Continue?')) {
+  if (!confirm('WARNING: This will delete ALL ClickHouse data and tables. This action cannot be undone. Continue?')) {
     return
   }
 
@@ -318,7 +316,6 @@ watch(selectedDatabaseId, () => {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="clickhouse">ClickHouse (Target)</SelectItem>
-                  <SelectItem value="duckdb">DuckDB (Legacy)</SelectItem>
                   <SelectItem value="mysql">MySQL (Source)</SelectItem>
                 </SelectContent>
               </Select>
