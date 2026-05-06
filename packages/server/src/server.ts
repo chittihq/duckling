@@ -2236,7 +2236,7 @@ class DuckDBServer {
    */
   private async getSyncLogs(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { duckdb } = req as RequestWithDatabase;
+      const { clickhouse } = req as RequestWithDatabase;
       const limit = parseInt(req.query.limit as string) || 100;
       const offset = parseInt(req.query.offset as string) || 0;
       const status = req.query.status as string; // 'success', 'error', or undefined for all
@@ -2280,12 +2280,12 @@ class DuckDBServer {
         OFFSET ?
       `;
 
-      const logs = await duckdb.query(query, params);
+      const logs = await clickhouse.query(query, params);
 
       // Get total count
       const countQuery = `SELECT COUNT(*) as count FROM sync_log ${whereClause}`;
       const countParams = params.slice(0, conditions.length);
-      const countResult = await duckdb.query(countQuery, countParams);
+      const countResult = await clickhouse.query(countQuery, countParams);
       const total = countResult?.[0]?.count || 0;
 
       // Serialize BigInt values for JSON

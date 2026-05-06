@@ -51,7 +51,7 @@ const handleKeyPress = (event: KeyboardEvent) => {
       <Card class="shadow-lg">
         <CardHeader class="text-center">
           <CardTitle class="text-3xl">Duckling</CardTitle>
-          <CardDescription>DuckDB Server Dashboard</CardDescription>
+          <CardDescription>ClickHouse Server Dashboard</CardDescription>
         </CardHeader>
 
         <CardContent class="space-y-4">

@@ -1,7 +1,7 @@
 {
   "name": "duckling-monorepo",
   "version": "1.0.0",
-  "description": "Duckling - DuckDB server with MySQL replication (monorepo)",
+  "description": "Duckling - ClickHouse server with MySQL replication (monorepo)",
   "private": true,
   "scripts": {
     "build": "pnpm --filter \"./packages/**\" build",

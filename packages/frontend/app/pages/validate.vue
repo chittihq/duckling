@@ -241,7 +241,7 @@ const countMySQLRecordsForTable = async (table: TableValidation) => {
     } else if (table.duckdb.recordCount !== response.mysql.recordCount) {
       table.status = 'mismatch'
       table.errorType = 'record_count_mismatch'
-      table.errorMessage = `Record count mismatch: DuckDB (${table.duckdb.recordCount}) vs MySQL (${response.mysql.recordCount})`
+      table.errorMessage = `Record count mismatch: ClickHouse (${table.duckdb.recordCount}) vs MySQL (${response.mysql.recordCount})`
     }
   } catch (error: any) {
     console.error(`Failed to count MySQL records for ${table.name}:`, error)
@@ -250,7 +250,7 @@ const countMySQLRecordsForTable = async (table: TableValidation) => {
 }
 
 const deleteTable = async (table: TableValidation) => {
-  const confirmMessage = `Are you sure you want to delete table "${table.name}" from DuckDB?\n\nThis will:\n• Delete the table and all its data\n• Clear the watermark\n• Force a fresh sync on next sync operation\n\nThis is useful when MySQL schema has changed.`
+  const confirmMessage = `Are you sure you want to delete table "${table.name}" from ClickHouse?\n\nThis will:\n• Delete the table and all its data\n• Clear the watermark\n• Force a fresh sync on next sync operation\n\nThis is useful when MySQL schema has changed.`
 
   if (!confirm(confirmMessage)) {
     return
@@ -300,7 +300,7 @@ const bulkDeleteFiltered = async () => {
     return
   }
 
-  const confirmMessage = `Are you sure you want to delete ${tablesToDelete.length} tables from DuckDB?\n\nThis will:\n• Delete all selected tables and their data\n• Clear their watermarks\n• Force fresh sync on next sync operation\n\nTables to delete:\n${tablesToDelete.map(t => `  • ${t.name}`).slice(0, 10).join('\n')}${tablesToDelete.length > 10 ? `\n  ... and ${tablesToDelete.length - 10} more` : ''}`
+  const confirmMessage = `Are you sure you want to delete ${tablesToDelete.length} tables from ClickHouse?\n\nThis will:\n• Delete all selected tables and their data\n• Clear their watermarks\n• Force fresh sync on next sync operation\n\nTables to delete:\n${tablesToDelete.map(t => `  • ${t.name}`).slice(0, 10).join('\n')}${tablesToDelete.length > 10 ? `\n  ... and ${tablesToDelete.length - 10} more` : ''}`
 
   if (!confirm(confirmMessage)) {
     return
@@ -330,7 +330,7 @@ const bulkDeleteFiltered = async () => {
           table.duckdb = { exists: false, columnCount: 0, recordCount: 0, maxId: null, checksum: null }
           table.status = 'missing'
           table.errorType = 'missing_in_duckdb'
-          table.errorMessage = 'Table exists in MySQL but not in DuckDB'
+          table.errorMessage = 'Table exists in MySQL but not in ClickHouse'
           deleted++
         } else {
           failed++
@@ -359,8 +359,8 @@ const formatErrorType = (errorType: string) => {
     max_id_mismatch: 'Max ID Mismatch',
     checksum_mismatch: 'Checksum Mismatch',
     record_count_mismatch: 'Record Count Mismatch',
-    missing_in_duckdb: 'Missing in DuckDB',
-    orphaned_in_duckdb: 'Orphaned in DuckDB'
+    missing_in_duckdb: 'Missing in ClickHouse',
+    orphaned_in_duckdb: 'Orphaned in ClickHouse'
   }
   return errorTypes[errorType] || errorType
 }
@@ -425,7 +425,7 @@ watch(selectedDatabaseId, () => {
       <div class="flex justify-between items-center">
         <div>
           <h1 class="text-2xl font-bold">Database Validation</h1>
-          <p class="text-sm text-muted-foreground">Compare DuckDB and MySQL table consistency</p>
+          <p class="text-sm text-muted-foreground">Compare ClickHouse and MySQL table consistency</p>
         </div>
         <div class="text-sm text-muted-foreground">
           Progress: <strong>{{ validationProgress }}%</strong>
@@ -511,8 +511,8 @@ watch(selectedDatabaseId, () => {
                 <SelectItem value="max_id_mismatch">Max ID Mismatch</SelectItem>
                 <SelectItem value="checksum_mismatch">Checksum Mismatch</SelectItem>
                 <SelectItem value="record_count_mismatch">Record Count Mismatch</SelectItem>
-                <SelectItem value="missing_in_duckdb">Missing in DuckDB</SelectItem>
-                <SelectItem value="orphaned_in_duckdb">Orphaned in DuckDB</SelectItem>
+                <SelectItem value="missing_in_duckdb">Missing in ClickHouse</SelectItem>
+                <SelectItem value="orphaned_in_duckdb">Orphaned in ClickHouse</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -530,11 +530,11 @@ watch(selectedDatabaseId, () => {
           <thead class="border-b bg-muted/50">
             <tr>
               <th class="px-4 py-3 text-left font-medium">Table Name</th>
-              <th class="px-4 py-3 text-center font-medium w-24">DuckDB</th>
+              <th class="px-4 py-3 text-center font-medium w-24">ClickHouse</th>
               <th class="px-4 py-3 text-center font-medium w-24">MySQL</th>
-              <th class="px-4 py-3 text-right font-medium w-24">DuckDB Cols</th>
+              <th class="px-4 py-3 text-right font-medium w-24">CH Cols</th>
               <th class="px-4 py-3 text-right font-medium w-24">MySQL Cols</th>
-              <th class="px-4 py-3 text-right font-medium w-32">DuckDB Records</th>
+              <th class="px-4 py-3 text-right font-medium w-32">CH Records</th>
               <th class="px-4 py-3 text-right font-medium w-32">MySQL Records</th>
               <th class="px-4 py-3 text-center font-medium w-40">Max ID</th>
               <th class="px-4 py-3 text-center font-medium w-32">Checksum</th>
@@ -686,7 +686,7 @@ watch(selectedDatabaseId, () => {
                     :disabled="table.deleting || table.loading || table.syncing || validating || !table.duckdb.exists"
                     size="sm"
                     variant="destructive"
-                    title="Delete table from DuckDB (useful for schema changes)"
+                    title="Delete table from ClickHouse (useful for schema changes)"
                   >
                     {{ table.deleting ? 'Deleting...' : 'Delete' }}
                   </Button>

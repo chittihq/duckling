@@ -17,7 +17,7 @@ const logger = winston.createLogger({
     winston.format.errors({ stack: true }),
     winston.format.json()
   ),
-  defaultMeta: { service: 'duckdb-server' },
+  defaultMeta: { service: 'clickhouse-server' },
   transports: [
     // Error logs - separate file
     new winston.transports.File({

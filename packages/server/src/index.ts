@@ -190,7 +190,7 @@ async function main() {
     installRuntimeDiagnostics(logsDir);
 
     const server = new DuckDBServer();
-    console.log('DuckDB Server instance created');
+    console.log('ClickHouse Server instance created');
 
     await server.start();
     console.log('Server started successfully');
@@ -202,10 +202,10 @@ async function main() {
     process.on('SIGINT', () => gracefulShutdown('SIGINT', server));
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM', server));
 
-    console.log('DuckDB Server started successfully and is ready to accept connections');
+    console.log('ClickHouse Server started successfully and is ready to accept connections');
     console.log('🚀 New Features Available:');
-    console.log('  • Partitioned Parquet storage for better performance');
-    console.log('  • Micro-batch incremental sync');
+    console.log('  • ClickHouse-backed analytical queries');
+    console.log('  • MySQL-to-ClickHouse incremental sync');
     console.log('  • Automatic schema evolution handling');
     console.log('  • View management with health monitoring');
     console.log('  • Storage cleanup and optimization');

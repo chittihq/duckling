@@ -1,7 +1,7 @@
 {
   "name": "@chittihq/duckling-shared",
   "version": "0.1.0",
-  "description": "Shared types, constants, and utilities for Duckling DuckDB Server",
+  "description": "Shared types, constants, and utilities for Duckling ClickHouse Server",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",

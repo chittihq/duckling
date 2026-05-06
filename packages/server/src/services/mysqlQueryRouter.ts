@@ -3,8 +3,8 @@
  *
  * Routes incoming MySQL wire-protocol queries into three categories:
  *   A) Intercept — return a canned response (session vars, SET, SHOW GRANTS, …)
- *   B) Translate — rewrite MySQL-isms to DuckDB-compatible SQL
- *   C) Forward  — pass through to DuckDB as-is
+ *   B) Translate — rewrite MySQL-isms to ClickHouse-compatible SQL
+ *   C) Forward  — pass through to ClickHouse as-is
  *
  * Read-only: INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE are rejected.
  */
@@ -161,7 +161,7 @@ function buildEmptyProjectedResult(norm: string): InterceptedResult {
 function rewriteForDuckDB(norm: string, currentDatabase: string): string {
   let rewritten = norm;
 
-  // DuckDB uses double-quoted identifiers; MySQL clients send backticks.
+  // ClickHouse accepts double-quoted identifiers; MySQL clients send backticks.
   rewritten = rewritten.replace(/`([^`]+)`/g, '"$1"');
 
   // Drop MySQL db qualifier in table references, e.g. "lms"."Activity" -> "Activity".
@@ -175,7 +175,7 @@ function rewriteForDuckDB(norm: string, currentDatabase: string): string {
     '$1',
   );
 
-  // DuckDB information_schema schema name is "main".
+  // The compatibility layer uses ClickHouse's projected metadata tables.
   rewritten = rewritten.replace(/\bTABLE_SCHEMA\s*=\s*'[^']*'/ig, "TABLE_SCHEMA = 'main'");
   rewritten = rewritten.replace(/\bROUTINE_SCHEMA\s*=\s*'[^']*'/ig, "ROUTINE_SCHEMA = 'main'");
 
@@ -438,11 +438,11 @@ export function routeQuery(
     return {
       type: 'error',
       code: 1290, // ER_OPTION_PREVENTS_STATEMENT
-      message: 'This is a read-only DuckDB replica. Write operations must go through the source MySQL database.',
+      message: 'This is a read-only ClickHouse replica. Write operations must go through the source MySQL database.',
     };
   }
 
-  // -------- Category B: Translate to DuckDB --------
+  // -------- Category B: Translate to ClickHouse --------
 
   // SHOW DATABASES / SHOW SCHEMAS (+ LIKE filter)
   if (upper.startsWith('SHOW DATABASES') || upper.startsWith('SHOW SCHEMAS')) {
@@ -475,7 +475,7 @@ export function routeQuery(
   if (upper === 'SHOW TABLE STATUS' || upper.startsWith('SHOW TABLE STATUS FROM') || upper.startsWith('SHOW TABLE STATUS LIKE')) {
     return {
       type: 'forward',
-      sql: `SELECT table_name AS "Name", 'DuckDB' AS "Engine", '10' AS "Version", 'Dynamic' AS "Row_format", 0 AS "Rows", 0 AS "Avg_row_length", 0 AS "Data_length", 0 AS "Max_data_length", 0 AS "Index_length", 0 AS "Data_free", NULL AS "Auto_increment", NULL AS "Create_time", NULL AS "Update_time", NULL AS "Check_time", 'utf8mb4_general_ci' AS "Collation", NULL AS "Checksum", '' AS "Create_options", '' AS "Comment" FROM information_schema.tables WHERE table_schema = 'main' AND table_type = 'BASE TABLE'`,
+      sql: `SELECT table_name AS "Name", 'ClickHouse' AS "Engine", '10' AS "Version", 'Dynamic' AS "Row_format", 0 AS "Rows", 0 AS "Avg_row_length", 0 AS "Data_length", 0 AS "Max_data_length", 0 AS "Index_length", 0 AS "Data_free", NULL AS "Auto_increment", NULL AS "Create_time", NULL AS "Update_time", NULL AS "Check_time", 'utf8mb4_general_ci' AS "Collation", NULL AS "Checksum", '' AS "Create_options", '' AS "Comment" FROM information_schema.tables WHERE table_schema = 'main' AND table_type = 'BASE TABLE'`,
     };
   }
 
@@ -531,12 +531,12 @@ export function routeQuery(
     return { type: 'ok' };
   }
 
-  // EXPLAIN <query> — forward with DuckDB's EXPLAIN
+  // EXPLAIN <query> — forward with ClickHouse's EXPLAIN
   if (upper.startsWith('EXPLAIN ')) {
     return { type: 'forward', sql: rewriteForDuckDB(norm, currentDatabase) };
   }
 
-  // -------- Category C: Forward to DuckDB --------
+  // -------- Category C: Forward to ClickHouse --------
   return { type: 'forward', sql: rewriteForDuckDB(norm, currentDatabase) };
 }
 
@@ -611,9 +611,9 @@ function tryInterceptSelect(
 
 const SYSTEM_VARS: Record<string, string> = {
   '@@VERSION': '8.0.32-Duckling',
-  '@@VERSION_COMMENT': 'Duckling DuckDB Server',
+  '@@VERSION_COMMENT': 'Duckling ClickHouse Server',
   '@@GLOBAL.VERSION': '8.0.32-Duckling',
-  '@@GLOBAL.VERSION_COMMENT': 'Duckling DuckDB Server',
+  '@@GLOBAL.VERSION_COMMENT': 'Duckling ClickHouse Server',
   '@@MAX_ALLOWED_PACKET': '67108864',
   '@@GLOBAL.MAX_ALLOWED_PACKET': '67108864',
   '@@CHARACTER_SET_CLIENT': 'utf8mb4',
