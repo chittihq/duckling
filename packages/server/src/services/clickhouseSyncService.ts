@@ -427,6 +427,7 @@ class ClickHouseSyncService extends EventEmitter {
       )
       ENGINE = MergeTree
       ORDER BY ${orderByClause}
+      SETTINGS allow_nullable_key = 1
     `);
 
     await this.clickhouse.run(this.buildProjectionViewSql(tableName, rawTableName, schema, primaryKeyColumns));

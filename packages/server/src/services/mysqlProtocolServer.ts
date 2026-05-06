@@ -10,6 +10,7 @@
  */
 
 import DuckDBConnection from '../database/duckdb';
+import ClickHouseConnection from '../database/clickhouse';
 import { DatabaseConfigManager } from '../database/databaseConfig';
 import { routeQuery } from './mysqlQueryRouter';
 import {
@@ -444,7 +445,7 @@ export class MySQLProtocolServer {
           break;
 
         case 'forward':
-          await this.executeDuckDBQuery(conn, state, result.sql);
+          await this.executeClickHouseQuery(conn, state, result.sql);
           break;
       }
     } catch (err: any) {
@@ -456,7 +457,7 @@ export class MySQLProtocolServer {
     }
   }
 
-  private async executeDuckDBQuery(conn: any, state: ConnectionState, sql: string): Promise<void> {
+  private async executeClickHouseQuery(conn: any, state: ConnectionState, sql: string): Promise<void> {
     const dbConfig = DatabaseConfigManager.getInstance().getDatabase(state.databaseId);
     if (!dbConfig) {
       this.safeWriteError(conn, 1049, `Unknown database '${state.databaseId}'`);
@@ -470,8 +471,9 @@ export class MySQLProtocolServer {
     }
 
     const duckdb = DuckDBConnection.getInstance(state.databaseId, resolvedDuckdbPath);
+    const clickhouse = ClickHouseConnection.getInstance(state.databaseId, dbConfig.clickhouseDatabase || state.databaseId);
 
-    const { rows, columnNames, columnTypes } = await duckdb.executeWithMetadata(sql);
+    const { rows, columnNames, columnTypes } = await clickhouse.executeWithMetadata(sql);
 
     // Forwarded DuckDB result sets use compatibility-first text metadata.
     const columns = columnNames.map((name: string, i: number) =>
