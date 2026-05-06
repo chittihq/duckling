@@ -1,8 +1,8 @@
 /**
  * MySQL Result Formatter
  *
- * Maps DuckDB query results to MySQL wire protocol result sets.
- * Handles type mapping between DuckDB column types and MySQL type codes.
+ * Maps ClickHouse query results to MySQL wire protocol result sets.
+ * Handles type mapping between ClickHouse column types and MySQL type codes.
  */
 
 // MySQL type codes from mysql2/lib/constants/types
@@ -30,8 +30,8 @@ const MySQLTypes = {
   STRING: 0xfe,
 } as const;
 
-/** Map DuckDB type names (upper-case) to MySQL type codes */
-const DUCKDB_TO_MYSQL_TYPE: Record<string, number> = {
+/** Map ClickHouse type names (upper-case) to MySQL type codes */
+const CLICKHOUSE_TO_MYSQL_TYPE: Record<string, number> = {
   // String types
   VARCHAR: MySQLTypes.VAR_STRING,
   TEXT: MySQLTypes.VAR_STRING,
@@ -111,25 +111,25 @@ export interface MySQLColumnDefinition {
 }
 
 /**
- * Get the MySQL type code for a DuckDB type string.
+ * Get the MySQL type code for a ClickHouse type string.
  * Strips size/precision qualifiers (e.g. "VARCHAR(255)" → "VARCHAR").
  */
-export function getMySQLTypeCode(duckdbType: string): number {
-  if (!duckdbType) return MySQLTypes.VAR_STRING;
+export function getMySQLTypeCode(clickhouseType: string): number {
+  if (!clickhouseType) return MySQLTypes.VAR_STRING;
   // Strip parenthetical qualifiers and normalize
-  const baseType = duckdbType.replace(/\(.*\)/, '').trim().toUpperCase();
-  return DUCKDB_TO_MYSQL_TYPE[baseType] ?? MySQLTypes.VAR_STRING;
+  const baseType = clickhouseType.replace(/\(.*\)/, '').trim().toUpperCase();
+  return CLICKHOUSE_TO_MYSQL_TYPE[baseType] ?? MySQLTypes.VAR_STRING;
 }
 
 /**
- * Build a MySQL column definition from a column name and DuckDB type.
+ * Build a MySQL column definition from a column name and ClickHouse type.
  */
 export function buildColumnDefinition(
   name: string,
-  duckdbType?: string,
+  clickhouseType?: string,
   table?: string,
 ): MySQLColumnDefinition {
-  const columnType = getMySQLTypeCode(duckdbType || 'VARCHAR');
+  const columnType = getMySQLTypeCode(clickhouseType || 'VARCHAR');
   return {
     catalog: 'def',
     schema: '',
@@ -146,17 +146,17 @@ export function buildColumnDefinition(
 }
 
 /**
- * Build a conservative column definition for forwarded DuckDB result sets.
+ * Build a conservative column definition for forwarded ClickHouse result sets.
  * Some MySQL clients are stricter about typed text-protocol decoding than
  * mysql2's server-side API is about advertised metadata, so we prefer
  * string-compatible field types for anything beyond simple integers.
  */
 export function buildForwardedColumnDefinition(
   name: string,
-  duckdbType?: string,
+  clickhouseType?: string,
   table?: string,
 ): MySQLColumnDefinition {
-  const baseType = baseDuckDBType(duckdbType);
+  const baseType = baseClickHouseType(clickhouseType);
 
   switch (baseType) {
     case 'TINYINT':
@@ -164,27 +164,27 @@ export function buildForwardedColumnDefinition(
     case 'INTEGER':
     case 'INT':
     case 'BIGINT':
-      return buildColumnDefinition(name, duckdbType, table);
+      return buildColumnDefinition(name, clickhouseType, table);
 
     default:
       return buildColumnDefinition(name, 'VARCHAR', table);
   }
 }
 
-function baseDuckDBType(duckdbType?: string): string {
-  if (!duckdbType) return '';
-  return duckdbType.replace(/\(.*\)/, '').trim().toUpperCase();
+function baseClickHouseType(clickhouseType?: string): string {
+  if (!clickhouseType) return '';
+  return clickhouseType.replace(/\(.*\)/, '').trim().toUpperCase();
 }
 
 /**
- * Convert a single DuckDB value to a MySQL text-protocol value.
- * `duckdbType` is optional but improves date/time fidelity for client decoders.
+ * Convert a single ClickHouse value to a MySQL text-protocol value.
+ * `clickhouseType` is optional but improves date/time fidelity for client decoders.
  */
-export function formatValueByType(value: any, duckdbType?: string): string | null {
+export function formatValueByType(value: any, clickhouseType?: string): string | null {
   if (value === null || value === undefined) {
     return null;
   }
-  const type = baseDuckDBType(duckdbType);
+  const type = baseClickHouseType(clickhouseType);
   if (typeof value === 'boolean') {
     return value ? '1' : '0';
   }
@@ -203,7 +203,7 @@ export function formatValueByType(value: any, duckdbType?: string): string | nul
     }
     return value.toISOString().replace('T', ' ').replace('Z', '');
   }
-  // DuckDB TIME/TIMESTAMP objects with a .toString()
+  // Timestamp-like objects with a .toString()
   if (typeof value === 'object' && typeof value.toString === 'function' && value.micros !== undefined) {
     return value.toString();
   }
@@ -242,10 +242,10 @@ export function formatResultSet(
 export function singleValueResult(
   columnName: string,
   value: string | number | null,
-  duckdbType?: string,
+  clickhouseType?: string,
 ): { columns: MySQLColumnDefinition[]; rows: (string | null)[][] } {
   return {
-    columns: [buildColumnDefinition(columnName, duckdbType || 'VARCHAR')],
+    columns: [buildColumnDefinition(columnName, clickhouseType || 'VARCHAR')],
     rows: [[value === null ? null : String(value)]],
   };
 }
@@ -255,10 +255,10 @@ export function singleValueResult(
  */
 export function emptyResult(
   columnNames: string[],
-  duckdbTypes?: string[],
+  clickhouseTypes?: string[],
 ): { columns: MySQLColumnDefinition[]; rows: (string | null)[][] } {
   const columns = columnNames.map((name, i) =>
-    buildColumnDefinition(name, duckdbTypes?.[i] || 'VARCHAR'),
+    buildColumnDefinition(name, clickhouseTypes?.[i] || 'VARCHAR'),
   );
   return { columns, rows: [] };
 }

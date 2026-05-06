@@ -1,7 +1,7 @@
 /**
  * Query Governor Service
  *
- * Provides query governance for DuckDB operations:
+ * Provides query governance for ClickHouse-backed operations:
  * - Semaphore-based concurrency limiting (MAX_CONCURRENT_QUERIES)
  * - Per-query timeout (QUERY_TIMEOUT_MS)
  * - Queue with max depth and 503 when saturated (QUERY_QUEUE_MAX)
@@ -9,10 +9,9 @@
  * - Anti-starvation: max consecutive high-priority slots before yielding to normal
  * - Active query tracking for monitoring
  *
- * DuckDB note: The @duckdb/node-api does not expose query cancellation.
- * Timeouts terminate the Promise wrapper (HTTP response), but the underlying
- * DuckDB query may continue until completion. The governor still provides value
- * through concurrency limiting and backpressure (503 when saturated).
+ * ClickHouse note: requests are bounded at the application layer. This governor
+ * still provides value through concurrency limiting and backpressure when the
+ * server is saturated.
  */
 
 import logger from '../logger';
@@ -204,8 +203,7 @@ export class QueryGovernor {
   }
 
   /**
-   * Wrap a promise with a timeout. On timeout, the promise is abandoned
-   * (DuckDB does not support query cancellation via node-api), but the
+   * Wrap a promise with a timeout. On timeout, the promise is abandoned and the
    * governor slot is released so new queries can proceed.
    */
   private withTimeout<T>(promise: Promise<T>, queryId: string, timeoutMs: number): Promise<T> {
@@ -216,7 +214,7 @@ export class QueryGovernor {
         this.totalTimedOut++;
         logger.warn(`Query governor: query ${queryId} timed out after ${timeoutMs}ms`);
         reject(new QueryGovernorError(
-          `Query timed out after ${timeoutMs}ms. The query may still be running in DuckDB.`,
+          `Query timed out after ${timeoutMs}ms. The query may still be running on the server.`,
           408
         ));
       }, timeoutMs);

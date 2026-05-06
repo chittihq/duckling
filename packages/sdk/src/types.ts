@@ -307,14 +307,6 @@ export class ClickHouseError extends Error {
   }
 }
 
-// Backward-compatible aliases during the migration window.
-export type DuckDBSDKConfig = ClickHouseSDKConfig;
-export type RequiredDuckDBSDKConfig = RequiredClickHouseSDKConfig;
-export const DuckDBErrorType = ClickHouseErrorType;
-export type DuckDBErrorType = ClickHouseErrorType;
-export const DuckDBError = ClickHouseError;
-export type DuckDBError = ClickHouseError;
-
 // ============================================================================
 // Utility Types
 // ============================================================================

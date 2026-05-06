@@ -13,10 +13,10 @@
  *   WORKER_THREADS — Number of worker threads.
  *                    0 or unset = disabled (default). Positive integer = that many threads.
  *
- * NOTE: Worker threads are disabled by default because @duckdb/node-api's
- * native addon can segfault (SIGSEGV / exit code 139) when Node.js
- * worker_threads exist in the same process. When disabled, callers fall
- * back to main-thread sanitization via their existing try/catch paths.
+ * NOTE: Worker threads are disabled by default in this codebase because the
+ * historical native-engine path had stability issues when worker_threads
+ * existed in the same process. When disabled, callers fall back to main-thread
+ * sanitization via their existing try/catch paths.
  */
 
 import { Worker } from 'worker_threads';

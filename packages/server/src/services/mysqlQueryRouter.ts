@@ -158,7 +158,7 @@ function buildEmptyProjectedResult(norm: string): InterceptedResult {
   return { type: 'intercepted', columns, rows: [] };
 }
 
-function rewriteForDuckDB(norm: string, currentDatabase: string): string {
+function rewriteForClickHouse(norm: string, currentDatabase: string): string {
   let rewritten = norm;
 
   // ClickHouse accepts double-quoted identifiers; MySQL clients send backticks.
@@ -388,7 +388,7 @@ export function routeQuery(
 
   // INFORMATION_SCHEMA.COLUMNS compatibility aliases expected by MySQL clients.
   if (/FROM\s+[`"]?INFORMATION_SCHEMA[`"]?\.[`"]?COLUMNS[`"]?/i.test(norm)) {
-    let rewrittenColumnsSql = rewriteForDuckDB(norm, currentDatabase);
+    let rewrittenColumnsSql = rewriteForClickHouse(norm, currentDatabase);
     rewrittenColumnsSql = rewrittenColumnsSql
       .replace(/\bcolumn_type\b/ig, 'data_type')
       .replace(/\bcharacter_set_name\s+AS\s+([`"]?\w+[`"]?)/ig, "'' AS $1")
@@ -533,11 +533,11 @@ export function routeQuery(
 
   // EXPLAIN <query> — forward with ClickHouse's EXPLAIN
   if (upper.startsWith('EXPLAIN ')) {
-    return { type: 'forward', sql: rewriteForDuckDB(norm, currentDatabase) };
+    return { type: 'forward', sql: rewriteForClickHouse(norm, currentDatabase) };
   }
 
   // -------- Category C: Forward to ClickHouse --------
-  return { type: 'forward', sql: rewriteForDuckDB(norm, currentDatabase) };
+  return { type: 'forward', sql: rewriteForClickHouse(norm, currentDatabase) };
 }
 
 /* ------------------------------------------------------------------ */
