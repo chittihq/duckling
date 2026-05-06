@@ -6,16 +6,16 @@ export * from './types';
 
 // Import runtime error types
 import {
-  DuckDBError,
-  DuckDBErrorType
+  ClickHouseError,
+  ClickHouseErrorType
 } from './types';
 
 // Import types for internal use
 import type {
   QueryMessage,
   QueryResponse,
-  DuckDBSDKConfig,
-  RequiredDuckDBSDKConfig,
+  ClickHouseSDKConfig,
+  RequiredClickHouseSDKConfig,
   PendingRequest,
   ConnectionStats,
   DucklingClientEvents,
@@ -34,7 +34,7 @@ const NON_RECONNECT_CLOSE_CODES = new Set([1008, 1011]);
 /**
  * Duckling WebSocket SDK Client
  *
- * High-performance client for querying DuckDB server via WebSocket.
+ * High-performance client for querying ClickHouse server via WebSocket.
  * Supports connection pooling, auto-reconnect, and concurrent queries.
  *
  * @example
@@ -62,7 +62,7 @@ const NON_RECONNECT_CLOSE_CODES = new Set([1008, 1011]);
  * ```
  */
 export class DucklingClient extends EventEmitter {
-  private config: RequiredDuckDBSDKConfig;
+  private config: RequiredClickHouseSDKConfig;
   private ws: WebSocket | null = null;
   private isAuthenticated: boolean = false;
   private isConnecting: boolean = false;
@@ -79,7 +79,7 @@ export class DucklingClient extends EventEmitter {
   private tornDownSockets: WeakSet<WebSocket> = new WeakSet();
   private logger: Logger;
 
-  constructor(config: DuckDBSDKConfig) {
+  constructor(config: ClickHouseSDKConfig) {
     super();
     this.config = {
       autoConnect: true,
@@ -107,7 +107,7 @@ export class DucklingClient extends EventEmitter {
   }
 
   /**
-   * Connect to DuckDB WebSocket server and authenticate.
+   * Connect to ClickHouse WebSocket server and authenticate.
    * Resets the reconnect budget so auto-reconnect gets a fresh cycle.
    */
   async connect(): Promise<void> {
@@ -138,7 +138,7 @@ export class DucklingClient extends EventEmitter {
       const staleSocket = this.ws;
       this.teardownSocket(
         staleSocket,
-        this.createError(DuckDBErrorType.CONNECTION_ERROR, 'Replacing stale connection before reconnect'),
+        this.createError(ClickHouseErrorType.CONNECTION_ERROR, 'Replacing stale connection before reconnect'),
         false
       );
       this.forceTerminateSocket(staleSocket);
@@ -157,7 +157,7 @@ export class DucklingClient extends EventEmitter {
 
       const timeout = setTimeout(() => {
         const error = this.createError(
-          DuckDBErrorType.TIMEOUT_ERROR,
+          ClickHouseErrorType.TIMEOUT_ERROR,
           `Connection timeout after ${this.config.connectionTimeout}ms`
         );
         this.reportError(error);
@@ -195,13 +195,13 @@ export class DucklingClient extends EventEmitter {
             return;
           }
 
-          const authError = this.toDuckDBError(
+          const authError = this.toClickHouseError(
             error,
-            DuckDBErrorType.AUTH_ERROR,
+            ClickHouseErrorType.AUTH_ERROR,
             'Authentication failed'
           );
           this.reportError(authError);
-          this.teardownSocket(socket, authError, authError.type !== DuckDBErrorType.AUTH_ERROR);
+          this.teardownSocket(socket, authError, authError.type !== ClickHouseErrorType.AUTH_ERROR);
           this.forceTerminateSocket(socket);
         }
       });
@@ -219,9 +219,9 @@ export class DucklingClient extends EventEmitter {
         }
 
         clearTimeout(timeout);
-        const connectionError = this.toDuckDBError(
+        const connectionError = this.toClickHouseError(
           error,
-          DuckDBErrorType.CONNECTION_ERROR,
+          ClickHouseErrorType.CONNECTION_ERROR,
           'WebSocket connection error'
         );
         this.reportError(connectionError);
@@ -237,7 +237,7 @@ export class DucklingClient extends EventEmitter {
         clearTimeout(timeout);
         const reason = Buffer.isBuffer(reasonBuffer) ? reasonBuffer.toString() : String(reasonBuffer || '');
         const closeError = this.createError(
-          DuckDBErrorType.CONNECTION_ERROR,
+          ClickHouseErrorType.CONNECTION_ERROR,
           this.manualClose ? 'Connection closed' : `Connection closed${code ? ` (code ${code})` : ''}`,
           {
             code,
@@ -294,7 +294,7 @@ export class DucklingClient extends EventEmitter {
           'reconnectExhausted',
           this.reconnectAttempts,
           this.createError(
-            DuckDBErrorType.CONNECTION_ERROR,
+            ClickHouseErrorType.CONNECTION_ERROR,
             `Reconnect attempts exhausted after ${this.reconnectAttempts} tries`
           )
         );
@@ -309,7 +309,7 @@ export class DucklingClient extends EventEmitter {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this._doConnect().catch((error) => {
-        this.reportError(this.toDuckDBError(error, DuckDBErrorType.CONNECTION_ERROR, 'Reconnect failed'));
+        this.reportError(this.toClickHouseError(error, ClickHouseErrorType.CONNECTION_ERROR, 'Reconnect failed'));
       });
     }, delay);
   }
@@ -372,7 +372,7 @@ export class DucklingClient extends EventEmitter {
       return;
     }
 
-    if (error instanceof DuckDBError) {
+    if (error instanceof ClickHouseError) {
       this.logger.error(error.message, {
         type: error.type,
         context: error.context
@@ -384,20 +384,20 @@ export class DucklingClient extends EventEmitter {
   }
 
   private createError(
-    type: DuckDBErrorType,
+    type: ClickHouseErrorType,
     message: string,
     context?: Record<string, unknown>
-  ): DuckDBError {
-    return new DuckDBError(type, message, context);
+  ): ClickHouseError {
+    return new ClickHouseError(type, message, context);
   }
 
-  private toDuckDBError(
+  private toClickHouseError(
     error: unknown,
-    fallbackType: DuckDBErrorType,
+    fallbackType: ClickHouseErrorType,
     fallbackMessage: string,
     context?: Record<string, unknown>
-  ): DuckDBError {
-    if (error instanceof DuckDBError) {
+  ): ClickHouseError {
+    if (error instanceof ClickHouseError) {
       return error;
     }
 
@@ -425,7 +425,7 @@ export class DucklingClient extends EventEmitter {
 
     if (!response.success) {
       throw this.createError(
-        DuckDBErrorType.AUTH_ERROR,
+        ClickHouseErrorType.AUTH_ERROR,
         `Authentication failed: ${response.error || 'Unknown error'}`
       );
     }
@@ -446,7 +446,7 @@ export class DucklingClient extends EventEmitter {
 
     if (!this.isAuthenticated) {
       throw this.createError(
-        DuckDBErrorType.CONNECTION_ERROR,
+        ClickHouseErrorType.CONNECTION_ERROR,
         'Not connected. Call connect() first or enable autoConnect.'
       );
     }
@@ -476,7 +476,7 @@ export class DucklingClient extends EventEmitter {
         duration: response.duration
       });
       throw this.createError(
-        DuckDBErrorType.QUERY_ERROR,
+        ClickHouseErrorType.QUERY_ERROR,
         `Query failed: ${response.error || 'Unknown error'}`,
         {
           sql,
@@ -541,7 +541,7 @@ export class DucklingClient extends EventEmitter {
         const success = await this.ping();
         if (!success) {
           const error = this.createError(
-            DuckDBErrorType.CONNECTION_ERROR,
+            ClickHouseErrorType.CONNECTION_ERROR,
             'Ping failed - connection may be unhealthy'
           );
           this.reportError(error);
@@ -577,7 +577,7 @@ export class DucklingClient extends EventEmitter {
       const socket = this.ws;
       this.teardownSocket(
         socket,
-        this.createError(DuckDBErrorType.CONNECTION_ERROR, 'Connection closed by client'),
+        this.createError(ClickHouseErrorType.CONNECTION_ERROR, 'Connection closed by client'),
         false
       );
       try {
@@ -601,7 +601,7 @@ export class DucklingClient extends EventEmitter {
   private sendMessage(message: QueryMessage): Promise<QueryResponse> {
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        reject(this.createError(DuckDBErrorType.CONNECTION_ERROR, 'WebSocket not connected'));
+        reject(this.createError(ClickHouseErrorType.CONNECTION_ERROR, 'WebSocket not connected'));
         return;
       }
 
@@ -609,7 +609,7 @@ export class DucklingClient extends EventEmitter {
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(message.id);
         reject(
-          this.createError(DuckDBErrorType.TIMEOUT_ERROR, `Request timeout: ${message.id}`, {
+          this.createError(ClickHouseErrorType.TIMEOUT_ERROR, `Request timeout: ${message.id}`, {
             messageId: message.id,
             type: message.type
           })
@@ -682,7 +682,7 @@ export class DucklingClient extends EventEmitter {
     } catch (error) {
       this.logger.error('Failed to parse incoming message', { error });
       this.reportError(
-        this.toDuckDBError(error, DuckDBErrorType.UNKNOWN_ERROR, 'Failed to parse incoming message')
+        this.toClickHouseError(error, ClickHouseErrorType.UNKNOWN_ERROR, 'Failed to parse incoming message')
       );
     }
   }

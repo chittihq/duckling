@@ -1,7 +1,7 @@
 /**
- * DuckDB SDK Type Definitions
+ * ClickHouse SDK Type Definitions
  *
- * Comprehensive type system for the DuckDB WebSocket SDK
+ * Comprehensive type system for the ClickHouse WebSocket SDK
  */
 
 // ============================================================================
@@ -9,12 +9,12 @@
 // ============================================================================
 
 /**
- * Message types supported by the DuckDB WebSocket server
+ * Message types supported by the ClickHouse WebSocket server
  */
 export type MessageType = 'query' | 'ping' | 'auth';
 
 /**
- * Query message sent to DuckDB server
+ * Query message sent to ClickHouse server
  */
 export interface QueryMessage {
   /** Unique identifier for this message */
@@ -30,7 +30,7 @@ export interface QueryMessage {
 }
 
 /**
- * Response from DuckDB server
+ * Response from ClickHouse server
  */
 export interface QueryResponse<T = any> {
   /** Message ID that this response corresponds to */
@@ -52,7 +52,7 @@ export interface QueryResponse<T = any> {
 /**
  * SDK configuration options
  */
-export interface DuckDBSDKConfig {
+export interface ClickHouseSDKConfig {
   /** WebSocket server URL (e.g., ws://localhost:3001/ws) */
   url: string;
   /** API key for authentication */
@@ -84,7 +84,7 @@ export interface DuckDBSDKConfig {
 /**
  * Complete SDK configuration with all defaults applied
  */
-export type RequiredDuckDBSDKConfig = Required<DuckDBSDKConfig>;
+export type RequiredClickHouseSDKConfig = Required<ClickHouseSDKConfig>;
 
 // ============================================================================
 // Connection State Types
@@ -275,9 +275,9 @@ export interface BatchQueryResult<T = QueryRow> {
 // ============================================================================
 
 /**
- * DuckDB SDK error types
+ * ClickHouse SDK error types
  */
-export enum DuckDBErrorType {
+export enum ClickHouseErrorType {
   /** Connection-related errors */
   CONNECTION_ERROR = 'CONNECTION_ERROR',
   /** Authentication errors */
@@ -295,17 +295,25 @@ export enum DuckDBErrorType {
 /**
  * Enhanced error with type and context
  */
-export class DuckDBError extends Error {
+export class ClickHouseError extends Error {
   constructor(
-    public type: DuckDBErrorType,
+    public type: ClickHouseErrorType,
     message: string,
     public context?: Record<string, any>
   ) {
     super(message);
-    this.name = 'DuckDBError';
-    Object.setPrototypeOf(this, DuckDBError.prototype);
+    this.name = 'ClickHouseError';
+    Object.setPrototypeOf(this, ClickHouseError.prototype);
   }
 }
+
+// Backward-compatible aliases during the migration window.
+export type DuckDBSDKConfig = ClickHouseSDKConfig;
+export type RequiredDuckDBSDKConfig = RequiredClickHouseSDKConfig;
+export const DuckDBErrorType = ClickHouseErrorType;
+export type DuckDBErrorType = ClickHouseErrorType;
+export const DuckDBError = ClickHouseError;
+export type DuckDBError = ClickHouseError;
 
 // ============================================================================
 // Utility Types
