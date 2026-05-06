@@ -9,7 +9,6 @@
  *   TCP connection → mysql2 wire protocol → SQL router → DuckDB query → MySQL result format
  */
 
-import DuckDBConnection from '../database/duckdb';
 import ClickHouseConnection from '../database/clickhouse';
 import { DatabaseConfigManager } from '../database/databaseConfig';
 import { routeQuery } from './mysqlQueryRouter';
@@ -464,13 +463,6 @@ export class MySQLProtocolServer {
       return;
     }
 
-    // Resolve DuckDB path (same logic as server.ts)
-    let resolvedDuckdbPath = dbConfig.duckdbPath;
-    if (resolvedDuckdbPath.startsWith('data/')) {
-      resolvedDuckdbPath = `/app/${resolvedDuckdbPath}`;
-    }
-
-    const duckdb = DuckDBConnection.getInstance(state.databaseId, resolvedDuckdbPath);
     const clickhouse = ClickHouseConnection.getInstance(state.databaseId, dbConfig.clickhouseDatabase || state.databaseId);
 
     const { rows, columnNames, columnTypes } = await clickhouse.executeWithMetadata(sql);

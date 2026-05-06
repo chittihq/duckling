@@ -15,10 +15,10 @@ services:
       - ./logs/clickhouse:/var/log/clickhouse-server
     restart: unless-stopped
     networks:
-      - duckdb-network
+      - clickhouse-network
 
-  # DuckDB Server - Backend API with MySQL replication
-  duckdb-server:
+  # ClickHouse Server - Backend API with MySQL replication
+  clickhouse-server:
     container_name: duckling-server
     build:
       context: .
@@ -34,12 +34,6 @@ services:
       - PORT=${PORT:-3000}
 
       # Database configuration
-      - DUCKDB_PATH=${DUCKDB_PATH:-data/duckling.db}
-      - DUCKDB_MEMORY_LIMIT=${DUCKDB_MEMORY_LIMIT:-4GB}
-      - DUCKDB_THREADS=${DUCKDB_THREADS:-2}
-      - DUCKDB_TEMP_DIRECTORY=${DUCKDB_TEMP_DIRECTORY:-/app/data/duckdb_tmp}
-      - DUCKDB_MAX_TEMP_DIRECTORY_SIZE=${DUCKDB_MAX_TEMP_DIRECTORY_SIZE:-50GB}
-      - DUCKDB_PRESERVE_INSERTION_ORDER=${DUCKDB_PRESERVE_INSERTION_ORDER:-false}
       - MYSQL_CONNECTION_STRING=${MYSQL_CONNECTION_STRING}
       - MYSQL_MAX_CONNECTIONS=${MYSQL_MAX_CONNECTIONS:-5}
       - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://clickhouse:8123}
@@ -82,10 +76,10 @@ services:
     depends_on:
       - clickhouse
     networks:
-      - duckdb-network
+      - clickhouse-network
 
-  # DuckDB Frontend - Nuxt 4 Dashboard
-  duckdb-frontend:
+  # ClickHouse Frontend - Nuxt 4 Dashboard
+  clickhouse-frontend:
     container_name: duckling-frontend
     build:
       context: .
@@ -104,18 +98,18 @@ services:
       - ./packages/sdk/src:/app/packages/sdk/src
     restart: unless-stopped
     depends_on:
-      - duckdb-server
+      - clickhouse-server
     networks:
-      - duckdb-network
+      - clickhouse-network
 
 networks:
-  duckdb-network:
+  clickhouse-network:
     name: duckling-network
     driver: bridge
 
 # Volumes for data persistence (optional, using bind mounts above)
 volumes:
-  duckdb-data:
+  clickhouse-data:
     name: duckling-data
-  duckdb-logs:
+  clickhouse-logs:
     name: duckling-logs

@@ -27,7 +27,7 @@
     "type-check": "tsc --noEmit"
   },
   "keywords": [
-    "duckdb",
+    "clickhouse",
     "types",
     "shared",
     "duckling"

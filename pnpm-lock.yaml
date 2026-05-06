@@ -115,9 +115,6 @@ importers:
       '@clickhouse/client':
         specifier: ^1.18.4
         version: 1.18.4
-      '@duckdb/node-api':
-        specifier: ^1.5.0-r.1
-        version: 1.5.0-r.1
       '@sentry/node':
         specifier: ^10.40.0
         version: 10.40.0
@@ -557,42 +554,6 @@ packages:
 
   '@dabh/diagnostics@2.0.3':
     resolution: {integrity: sha512-hrlQOIi7hAfzsMqlGSFyVucrx38O+j6wiGOf//H2ecvIEqYN4ADBSS2iLMh5UFyDunCNniUIPk/q3riFv45xRA==}
-
-  '@duckdb/node-api@1.5.0-r.1':
-    resolution: {integrity: sha512-VjvjqlCyqUJ22bydG/+9Jj5l0CEvx9QUn1SATBkKFY0+x6n4uHzt0kp/FKwXK9LNduXX6KCKtdF+6v5BcHScfA==}
-
-  '@duckdb/node-bindings-darwin-arm64@1.5.0-r.1':
-    resolution: {integrity: sha512-s7CB9Y10f3dg2W4jdp6zipogxamq1pPQVt/r+YigZrHqk7HvytUeRH1VOI/3wuGTTlR8mAnIXj2MJIrmMujX4w==}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@duckdb/node-bindings-darwin-x64@1.5.0-r.1':
-    resolution: {integrity: sha512-2KxnGvg9o/Y915hwr1Mpb6Cbfrvt/w+/Fv0RZ2VXeQuxqNCMOoJd/7yQ8ffWXJRuOFU/vRmsR88koIjW+yJibA==}
-    cpu: [x64]
-    os: [darwin]
-
-  '@duckdb/node-bindings-linux-arm64@1.5.0-r.1':
-    resolution: {integrity: sha512-FpmcfJqhKoInjEa1o5dsWPQAFWYgu1eZgJP94nz6d+cKfdXEZKT6vGIwokZRzDqKLG1ZAOBZO2IhxzmW8IbbfA==}
-    cpu: [arm64]
-    os: [linux]
-
-  '@duckdb/node-bindings-linux-x64@1.5.0-r.1':
-    resolution: {integrity: sha512-A4Zgsaq6szEKiMyF1eWkoaHw0OMA0a8Zl8Ev0GcZSRjI4iGHgBQ1f/Zi/w3QKyz7OtjIiZ+pQ1XYyG4QoF6OKA==}
-    cpu: [x64]
-    os: [linux]
-
-  '@duckdb/node-bindings-win32-arm64@1.5.0-r.1':
-    resolution: {integrity: sha512-ctCJ2HWpyiN3FNiCQ40RWALZLwKtJ8Aq4Anen2ush1I0a2E52T//jitLzl7DcX0quzew5eci1MQ+H5T1nVhzFA==}
-    cpu: [arm64]
-    os: [win32]
-
-  '@duckdb/node-bindings-win32-x64@1.5.0-r.1':
-    resolution: {integrity: sha512-725LoefejBlyG/bUcMfqVJkZ8KnZRLa0xOkszw9Q+V5G26iagJY3dgtGJAvwTeVJvXigSEVc5yD9Cj6kWR67vA==}
-    cpu: [x64]
-    os: [win32]
-
-  '@duckdb/node-bindings@1.5.0-r.1':
-    resolution: {integrity: sha512-ViyoHROp0HhQ0ATT8z6h7SV6vEOxNjN8mJcdkst+3rJIU3Rd/gKs8exJO23LxFsjBuAiDpndpEwFihTAdfwJZg==}
 
   '@dxup/nuxt@0.4.0':
     resolution: {integrity: sha512-28LDotpr9G2knUse3cQYsOo6NJq5yhABv4ByRVRYJUmzf9Q31DI7rpRek4POlKy1aAcYyKgu5J2616pyqLohYg==}
@@ -6264,37 +6225,6 @@ snapshots:
       colorspace: 1.1.4
       enabled: 2.0.0
       kuler: 2.0.0
-
-  '@duckdb/node-api@1.5.0-r.1':
-    dependencies:
-      '@duckdb/node-bindings': 1.5.0-r.1
-
-  '@duckdb/node-bindings-darwin-arm64@1.5.0-r.1':
-    optional: true
-
-  '@duckdb/node-bindings-darwin-x64@1.5.0-r.1':
-    optional: true
-
-  '@duckdb/node-bindings-linux-arm64@1.5.0-r.1':
-    optional: true
-
-  '@duckdb/node-bindings-linux-x64@1.5.0-r.1':
-    optional: true
-
-  '@duckdb/node-bindings-win32-arm64@1.5.0-r.1':
-    optional: true
-
-  '@duckdb/node-bindings-win32-x64@1.5.0-r.1':
-    optional: true
-
-  '@duckdb/node-bindings@1.5.0-r.1':
-    optionalDependencies:
-      '@duckdb/node-bindings-darwin-arm64': 1.5.0-r.1
-      '@duckdb/node-bindings-darwin-x64': 1.5.0-r.1
-      '@duckdb/node-bindings-linux-arm64': 1.5.0-r.1
-      '@duckdb/node-bindings-linux-x64': 1.5.0-r.1
-      '@duckdb/node-bindings-win32-arm64': 1.5.0-r.1
-      '@duckdb/node-bindings-win32-x64': 1.5.0-r.1
 
   '@dxup/nuxt@0.4.0(magicast@0.5.2)(typescript@5.8.3)':
     dependencies:

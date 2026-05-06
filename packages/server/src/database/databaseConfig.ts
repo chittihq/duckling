@@ -24,7 +24,6 @@ export interface DatabaseConfig {
   id: string;
   name: string;
   mysqlConnectionString: string;
-  duckdbPath: string;
   clickhouseDatabase: string;
   createdAt: string;
   updatedAt: string;
@@ -93,7 +92,6 @@ export class DatabaseConfigManager {
       id: 'default',
       name: 'Default Database',
       mysqlConnectionString: process.env.MYSQL_CONNECTION_STRING || '',
-      duckdbPath: config.duckdb.path, // Use config for correct path in dev and production
       clickhouseDatabase: config.clickhouse.database,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -134,7 +132,7 @@ export class DatabaseConfigManager {
   }
 
   addDatabase(
-    config: Omit<DatabaseConfig, 'id' | 'createdAt' | 'updatedAt' | 'duckdbPath' | 'clickhouseDatabase'> & {
+    config: Omit<DatabaseConfig, 'id' | 'createdAt' | 'updatedAt' | 'clickhouseDatabase'> & {
       clickhouseDatabase?: string;
     }
   ): DatabaseConfig {
@@ -142,7 +140,6 @@ export class DatabaseConfigManager {
     const newConfig: DatabaseConfig = {
       ...config,
       id,
-      duckdbPath: `data/${id}.db`,
       clickhouseDatabase: config.clickhouseDatabase || id,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

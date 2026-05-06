@@ -1,7 +1,7 @@
 {
   "name": "@chittihq/duckling-server",
   "version": "1.0.0",
-  "description": "DuckDB server with MySQL replication using Sequential Appender architecture",
+  "description": "ClickHouse server with MySQL replication",
   "private": true,
   "main": "dist/index.js",
   "scripts": {
@@ -21,7 +21,6 @@
     "@aws-sdk/lib-storage": "^3.0.0",
     "@chittihq/duckling-shared": "workspace:*",
     "@clickhouse/client": "^1.18.4",
-    "@duckdb/node-api": "^1.5.0-r.1",
     "@sentry/node": "^10.40.0",
     "@types/ws": "^8.18.1",
     "@vlasky/zongji": "^0.5.9",
@@ -51,8 +50,6 @@
   },
   "packageManager": "pnpm@10.0.0",
   "pnpm": {
-    "onlyBuiltDependencies": [
-      "@duckdb/node-api"
-    ]
+    "onlyBuiltDependencies": []
   }
 }

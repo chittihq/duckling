@@ -1,7 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { Server } from 'http';
 import { IncomingMessage } from 'http';
-import DuckDBConnection from '../database/duckdb';
 import ClickHouseConnection from '../database/clickhouse';
 import { DatabaseConfigManager } from '../database/databaseConfig';
 import config from '../config';
@@ -26,7 +25,6 @@ interface QueryResponse {
 // Extend WebSocket to include database context
 interface ExtendedWebSocket extends WebSocket {
   databaseName?: string;
-  duckdb?: DuckDBConnection;
   clickhouse?: ClickHouseConnection;
   clientIp?: string;
 }
@@ -95,7 +93,6 @@ export class WebSocketService {
         return;
       }
 
-      ws.duckdb = DuckDBConnection.getInstance(databaseName, dbConfig.duckdbPath);
       ws.clickhouse = ClickHouseConnection.getInstance(databaseName, dbConfig.clickhouseDatabase || databaseName);
     } catch (error) {
       logger.error('Failed to get database connection for WebSocket', {
@@ -234,8 +231,7 @@ export class WebSocketService {
         }
 
         // Check if database connection is available
-        const target = ws.clickhouse || ws.duckdb;
-        if (!target) {
+        if (!ws.clickhouse) {
           this.sendMessage(ws, {
             id: message.id,
             success: false,
@@ -245,7 +241,7 @@ export class WebSocketService {
         }
 
         // Execute query on database-specific connection
-        const result = await target.query(message.sql, message.params);
+        const result = await ws.clickhouse.query(message.sql, message.params);
 
         // Serialize BigInt values
         const serializedResult = this.serializeBigInt(result);

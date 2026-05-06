@@ -5,11 +5,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as http from 'http';
 import { createHash } from 'crypto';
-import DuckDBConnection from './database/duckdb';
 import ClickHouseConnection from './database/clickhouse';
 import MySQLConnection from './database/mysql';
-import SequentialAppenderService from './services/sequentialAppenderService';
-import AutomationService from './services/automationService';
 import ClickHouseSyncService from './services/clickhouseSyncService';
 import ClickHouseAutomationService from './services/clickhouseAutomationService';
 import WebSocketService from './services/websocketService';
@@ -1394,8 +1391,6 @@ class DuckDBServer {
         return;
       }
 
-      // Close the DuckDB connection for this database
-      DuckDBConnection.closeInstance(id);
       await ClickHouseConnection.closeInstance(id);
 
       res.json({ success: true, message: 'Database deleted successfully' });
@@ -1596,7 +1591,7 @@ class DuckDBServer {
       dbManager.updateDatabase(id, { s3: newS3 });
 
       // Restart the S3 backup schedule on the running automation instance if present
-      await AutomationService.restartS3ScheduleIfRunning(id);
+      await ClickHouseAutomationService.restartS3ScheduleIfRunning(id);
 
       res.json({ success: true, s3: { ...newS3, secretAccessKey: '***' } });
     } catch (error) {

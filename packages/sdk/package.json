@@ -30,7 +30,7 @@
     "example:typed": "tsx examples/typed-queries.ts"
   },
   "keywords": [
-    "duckdb",
+    "clickhouse",
     "websocket",
     "sdk",
     "client",

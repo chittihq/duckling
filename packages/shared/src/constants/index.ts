@@ -43,7 +43,6 @@ export const DEFAULTS = {
   SYNC_INTERVAL_MINUTES: 15,
   BATCH_SIZE: 10000,
   MAX_RETRIES: 3,
-  DUCKDB_MAX_CONNECTIONS: 10,
   MYSQL_MAX_CONNECTIONS: 5,
   HEALTH_CHECK_INTERVAL: 60000,
   LOG_LEVEL: 'info',
@@ -52,4 +51,4 @@ export const DEFAULTS = {
 /**
  * Architecture identifier
  */
-export const ARCHITECTURE = 'sequential-appender' as const;
+export const ARCHITECTURE = 'clickhouse' as const;

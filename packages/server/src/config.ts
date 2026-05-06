@@ -32,18 +32,6 @@ export const config = {
     backups: process.env.BACKUP_PATH || path.join(DATA_PATH, 'backups'),
     metadata: path.join(DATA_PATH, 'metadata'),
   },
-
-  duckdb: {
-    path: process.env.DUCKDB_PATH || path.join(DATA_PATH, 'duckling.db'),
-    maxConnections: parseInt(process.env.DUCKDB_MAX_CONNECTIONS || '10'),
-    memoryLimit: process.env.DUCKDB_MEMORY_LIMIT || '',
-    threads: parseInt(process.env.DUCKDB_THREADS || '0'),
-    tempDirectory: process.env.DUCKDB_TEMP_DIRECTORY || path.join(DATA_PATH, 'duckdb_tmp'),
-    maxTempDirectorySize: process.env.DUCKDB_MAX_TEMP_DIRECTORY_SIZE || '',
-    preserveInsertionOrder: process.env.DUCKDB_PRESERVE_INSERTION_ORDER !== undefined
-      ? process.env.DUCKDB_PRESERVE_INSERTION_ORDER !== 'false'
-      : false,
-  },
   
   mysql: {
     connectionString: process.env.MYSQL_CONNECTION_STRING || '',
@@ -147,11 +135,6 @@ export const config = {
 
   workers: {
     threads: parseInt(process.env.WORKER_THREADS || '0'), // 0 = disabled (default), positive integer = that many threads
-  },
-
-  readReplica: {
-    enabled: process.env.READ_REPLICA_ENABLED === 'true',
-    refreshInterval: parseInt(process.env.REPLICA_REFRESH_INTERVAL || '300'),
   },
 
   rateLimit: {

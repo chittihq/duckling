@@ -4,7 +4,6 @@ interface Database {
   id: string;
   name: string;
   mysqlConnectionString: string;
-  duckdbPath: string;
   clickhouseDatabase?: string;
   createdAt: string;
   updatedAt: string;

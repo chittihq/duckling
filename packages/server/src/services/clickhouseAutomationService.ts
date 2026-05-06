@@ -52,6 +52,21 @@ class ClickHouseAutomationService {
     return ClickHouseAutomationService.instances.get(databaseId)!;
   }
 
+  static getExistingInstance(databaseId: string): ClickHouseAutomationService | undefined {
+    return ClickHouseAutomationService.instances.get(databaseId);
+  }
+
+  static closeInstance(databaseId: string): void {
+    const instance = ClickHouseAutomationService.instances.get(databaseId);
+    if (!instance) return;
+    instance.stop();
+    ClickHouseAutomationService.instances.delete(databaseId);
+  }
+
+  static async restartS3ScheduleIfRunning(_databaseId: string): Promise<void> {
+    // ClickHouse S3 scheduling is not implemented yet; keep the callsite compatible.
+  }
+
   async start(syncOffsetMs = 0): Promise<void> {
     if (this.isRunning) return;
     this.isRunning = true;
