@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 import { program } from 'commander';
-import SequentialAppenderService from './services/sequentialAppenderService';
 import DumpService from './services/dumpService';
 import MySQLConnection from './database/mysql';
 import DuckDBConnection from './database/duckdb';
+import ClickHouseConnection from './database/clickhouse';
+import ClickHouseSyncService from './services/clickhouseSyncService';
 import { DatabaseConfigManager } from './database/databaseConfig';
 import logger from './logger';
 
@@ -42,7 +43,8 @@ program
   .name('duckdb-sync')
   .description('DuckDB MySQL Replication CLI')
   .version('1.0.0')
-  .option('-d, --database <id>', 'Database ID to operate on (defaults to first database)');
+  .option('-d, --database <id>', 'Database ID to operate on (defaults to first database)')
+  .option('-e, --engine <engine>', 'Query engine for ad hoc query command (clickhouse, duckdb, mysql)', 'clickhouse');
 
 program
   .command('sync')
@@ -50,8 +52,9 @@ program
   .action(async (options, command) => {
     try {
       const { databaseId, mysql, duckdb } = await getDatabaseConnections(command.parent.opts().database);
+      const clickhouse = ClickHouseConnection.getInstance(databaseId, DatabaseConfigManager.getInstance().getDatabase(databaseId)?.clickhouseDatabase || databaseId);
       console.log(`Syncing database: ${databaseId}`);
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const result = await syncService.fullSync();
       console.log('Full sync completed:', result);
     } catch (error) {
@@ -66,8 +69,9 @@ program
   .action(async (options, command) => {
     try {
       const { databaseId, mysql, duckdb } = await getDatabaseConnections(command.parent.opts().database);
+      const clickhouse = ClickHouseConnection.getInstance(databaseId, DatabaseConfigManager.getInstance().getDatabase(databaseId)?.clickhouseDatabase || databaseId);
       console.log(`Syncing database: ${databaseId}`);
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const result = await syncService.incrementalSync();
       console.log('Incremental sync completed:', result);
     } catch (error) {
@@ -81,8 +85,9 @@ program
   .description('Show sync status')
   .action(async (options, command) => {
     try {
-      const { databaseId, mysql, duckdb } = await getDatabaseConnections(command.parent.opts().database);
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const { databaseId, mysql } = await getDatabaseConnections(command.parent.opts().database);
+      const clickhouse = ClickHouseConnection.getInstance(databaseId, DatabaseConfigManager.getInstance().getDatabase(databaseId)?.clickhouseDatabase || databaseId);
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const status = await syncService.getSyncStatus();
       console.log(`Status for database: ${databaseId}`);
       console.log(JSON.stringify(status, null, 2));
@@ -97,8 +102,9 @@ program
   .description('Validate sync integrity')
   .action(async (options, command) => {
     try {
-      const { databaseId, mysql, duckdb } = await getDatabaseConnections(command.parent.opts().database);
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const { databaseId, mysql } = await getDatabaseConnections(command.parent.opts().database);
+      const clickhouse = ClickHouseConnection.getInstance(databaseId, DatabaseConfigManager.getInstance().getDatabase(databaseId)?.clickhouseDatabase || databaseId);
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const validation = await syncService.validateSync();
       console.log(`Validation for database: ${databaseId}`);
       console.log(JSON.stringify(validation, null, 2));
@@ -114,17 +120,21 @@ program
   .action(async (options, command) => {
     try {
       const { databaseId, mysql, duckdb } = await getDatabaseConnections(command.parent.opts().database);
+      const clickhouse = ClickHouseConnection.getInstance(databaseId, DatabaseConfigManager.getInstance().getDatabase(databaseId)?.clickhouseDatabase || databaseId);
 
       const mysqlHealthy = await mysql.testConnection();
       const duckdbHealthy = await duckdb.testConnection();
+      await clickhouse.initializeDatabase();
+      const clickhouseHealthy = await clickhouse.testConnection();
 
       console.log(`Health check for database: ${databaseId}`);
       console.log({
         mysql: mysqlHealthy ? 'healthy' : 'unhealthy',
+        clickhouse: clickhouseHealthy ? 'healthy' : 'unhealthy',
         duckdb: duckdbHealthy ? 'healthy' : 'unhealthy'
       });
 
-      if (!mysqlHealthy || !duckdbHealthy) {
+      if (!mysqlHealthy || !duckdbHealthy || !clickhouseHealthy) {
         process.exit(1);
       }
     } catch (error) {
@@ -139,13 +149,17 @@ program
   .action(async (options, command) => {
     try {
       const { databaseId, mysql, duckdb } = await getDatabaseConnections(command.parent.opts().database);
+      const clickhouse = ClickHouseConnection.getInstance(databaseId, DatabaseConfigManager.getInstance().getDatabase(databaseId)?.clickhouseDatabase || databaseId);
 
       const mysqlTables = await mysql.getTables();
       const duckdbTables = await duckdb.getTables();
+      await clickhouse.initializeDatabase();
+      const clickhouseTables = await clickhouse.getTables();
 
       console.log(`Tables comparison for database: ${databaseId}`);
       console.log({
         mysql: mysqlTables,
+        clickhouse: clickhouseTables,
         duckdb: duckdbTables,
         missing: mysqlTables.filter(t => !duckdbTables.includes(t))
       });
@@ -242,11 +256,29 @@ program
 
 program
   .command('query <sql>')
-  .description('Execute SQL query on DuckDB')
-  .action(async (sql: string) => {
+  .description('Execute SQL query on ClickHouse, DuckDB, or MySQL')
+  .action(async (sql: string, command) => {
     try {
-      const duckdb = DuckDBConnection.getInstance();
-      const result = await duckdb.query(sql);
+      const parentOptions = command.parent?.opts() || {};
+      const engine = parentOptions.engine || 'clickhouse';
+      const databaseId = parentOptions.database;
+
+      const { databaseId: resolvedDatabaseId, mysql, duckdb } = await getDatabaseConnections(databaseId);
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(resolvedDatabaseId);
+      const clickhouse = ClickHouseConnection.getInstance(
+        resolvedDatabaseId,
+        dbConfig?.clickhouseDatabase || resolvedDatabaseId,
+      );
+
+      let result: any[];
+      if (engine === 'mysql') {
+        result = await mysql.execute(sql);
+      } else if (engine === 'duckdb') {
+        result = await duckdb.query(sql);
+      } else {
+        result = await clickhouse.query(sql);
+      }
+
       console.log('Query result:', JSON.stringify(result, null, 2));
     } catch (error) {
       logger.error('Query failed:', error);

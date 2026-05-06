@@ -25,6 +25,7 @@ export interface DatabaseConfig {
   name: string;
   mysqlConnectionString: string;
   duckdbPath: string;
+  clickhouseDatabase: string;
   createdAt: string;
   updatedAt: string;
   s3?: S3Config;
@@ -67,7 +68,10 @@ export class DatabaseConfigManager {
     try {
       const configs: DatabaseConfig[] = JSON.parse(data);
       configs.forEach(config => {
-        this.databases.set(config.id, config);
+        this.databases.set(config.id, {
+          ...config,
+          clickhouseDatabase: config.clickhouseDatabase || config.id || config.name.toLowerCase().replace(/[^a-z0-9]/g, '_'),
+        });
       });
     } catch (error) {
       // Parse/validation failure — the file content is genuinely corrupt.
@@ -90,6 +94,7 @@ export class DatabaseConfigManager {
       name: 'Default Database',
       mysqlConnectionString: process.env.MYSQL_CONNECTION_STRING || '',
       duckdbPath: config.duckdb.path, // Use config for correct path in dev and production
+      clickhouseDatabase: config.clickhouse.database,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -128,12 +133,17 @@ export class DatabaseConfigManager {
     return this.databases.get(id);
   }
 
-  addDatabase(config: Omit<DatabaseConfig, 'id' | 'createdAt' | 'updatedAt' | 'duckdbPath'>): DatabaseConfig {
+  addDatabase(
+    config: Omit<DatabaseConfig, 'id' | 'createdAt' | 'updatedAt' | 'duckdbPath' | 'clickhouseDatabase'> & {
+      clickhouseDatabase?: string;
+    }
+  ): DatabaseConfig {
     const id = this.generateId(config.name);
     const newConfig: DatabaseConfig = {
       ...config,
       id,
       duckdbPath: `data/${id}.db`,
+      clickhouseDatabase: config.clickhouseDatabase || id,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

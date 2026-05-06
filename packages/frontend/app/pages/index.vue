@@ -14,6 +14,7 @@ interface HealthData {
   status: string
   services?: {
     mysql: string
+    clickhouse?: string
     duckdb: string
   }
 }
@@ -23,6 +24,7 @@ interface StatusData {
   memory?: { rss: number }
   tables?: {
     mysql: number
+    clickhouse?: number
     duckdb: number
     synced?: number
   }
@@ -39,7 +41,7 @@ const queryResultColumns = ref<string[]>([])
 const queryError = ref('')
 const queryExecuting = ref(false)
 const queryExecutionTime = ref<number | null>(null)
-const selectedDatabase = ref<'duckdb' | 'mysql'>('duckdb')
+const selectedDatabase = ref<'clickhouse' | 'duckdb' | 'mysql'>('clickhouse')
 const selectedExample = ref('')
 const queryCurrentPage = ref(1)
 const queryItemsPerPage = ref(100)
@@ -315,7 +317,8 @@ watch(selectedDatabaseId, () => {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="duckdb">DuckDB (Fast)</SelectItem>
+                  <SelectItem value="clickhouse">ClickHouse (Target)</SelectItem>
+                  <SelectItem value="duckdb">DuckDB (Legacy)</SelectItem>
                   <SelectItem value="mysql">MySQL (Source)</SelectItem>
                 </SelectContent>
               </Select>
@@ -469,7 +472,7 @@ SELECT * FROM sync_log ORDER BY created_at DESC LIMIT 100;"
               <div class="w-3 h-3 rounded-full" :class="health.status === 'healthy' ? 'bg-green-500' : 'bg-gray-400'"></div>
             </div>
             <p class="text-xs text-muted-foreground mt-2">
-              MySQL: {{ health.services?.mysql || 'unknown' }} • DuckDB: {{ health.services?.duckdb || 'unknown' }}
+              MySQL: {{ health.services?.mysql || 'unknown' }} • ClickHouse: {{ health.services?.clickhouse || 'unknown' }}
             </p>
           </CardContent>
         </Card>

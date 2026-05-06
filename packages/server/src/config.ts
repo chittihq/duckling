@@ -49,6 +49,13 @@ export const config = {
     connectionString: process.env.MYSQL_CONNECTION_STRING || '',
     maxConnections: parseInt(process.env.MYSQL_MAX_CONNECTIONS || '5'),
   },
+
+  clickhouse: {
+    url: process.env.CLICKHOUSE_URL || 'http://localhost:8123',
+    username: process.env.CLICKHOUSE_USER || 'default',
+    password: process.env.CLICKHOUSE_PASSWORD || '',
+    database: process.env.CLICKHOUSE_DATABASE || 'default',
+  },
   
   sync: {
     intervalMinutes: parseInt(process.env.SYNC_INTERVAL_MINUTES || '15'),

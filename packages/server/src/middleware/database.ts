@@ -1,11 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
 import { DatabaseConfigManager } from '../database/databaseConfig';
 import DuckDBConnection from '../database/duckdb';
+import ClickHouseConnection from '../database/clickhouse';
 import MySQLConnection from '../database/mysql';
 
 export interface RequestWithDatabase extends Request {
   databaseId: string;
   duckdb: DuckDBConnection;
+  clickhouse: ClickHouseConnection;
   mysql: MySQLConnection;
 }
 
@@ -38,6 +40,7 @@ export const attachDatabaseContext = (req: Request, res: Response, next: NextFun
   const reqWithDb = req as RequestWithDatabase;
   reqWithDb.databaseId = databaseId;
   reqWithDb.duckdb = DuckDBConnection.getInstance(databaseId, resolvedDuckdbPath);
+  reqWithDb.clickhouse = ClickHouseConnection.getInstance(databaseId, dbConfig.clickhouseDatabase || databaseId);
   reqWithDb.mysql = MySQLConnection.getInstance(databaseId, dbConfig.mysqlConnectionString);
 
   next();

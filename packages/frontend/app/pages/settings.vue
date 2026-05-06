@@ -60,6 +60,9 @@
               <dt class="text-muted-foreground">DuckDB Path:</dt>
               <dd class="font-mono text-xs">{{ db.duckdbPath }}</dd>
 
+              <dt class="text-muted-foreground">ClickHouse DB:</dt>
+              <dd class="font-mono text-xs">{{ db.clickhouseDatabase || db.id }}</dd>
+
               <dt class="text-muted-foreground">Created:</dt>
               <dd>{{ formatDate(db.createdAt) }}</dd>
 
@@ -90,6 +93,9 @@
               <div class="flex gap-4 text-sm">
                 <span>MySQL: <span :class="connectionStatus[db.id].mysql === 'healthy' ? 'text-green-600' : 'text-red-600'">
                   {{ connectionStatus[db.id].mysql }}
+                </span></span>
+                <span>ClickHouse: <span :class="connectionStatus[db.id].clickhouse === 'healthy' ? 'text-green-600' : 'text-red-600'">
+                  {{ connectionStatus[db.id].clickhouse }}
                 </span></span>
                 <span>DuckDB: <span :class="connectionStatus[db.id].duckdb === 'healthy' ? 'text-green-600' : 'text-red-600'">
                   {{ connectionStatus[db.id].duckdb }}
@@ -520,6 +526,7 @@ interface Database {
   name: string;
   mysqlConnectionString: string;
   duckdbPath: string;
+  clickhouseDatabase?: string;
   createdAt: string;
   updatedAt: string;
   s3?: S3Config;
@@ -583,7 +590,7 @@ const formData = ref({ name: '', mysqlConnectionString: '' });
 const saving = ref(false);
 const testing = ref('');
 const deleting = ref('');
-const connectionStatus = ref<Record<string, { mysql: string; duckdb: string }>>({});
+const connectionStatus = ref<Record<string, { mysql: string; clickhouse: string; duckdb: string }>>({});
 
 // --- Diagnose dialog state ---
 const diagnosing = ref('');
@@ -713,7 +720,7 @@ async function deleteDatabase(id: string) {
 async function testConnection(id: string) {
   try {
     testing.value = id;
-    const data = await post<{ success: boolean; connections?: { mysql: string; duckdb: string }; error?: string }>(
+    const data = await post<{ success: boolean; connections?: { mysql: string; clickhouse: string; duckdb: string }; error?: string }>(
       `/api/databases/${id}/test`
     );
     if (data.success && data.connections) {

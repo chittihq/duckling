@@ -1,4 +1,22 @@
 services:
+  clickhouse:
+    container_name: duckling-clickhouse
+    image: clickhouse/clickhouse-server:24.8
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      - CLICKHOUSE_DB=${CLICKHOUSE_DATABASE:-default}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    volumes:
+      - ./data/clickhouse:/var/lib/clickhouse
+      - ./logs/clickhouse:/var/log/clickhouse-server
+    restart: unless-stopped
+    networks:
+      - duckdb-network
+
   # DuckDB Server - Backend API with MySQL replication
   duckdb-server:
     container_name: duckling-server
@@ -24,6 +42,10 @@ services:
       - DUCKDB_PRESERVE_INSERTION_ORDER=${DUCKDB_PRESERVE_INSERTION_ORDER:-false}
       - MYSQL_CONNECTION_STRING=${MYSQL_CONNECTION_STRING}
       - MYSQL_MAX_CONNECTIONS=${MYSQL_MAX_CONNECTIONS:-5}
+      - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://clickhouse:8123}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+      - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-default}
 
       # Sync configuration
       - SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES:-15}
@@ -57,6 +79,8 @@ services:
       - ./packages/server/src:/app/packages/server/src
       - ./packages/shared/src:/app/packages/shared/src
     restart: unless-stopped
+    depends_on:
+      - clickhouse
     networks:
       - duckdb-network
 

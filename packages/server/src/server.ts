@@ -6,9 +6,12 @@ import * as fs from 'fs';
 import * as http from 'http';
 import { createHash } from 'crypto';
 import DuckDBConnection from './database/duckdb';
+import ClickHouseConnection from './database/clickhouse';
 import MySQLConnection from './database/mysql';
 import SequentialAppenderService from './services/sequentialAppenderService';
 import AutomationService from './services/automationService';
+import ClickHouseSyncService from './services/clickhouseSyncService';
+import ClickHouseAutomationService from './services/clickhouseAutomationService';
 import CDCService from './services/cdcService';
 import WebSocketService from './services/websocketService';
 import LogBufferService from './services/logBufferService';
@@ -381,17 +384,21 @@ class DuckDBServer {
 
             const mysql = MySQLConnection.getInstance(dbConfig.id, dbConfig.mysqlConnectionString);
             const duckdb = DuckDBConnection.getInstance(dbConfig.id, resolvedDuckdbPath);
+            const clickhouse = ClickHouseConnection.getInstance(dbConfig.id, dbConfig.clickhouseDatabase || dbConfig.id);
 
             const mysqlHealthy = await mysql.testConnection();
             const duckdbHealthy = await duckdb.testConnection();
+            await clickhouse.initializeDatabase();
+            const clickhouseHealthy = await clickhouse.testConnection();
 
             return {
               databaseId: dbConfig.id,
               name: dbConfig.name,
-              status: mysqlHealthy && duckdbHealthy ? 'healthy' : 'unhealthy',
+              status: mysqlHealthy && clickhouseHealthy ? 'healthy' : 'unhealthy',
               services: {
                 mysql: mysqlHealthy ? 'healthy' : 'unhealthy',
-                duckdb: duckdbHealthy ? 'healthy' : 'unhealthy'
+                clickhouse: clickhouseHealthy ? 'healthy' : 'unhealthy',
+                duckdb: duckdbHealthy ? 'healthy' : 'unhealthy',
               }
             };
           } catch (error) {
@@ -444,15 +451,19 @@ class DuckDBServer {
 
             const mysql = MySQLConnection.getInstance(dbConfig.id, dbConfig.mysqlConnectionString);
             const duckdb = DuckDBConnection.getInstance(dbConfig.id, resolvedDuckdbPath);
+            const clickhouse = ClickHouseConnection.getInstance(dbConfig.id, dbConfig.clickhouseDatabase || dbConfig.id);
 
             const mysqlTables = await mysql.getTables();
             const duckdbTables = await duckdb.getTables();
+            await clickhouse.initializeDatabase();
+            const clickhouseTables = await clickhouse.getTables();
 
             return {
               databaseId: dbConfig.id,
               name: dbConfig.name,
               tables: {
                 mysql: mysqlTables.length,
+                clickhouse: clickhouseTables.length,
                 duckdb: duckdbTables.length
               }
             };
@@ -490,9 +501,9 @@ class DuckDBServer {
   // Synchronization endpoints
   private async fullSync(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
-      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
+      const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
       const result = await automationService.performFullSyncWithStats();
       if (result.status === 'skipped') {
         res.status(409).json({ error: `Sync skipped: ${result.reason}` });
@@ -512,9 +523,9 @@ class DuckDBServer {
 
   private async incrementalSync(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
-      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
+      const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
       const result = await automationService.performIncrementalSyncWithStats();
       if (result.status === 'skipped') {
         res.status(409).json({ error: `Sync skipped: ${result.reason}` });
@@ -536,8 +547,8 @@ class DuckDBServer {
     try {
       const { tableName } = req.params;
       q(tableName); // validate
-      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const result = await syncService.syncSingleTable(tableName);
       res.json(result);
     } catch (error) {
@@ -548,8 +559,8 @@ class DuckDBServer {
 
   private async getSyncStatus(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const status = await syncService.getSyncStatus();
       res.json(this.serializeBigInt(status));
     } catch (error) {
@@ -562,8 +573,8 @@ class DuckDBServer {
 
   private async getSyncProgress(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const progress = syncService.getSyncProgress();
       res.json(this.serializeBigInt(progress));
     } catch (error) {
@@ -576,9 +587,9 @@ class DuckDBServer {
 
   private async syncEvents(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
-      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
+      const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
 
       // SSE headers
       res.writeHead(200, {
@@ -637,8 +648,8 @@ class DuckDBServer {
 
   private async validateSync(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const validation = await syncService.validateSync();
       res.json(validation);
     } catch (error) {
@@ -652,41 +663,41 @@ class DuckDBServer {
   // Data management endpoint
   private async clearAllData(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { duckdb, databaseId } = req as RequestWithDatabase;
+      const { clickhouse, databaseId } = req as RequestWithDatabase;
       logger.info(`Starting clear all data operation for database: ${databaseId}`);
 
-      // Get tables to drop
-      const tables = await duckdb.getTables();
+      const objectNames = await clickhouse.getAllObjectNames();
+      const rawTables = objectNames.filter((name) => name.endsWith('__raw'));
+      const views = objectNames.filter((name) => !name.endsWith('__raw') && !['appender_watermarks', 'sync_log', 'full_sync_sessions'].includes(name));
 
-      // Drop all tables
-      for (const table of tables) {
+      for (const viewName of views) {
         try {
-          await duckdb.run(`DROP TABLE IF EXISTS ${q(table)}`);
+          await clickhouse.dropView(viewName);
         } catch (error) {
-          logger.warn(`Failed to drop table ${table}:`, error);
+          logger.warn(`Failed to drop view ${viewName}:`, error);
         }
       }
 
-      await duckdb.run('DELETE FROM appender_watermarks');
-      await duckdb.run('DELETE FROM full_sync_sessions');
-
-      // Reinitialize database (watermark table, etc.)
-      logger.info('Reinitializing database after clear');
-      try {
-        duckdb.resetInitialized();
-        await duckdb.initializeDatabase();
-        logger.info('Database reinitialized successfully');
-      } catch (error) {
-        logger.error('Failed to reinitialize database:', error);
-        throw new Error('Failed to reinitialize database after clear');
+      for (const rawTableName of rawTables) {
+        try {
+          await clickhouse.dropTable(rawTableName);
+        } catch (error) {
+          logger.warn(`Failed to drop raw table ${rawTableName}:`, error);
+        }
       }
 
-      logger.info(`Clear all data completed: ${tables.length} tables dropped`);
+      await clickhouse.dropTable('appender_watermarks');
+      await clickhouse.dropTable('sync_log');
+      await clickhouse.dropTable('full_sync_sessions');
+      clickhouse.resetInitialized();
+      await clickhouse.initializeDatabase();
+
+      logger.info(`Clear all data completed: ${views.length + rawTables.length} objects dropped`);
 
       res.json({
         success: true,
-        message: 'All DuckDB data cleared successfully. Database reinitialized.',
-        tablesDropped: tables.length
+        message: 'All ClickHouse data cleared successfully. Database reinitialized.',
+        tablesDropped: views.length + rawTables.length
       });
     } catch (error) {
       logger.error('Clear all data failed:', error);
@@ -700,8 +711,8 @@ class DuckDBServer {
   // Data access endpoints
   private async executeQuery(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { mysql, duckdb, databaseId } = req as RequestWithDatabase;
-      const { sql, params, database = 'duckdb' } = req.body;
+      const { mysql, duckdb, clickhouse, databaseId } = req as RequestWithDatabase;
+      const { sql, params, database = 'clickhouse' } = req.body;
 
       if (!sql) {
         res.status(400).json({ error: 'SQL query is required' });
@@ -709,8 +720,8 @@ class DuckDBServer {
       }
 
       // Validate database parameter
-      if (!['duckdb', 'mysql'].includes(database)) {
-        res.status(400).json({ error: 'Invalid database. Must be "duckdb" or "mysql"' });
+      if (!['clickhouse', 'duckdb', 'mysql'].includes(database)) {
+        res.status(400).json({ error: 'Invalid database. Must be "clickhouse", "duckdb", or "mysql"' });
         return;
       }
 
@@ -724,8 +735,10 @@ class DuckDBServer {
           return;
         }
         result = await mysql.execute(sql, params);
-      } else {
+      } else if (database === 'duckdb') {
         result = await duckdb.query(sql, params);
+      } else {
+        result = await clickhouse.query(sql, params);
       }
 
       // Convert BigInt values to strings for JSON serialization
@@ -745,7 +758,11 @@ class DuckDBServer {
       res.json({
         result: serializedResult,
         database,
-        architecture: database === 'duckdb' ? 'sequential-appender' : 'mysql'
+        architecture: database === 'mysql'
+          ? 'mysql'
+          : database === 'duckdb'
+            ? 'duckdb-sequential-appender'
+            : 'clickhouse'
       });
     } catch (error) {
       logger.error('Query execution failed:', error);
@@ -758,8 +775,8 @@ class DuckDBServer {
 
   private async getTables(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { duckdb } = req as RequestWithDatabase;
-      const tables = await duckdb.getTables();
+      const { clickhouse } = req as RequestWithDatabase;
+      const tables = await clickhouse.getTables();
       res.json(tables);
     } catch (error) {
       logger.error('Get tables failed:', error);
@@ -772,18 +789,16 @@ class DuckDBServer {
   private async getTableSchema(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { name } = req.params;
-      const { duckdb } = req as RequestWithDatabase;
-      const result = await duckdb.execute(`DESCRIBE ${q(name)}`);
+      const { clickhouse } = req as RequestWithDatabase;
+      const result = await clickhouse.getTableSchema(name);
 
-      // After executeRaw conversion, DESCRIBE returns objects with column_name, column_type, etc.
-      // Use bracket notation for reserved keywords (null, default)
       const columns = result.map((row: any) => ({
-        column_name: row.column_name,
-        column_type: row.column_type,
-        null: row['null'],
-        key: row.key,
-        default_value: row['default'],
-        extra: row.extra
+        column_name: row.name,
+        column_type: row.type,
+        null: String(row.type || '').startsWith('Nullable(') ? 'YES' : 'NO',
+        key: '',
+        default_value: row.default_expression || null,
+        extra: row.comment || ''
       }));
 
       res.json({ columns });
@@ -796,7 +811,7 @@ class DuckDBServer {
   private async getTableData(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { name } = req.params;
-      const { duckdb } = req as RequestWithDatabase;
+      const { clickhouse } = req as RequestWithDatabase;
       const { limit = 100, offset = 0 } = req.query;
 
       // Build query with LIMIT and OFFSET to prevent loading too much data
@@ -805,7 +820,7 @@ class DuckDBServer {
       const safeOffset = Math.max(0, parseInt(offset.toString()) || 0);
       let query = `SELECT * FROM ${safeName} LIMIT ${safeLimit} OFFSET ${safeOffset}`;
 
-      const data = await duckdb.execute(query);
+      const data = await clickhouse.execute(query);
 
       // Convert BigInt values to strings for JSON serialization
       // After executeRaw conversion, both DuckDB and MySQL return objects with column names
@@ -830,14 +845,14 @@ class DuckDBServer {
 
   private async getAllTableCounts(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { duckdb } = req as RequestWithDatabase;
-      const tables = await duckdb.getTables();
+      const { clickhouse } = req as RequestWithDatabase;
+      const tables = await clickhouse.getTables();
       const counts: Record<string, number> = {};
 
       // Count sequentially to avoid flooding the shared DuckDB connection with one query per table.
       for (const tableName of tables) {
         try {
-          const count = await duckdb.getTableRowCount(tableName);
+          const count = await clickhouse.getTableRowCount(tableName);
           counts[tableName] = typeof count === 'bigint' ? Number(count) : count;
         } catch (error) {
           logger.warn(`Failed to get count for ${tableName}:`, error);
@@ -858,8 +873,8 @@ class DuckDBServer {
     try {
       const { name } = req.params;
       q(name); // validate
-      const { duckdb } = req as RequestWithDatabase;
-      const count = await duckdb.getTableRowCount(name);
+      const { clickhouse } = req as RequestWithDatabase;
+      const count = await clickhouse.getTableRowCount(name);
       // Convert BigInt to number for JSON serialization
       const serializedCount = typeof count === 'bigint' ? Number(count) : count;
       res.json({ count: serializedCount });
@@ -887,7 +902,8 @@ class DuckDBServer {
 
             const mysql = MySQLConnection.getInstance(dbConfig.id, dbConfig.mysqlConnectionString);
             const duckdb = DuckDBConnection.getInstance(dbConfig.id, resolvedDuckdbPath);
-            const syncService = SequentialAppenderService.getInstance(dbConfig.id, mysql, duckdb);
+            const clickhouse = ClickHouseConnection.getInstance(dbConfig.id, dbConfig.clickhouseDatabase || dbConfig.id);
+            const syncService = ClickHouseSyncService.getInstance(dbConfig.id, mysql, clickhouse);
 
             const status = await syncService.getSyncStatus();
 
@@ -1020,14 +1036,14 @@ class DuckDBServer {
   // Automation & Recovery endpoint handlers
   private async getAutomationStatus(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
-      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
+      const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
       const status = automationService.getStatus();
       res.json({
         success: true,
         status,
-        architecture: 'sequential-appender'
+        architecture: 'clickhouse'
       });
     } catch (error) {
       logger.error('Get automation status failed:', error);
@@ -1040,9 +1056,9 @@ class DuckDBServer {
 
   private async startAutomation(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
-      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
+      const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
       await automationService.start();
       res.json({
         success: true,
@@ -1059,9 +1075,9 @@ class DuckDBServer {
 
   private async stopAutomation(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
-      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
+      const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
       automationService.stop();
       res.json({
         success: true,
@@ -1078,9 +1094,9 @@ class DuckDBServer {
 
   private async manualBackup(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
-      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
+      const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
       // Trigger manual backup via automation service
       await automationService.performBackup();
       res.json({
@@ -1098,9 +1114,9 @@ class DuckDBServer {
 
   private async restoreFromBackup(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
-      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
+      const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
       await automationService.restoreFromLatestBackup();
       res.json({
         success: true,
@@ -1117,9 +1133,9 @@ class DuckDBServer {
 
   private async manualCleanup(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
-      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
+      const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
       // Trigger manual cleanup via automation service
       await automationService.performCleanup();
       res.json({
@@ -1485,6 +1501,7 @@ class DuckDBServer {
 
       // Close the DuckDB connection for this database
       DuckDBConnection.closeInstance(id);
+      await ClickHouseConnection.closeInstance(id);
 
       res.json({ success: true, message: 'Database deleted successfully' });
     } catch (error) {
@@ -1515,14 +1532,18 @@ class DuckDBServer {
       const mysqlHealthy = await mysqlConn.testConnection();
       await mysqlConn.close();
 
-      // Test DuckDB connection
       const duckdbConn = DuckDBConnection.getInstance(id, dbConfig.duckdbPath);
       const duckdbHealthy = await duckdbConn.testConnection();
+
+      const clickhouseConn = ClickHouseConnection.getInstance(id, dbConfig.clickhouseDatabase || id);
+      await clickhouseConn.initializeDatabase();
+      const clickhouseHealthy = await clickhouseConn.testConnection();
 
       res.json({
         success: true,
         connections: {
           mysql: mysqlHealthy ? 'healthy' : 'unhealthy',
+          clickhouse: clickhouseHealthy ? 'healthy' : 'unhealthy',
           duckdb: duckdbHealthy ? 'healthy' : 'unhealthy'
         }
       });
@@ -1790,24 +1811,7 @@ class DuckDBServer {
 
   private async triggerS3Backup(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { databaseId } = req as RequestWithDatabase;
-      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(databaseId);
-      if (!dbConfig?.s3?.enabled) {
-        res.status(400).json({ success: false, error: 'S3 not configured or not enabled for this database' });
-        return;
-      }
-
-      const resolvedDuckdbPath = dbConfig.duckdbPath.startsWith('data/')
-        ? `/app/${dbConfig.duckdbPath}`
-        : dbConfig.duckdbPath;
-
-      if (!fs.existsSync(resolvedDuckdbPath)) {
-        res.status(400).json({ success: false, error: 'DuckDB file not found' });
-        return;
-      }
-
-      const key = await s3BackupService.uploadBackup(databaseId, resolvedDuckdbPath, dbConfig.s3);
-      res.json({ success: true, key, message: `Backup uploaded to S3: ${key}` });
+      res.status(501).json({ success: false, error: 'ClickHouse S3 backup is not implemented in this migration yet' });
     } catch (error) {
       logger.error('Trigger S3 backup failed:', error);
       res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
@@ -1816,15 +1820,15 @@ class DuckDBServer {
 
   private async restoreFromS3(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { databaseId, mysql, duckdb } = req as RequestWithDatabase;
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
       const { key } = req.body;
       if (!key) {
         res.status(400).json({ success: false, error: 'Backup key is required' });
         return;
       }
 
-      const syncService = SequentialAppenderService.getInstance(databaseId, mysql, duckdb);
-      const automationService = AutomationService.getInstance(databaseId, syncService, duckdb, mysql);
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
+      const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
       await automationService.restoreFromS3Backup(key);
       res.json({ success: true, message: 'Database restored from S3 backup successfully' });
     } catch (error) {
@@ -1849,7 +1853,7 @@ class DuckDBServer {
 
   private async getTableValidationDetails(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { mysql, duckdb } = req as RequestWithDatabase;
+      const { mysql, clickhouse } = req as RequestWithDatabase;
       const { tableName, skipMySQLCount } = req.body;
 
       if (!tableName) {
@@ -1859,29 +1863,28 @@ class DuckDBServer {
 
       const safeTableName = q(tableName); // validate before use in queries
 
-      // Check DuckDB
-      let duckdbExists = false;
-      let duckdbColumnCount = 0;
-      let duckdbRecordCount = 0;
-      let duckdbColumns: string[] = [];
+      // Check ClickHouse
+      let clickhouseExists = false;
+      let clickhouseColumnCount = 0;
+      let clickhouseRecordCount = 0;
+      let clickhouseColumns: string[] = [];
 
       try {
-        const duckdbTables = await duckdb.getTables();
-        duckdbExists = duckdbTables.includes(tableName);
+        const clickhouseTables = await clickhouse.getTables();
+        clickhouseExists = clickhouseTables.includes(tableName);
 
-        if (duckdbExists) {
+        if (clickhouseExists) {
           // Get column count and names
-          const schema = await duckdb.execute(`DESCRIBE ${safeTableName}`);
-          duckdbColumnCount = schema.length;
-          // After executeRaw conversion, DESCRIBE returns objects with column_name property
-          duckdbColumns = schema.map((col: any) => col.column_name);
+          const schema = await clickhouse.getTableSchema(tableName);
+          clickhouseColumnCount = schema.length;
+          clickhouseColumns = schema.map((col: any) => col.name);
 
           // Get record count
-          const countResult = await duckdb.getTableRowCount(tableName);
-          duckdbRecordCount = typeof countResult === 'bigint' ? Number(countResult) : countResult;
+          const countResult = await clickhouse.getTableRowCount(tableName);
+          clickhouseRecordCount = typeof countResult === 'bigint' ? Number(countResult) : countResult;
         }
       } catch (error) {
-        logger.warn(`Failed to get DuckDB details for ${tableName}:`, error);
+        logger.warn(`Failed to get ClickHouse details for ${tableName}:`, error);
       }
 
       // Check MySQL
@@ -1913,12 +1916,10 @@ class DuckDBServer {
 
       // Check if columns match (allow DuckDB to have exactly 1 extra column for ingest_date)
       const columnsMatch =
-        duckdbColumnCount === mysqlColumnCount ||
-        duckdbColumnCount === mysqlColumnCount + 1;
+        clickhouseColumnCount === mysqlColumnCount;
 
-      // Detect missing columns (columns in MySQL but not in DuckDB)
-      const missingColumns = mysqlColumns.filter(col => !duckdbColumns.includes(col));
-      const extraColumns = duckdbColumns.filter(col => !mysqlColumns.includes(col) && col !== 'ingest_date');
+      const missingColumns = mysqlColumns.filter(col => !clickhouseColumns.includes(col));
+      const extraColumns = clickhouseColumns.filter(col => !mysqlColumns.includes(col));
 
       // Detect primary key from MySQL schema
       const pkCol = mysqlSchema.find((col: any) => col.Key === 'PRI');
@@ -1927,25 +1928,25 @@ class DuckDBServer {
       const pkIsNumeric = pkCol ? numericTypes.some(t => (pkCol.Type as string).toUpperCase().includes(t)) : false;
 
       // Run max-ID and checksum queries when both tables exist and PK is detected
-      let duckdbMaxId: string | null = null;
+      let clickhouseMaxId: string | null = null;
       let mysqlMaxId: string | null = null;
-      let duckdbChecksum: string | null = null;
+      let clickhouseChecksum: string | null = null;
       let mysqlChecksum: string | null = null;
 
-      if (duckdbExists && mysqlExists && primaryKey) {
+      if (clickhouseExists && mysqlExists && primaryKey) {
         try {
           const safePK = q(primaryKey);
-          // Build queries (MySQL uses backticks, DuckDB uses double-quotes)
+          // Build queries (MySQL uses backticks, ClickHouse accepts quoted identifiers)
           const maxIdPromises: Promise<any>[] = [
             mysql.execute(`SELECT MAX(${quoteMySQL(primaryKey)}) as max_id FROM ${quoteMySQL(tableName)}`),
-            duckdb.execute(`SELECT MAX(${safePK}) as max_id FROM ${safeTableName}`)
+            clickhouse.execute(`SELECT MAX(${safePK}) as max_id FROM ${safeTableName}`)
           ];
 
           // Add checksum queries for numeric PKs
           if (pkIsNumeric) {
             maxIdPromises.push(
               mysql.execute(`SELECT SUM(CAST(${quoteMySQL(primaryKey)} AS SIGNED)) as checksum FROM ${quoteMySQL(tableName)}`),
-              duckdb.execute(`SELECT SUM(CAST(${safePK} AS BIGINT)) as checksum FROM ${safeTableName}`)
+              clickhouse.execute(`SELECT SUM(CAST(${safePK} AS Int64)) as checksum FROM ${safeTableName}`)
             );
           }
 
@@ -1953,16 +1954,16 @@ class DuckDBServer {
 
           // Extract max ID results (stringify to avoid BigInt precision issues)
           const mysqlMaxIdRow = results[0]?.[0];
-          const duckdbMaxIdRow = results[1]?.[0];
+          const clickhouseMaxIdRow = results[1]?.[0];
           mysqlMaxId = mysqlMaxIdRow?.max_id != null ? String(mysqlMaxIdRow.max_id) : null;
-          duckdbMaxId = duckdbMaxIdRow?.max_id != null ? String(duckdbMaxIdRow.max_id) : null;
+          clickhouseMaxId = clickhouseMaxIdRow?.max_id != null ? String(clickhouseMaxIdRow.max_id) : null;
 
           // Extract checksum results for numeric PKs
           if (pkIsNumeric) {
             const mysqlChecksumRow = results[2]?.[0];
-            const duckdbChecksumRow = results[3]?.[0];
+            const clickhouseChecksumRow = results[3]?.[0];
             mysqlChecksum = mysqlChecksumRow?.checksum != null ? String(mysqlChecksumRow.checksum) : null;
-            duckdbChecksum = duckdbChecksumRow?.checksum != null ? String(duckdbChecksumRow.checksum) : null;
+            clickhouseChecksum = clickhouseChecksumRow?.checksum != null ? String(clickhouseChecksumRow.checksum) : null;
           }
         } catch (error) {
           logger.warn(`Failed to get max-ID/checksum for ${tableName}:`, error);
@@ -1973,41 +1974,41 @@ class DuckDBServer {
       let errorType = null;
       let errorMessage = null;
 
-      if (duckdbExists && mysqlExists) {
+      if (clickhouseExists && mysqlExists) {
         if (missingColumns.length > 0) {
           errorType = 'schema_mismatch';
-          errorMessage = `Missing columns in DuckDB: ${missingColumns.join(', ')}`;
+          errorMessage = `Missing columns in ClickHouse: ${missingColumns.join(', ')}`;
         } else if (extraColumns.length > 0) {
           errorType = 'schema_mismatch';
-          errorMessage = `Extra columns in DuckDB: ${extraColumns.join(', ')}`;
-        } else if (primaryKey && duckdbMaxId !== mysqlMaxId) {
+          errorMessage = `Extra columns in ClickHouse: ${extraColumns.join(', ')}`;
+        } else if (primaryKey && clickhouseMaxId !== mysqlMaxId) {
           errorType = 'max_id_mismatch';
-          errorMessage = `Max ${primaryKey} mismatch: DuckDB (${duckdbMaxId}) vs MySQL (${mysqlMaxId})`;
-        } else if (pkIsNumeric && duckdbChecksum !== mysqlChecksum) {
+          errorMessage = `Max ${primaryKey} mismatch: ClickHouse (${clickhouseMaxId}) vs MySQL (${mysqlMaxId})`;
+        } else if (pkIsNumeric && clickhouseChecksum !== mysqlChecksum) {
           errorType = 'checksum_mismatch';
-          errorMessage = `Checksum SUM(${primaryKey}) mismatch: DuckDB (${duckdbChecksum}) vs MySQL (${mysqlChecksum})`;
-        } else if (mysqlRecordCount !== null && duckdbRecordCount !== mysqlRecordCount) {
+          errorMessage = `Checksum SUM(${primaryKey}) mismatch: ClickHouse (${clickhouseChecksum}) vs MySQL (${mysqlChecksum})`;
+        } else if (mysqlRecordCount !== null && clickhouseRecordCount !== mysqlRecordCount) {
           // Only compare record counts if MySQL count is available
           errorType = 'record_count_mismatch';
-          errorMessage = `Record count mismatch: DuckDB (${duckdbRecordCount}) vs MySQL (${mysqlRecordCount})`;
+          errorMessage = `Record count mismatch: ClickHouse (${clickhouseRecordCount}) vs MySQL (${mysqlRecordCount})`;
         }
-      } else if (!duckdbExists && mysqlExists) {
+      } else if (!clickhouseExists && mysqlExists) {
         errorType = 'missing_in_duckdb';
-        errorMessage = 'Table exists in MySQL but not in DuckDB';
-      } else if (duckdbExists && !mysqlExists) {
+        errorMessage = 'Table exists in MySQL but not in ClickHouse';
+      } else if (clickhouseExists && !mysqlExists) {
         errorType = 'orphaned_in_duckdb';
-        errorMessage = 'Table exists in DuckDB but not in MySQL';
+        errorMessage = 'Table exists in ClickHouse but not in MySQL';
       }
 
       res.json({
         primaryKey,
         duckdb: {
-          exists: duckdbExists,
-          columnCount: duckdbColumnCount,
-          recordCount: duckdbRecordCount,
-          columns: duckdbColumns,
-          maxId: duckdbMaxId,
-          checksum: duckdbChecksum
+          exists: clickhouseExists,
+          columnCount: clickhouseColumnCount,
+          recordCount: clickhouseRecordCount,
+          columns: clickhouseColumns,
+          maxId: clickhouseMaxId,
+          checksum: clickhouseChecksum
         },
         mysql: {
           exists: mysqlExists,
@@ -2036,7 +2037,7 @@ class DuckDBServer {
    */
   private async deleteTableFromDuckDB(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { duckdb } = req as RequestWithDatabase;
+      const { clickhouse } = req as RequestWithDatabase;
       const { tableName } = req.params;
 
       if (!tableName) {
@@ -2046,23 +2047,29 @@ class DuckDBServer {
 
       const safeTableName = q(tableName);
 
-      // Check if table exists in DuckDB
-      const duckdbTables = await duckdb.getTables();
-      if (!duckdbTables.includes(tableName)) {
+      const clickhouseTables = await clickhouse.getTables();
+      if (!clickhouseTables.includes(tableName)) {
         res.status(404).json({
           success: false,
-          error: `Table "${tableName}" does not exist in DuckDB`
+          error: `Table "${tableName}" does not exist in ClickHouse`
         });
         return;
       }
 
-      // Drop the table
-      await duckdb.run(`DROP TABLE IF EXISTS ${safeTableName}`);
-      logger.info(`Table "${tableName}" deleted from DuckDB`);
+      await clickhouse.dropView(tableName);
+      await clickhouse.dropTable(`${tableName}__raw`);
+      logger.info(`Table "${tableName}" deleted from ClickHouse`);
 
       // Also delete the watermark to ensure fresh sync
       try {
-        await duckdb.run(`DELETE FROM appender_watermarks WHERE table_name = ?`, [tableName]);
+        await clickhouse.insert('appender_watermarks', [{
+          table_name: tableName,
+          last_processed_id: null,
+          last_processed_timestamp: null,
+          primary_key_column: null,
+          timestamp_column: null,
+          updated_at: new Date().toISOString().slice(0, 23).replace('T', ' '),
+        }]);
         logger.info(`Watermark for "${tableName}" cleared`);
       } catch (error) {
         logger.warn(`Failed to clear watermark for ${tableName}:`, error);
@@ -2070,7 +2077,7 @@ class DuckDBServer {
 
       res.json({
         success: true,
-        message: `Table "${tableName}" deleted successfully from DuckDB. Next sync will recreate it with the latest schema.`
+        message: `Table "${tableName}" deleted successfully from ClickHouse. Next sync will recreate it with the latest schema.`
       });
     } catch (error) {
       logger.error(`Delete table failed for ${req.params.tableName}:`, error);
@@ -2134,10 +2141,11 @@ class DuckDBServer {
           const mysql = MySQLConnection.getInstance(dbConfig.id, dbConfig.mysqlConnectionString);
           const duckdb = DuckDBConnection.getInstance(dbConfig.id, resolvedDuckdbPath);
           await duckdb.initializeDatabase();
+          const clickhouse = ClickHouseConnection.getInstance(dbConfig.id, dbConfig.clickhouseDatabase || dbConfig.id);
+          await clickhouse.initializeDatabase();
 
-          // Initialize sync and automation services for this database
-          const syncService = SequentialAppenderService.getInstance(dbConfig.id, mysql, duckdb);
-          const automationService = AutomationService.getInstance(dbConfig.id, syncService, duckdb, mysql);
+          const syncService = ClickHouseSyncService.getInstance(dbConfig.id, mysql, clickhouse);
+          const automationService = ClickHouseAutomationService.getInstance(dbConfig.id, syncService, clickhouse, mysql);
 
           // Calculate staggered offset: each database gets 5 minutes offset from previous
           // This prevents multiple databases from syncing simultaneously

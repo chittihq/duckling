@@ -15,8 +15,9 @@ export interface HealthResponse {
   timestamp: string;
   uptime: number;
   duckdb: DatabaseHealth;
+  clickhouse?: DatabaseHealth;
   mysql: DatabaseHealth;
-  architecture: 'sequential-appender';
+  architecture: 'sequential-appender' | 'clickhouse';
   version?: string;
 }
 
@@ -29,8 +30,9 @@ export interface StatusResponse {
   tableCount: number;
   totalRecords: number;
   duckdbConnected: boolean;
+  clickhouseConnected?: boolean;
   mysqlConnected: boolean;
   lastSync?: Date;
-  architecture: 'sequential-appender';
+  architecture: 'sequential-appender' | 'clickhouse';
   version?: string;
 }
