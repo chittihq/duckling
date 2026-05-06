@@ -5,7 +5,7 @@ export class SyncAlreadyInProgressError extends Error {
   }
 }
 
-export interface AppenderSyncResult {
+export interface SyncResult {
   table: string;
   recordsProcessed: number;
   duration: number;
@@ -19,7 +19,7 @@ export interface AppenderSyncResult {
   };
 }
 
-export interface AppenderSyncStats {
+export interface SyncStats {
   totalTables: number;
   successfulTables: number;
   failedTables: number;
@@ -42,15 +42,3 @@ export interface SyncProgressStatus {
   startedAt: string | null;
   lastError: string | null;
 }
-
-/**
- * Legacy DuckDB sync service removed during the ClickHouse migration.
- * Kept as a compatibility stub for imports that only need shared types.
- */
-class SequentialAppenderService {
-  static getInstance(): never {
-    throw new Error('SequentialAppenderService was removed during the ClickHouse migration');
-  }
-}
-
-export default SequentialAppenderService;

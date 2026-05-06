@@ -3,10 +3,10 @@
  *
  * Implements a MySQL-compatible server using mysql2's built-in server support.
  * Clients (mysql CLI, mysql2, Sequelize, phpMyAdmin, DBeaver, etc.) can connect
- * on a dedicated TCP port and run read-only queries against the replicated DuckDB data.
+ * on a dedicated TCP port and run read-only queries against the replicated ClickHouse data.
  *
  * Architecture:
- *   TCP connection → mysql2 wire protocol → SQL router → DuckDB query → MySQL result format
+ *   TCP connection → mysql2 wire protocol → SQL router → ClickHouse query → MySQL result format
  */
 
 import ClickHouseConnection from '../database/clickhouse';
@@ -467,7 +467,7 @@ export class MySQLProtocolServer {
 
     const { rows, columnNames, columnTypes } = await clickhouse.executeWithMetadata(sql);
 
-    // Forwarded DuckDB result sets use compatibility-first text metadata.
+    // Forwarded ClickHouse result sets use compatibility-first text metadata.
     const columns = columnNames.map((name: string, i: number) =>
       buildForwardedColumnDefinition(name, columnTypes[i]),
     );

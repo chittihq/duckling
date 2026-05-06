@@ -116,7 +116,7 @@ export class WorkerPool {
    * @param rows     Raw row objects from MySQL
    * @param columns  Column names in order
    * @param columnTypes  Map of column name → MySQL type string
-   * @returns Sanitized rows as column-ordered arrays (ready for DuckDB append)
+   * @returns Sanitized rows as column-ordered arrays ready for batch insertion
    */
   sanitizeBatch(
     rows: Record<string, any>[],

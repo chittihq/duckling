@@ -5,7 +5,6 @@ import logger from './logger';
 import config from './config';
 import * as fs from 'fs';
 import * as path from 'path';
-import { CDCService } from './services/cdcService';
 
 // Enable garbage collection if available
 if (global.gc) {
@@ -132,11 +131,6 @@ async function gracefulShutdown(signal: string, server: ClickHouseServer): Promi
   console.log(`Received ${signal}, starting graceful shutdown...`);
 
   try {
-    // Stop all CDC instances first (waits for event queues to drain)
-    console.log('Stopping CDC services...');
-    await CDCService.stopAll();
-    console.log('CDC services stopped');
-
     // Close HTTP server
     console.log('Closing HTTP server...');
     await server.stop();

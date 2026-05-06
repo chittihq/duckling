@@ -37,39 +37,39 @@ export interface DiagnoseProgressEvent {
   detail: string;
 }
 
-// --- Type mapping (duplicated from sequentialAppenderService to avoid coupling) ---
+// --- Type mapping for sync compatibility ---
 
-function mapMySQLTypeToDuckDB(mysqlType: string): { duckdbType: string; isDefault: boolean } {
+function mapMySQLTypeToClickHouse(mysqlType: string): { clickhouseType: string; isDefault: boolean } {
   const type = mysqlType.toLowerCase();
 
   // String/text types first to avoid false matches (e.g. enum('Internship') contains 'int')
-  if (type.includes('enum')) return { duckdbType: 'VARCHAR', isDefault: false };
-  if (type.includes('set')) return { duckdbType: 'VARCHAR', isDefault: false };
-  if (type.includes('json')) return { duckdbType: 'JSON', isDefault: false };
-  if (type.includes('text')) return { duckdbType: 'TEXT', isDefault: false };
-  if (type.includes('varchar') || type.includes('char')) return { duckdbType: 'VARCHAR', isDefault: false };
-  if (type.includes('blob') || type.includes('binary')) return { duckdbType: 'BLOB', isDefault: false };
+  if (type.includes('enum')) return { clickhouseType: 'String', isDefault: false };
+  if (type.includes('set')) return { clickhouseType: 'String', isDefault: false };
+  if (type.includes('json')) return { clickhouseType: 'String', isDefault: false };
+  if (type.includes('text')) return { clickhouseType: 'String', isDefault: false };
+  if (type.includes('varchar') || type.includes('char')) return { clickhouseType: 'String', isDefault: false };
+  if (type.includes('blob') || type.includes('binary')) return { clickhouseType: 'String', isDefault: false };
 
   // Timestamp and date types
-  if (type.includes('timestamp')) return { duckdbType: 'TIMESTAMP', isDefault: false };
-  if (type.includes('datetime')) return { duckdbType: 'TIMESTAMP', isDefault: false };
-  if (type.includes('date')) return { duckdbType: 'DATE', isDefault: false };
-  if (type.includes('time')) return { duckdbType: 'TIME', isDefault: false };
+  if (type.includes('timestamp')) return { clickhouseType: 'DateTime64(3)', isDefault: false };
+  if (type.includes('datetime')) return { clickhouseType: 'DateTime64(3)', isDefault: false };
+  if (type.includes('date')) return { clickhouseType: 'DateTime64(3)', isDefault: false };
+  if (type.includes('time')) return { clickhouseType: 'DateTime64(3)', isDefault: false };
 
   // Numeric types
-  if (type.includes('bigint')) return { duckdbType: 'BIGINT', isDefault: false };
-  if (type.includes('tinyint')) return { duckdbType: 'TINYINT', isDefault: false };
-  if (type.includes('smallint')) return { duckdbType: 'SMALLINT', isDefault: false };
-  if (type.includes('mediumint')) return { duckdbType: 'BIGINT', isDefault: false };
-  if (type.includes('int')) return { duckdbType: 'BIGINT', isDefault: false };
-  if (type.includes('decimal') || type.includes('numeric')) return { duckdbType: 'DECIMAL', isDefault: false };
-  if (type.includes('float')) return { duckdbType: 'FLOAT', isDefault: false };
-  if (type.includes('double')) return { duckdbType: 'DOUBLE', isDefault: false };
-  if (type.includes('boolean') || type.includes('bool')) return { duckdbType: 'BOOLEAN', isDefault: false };
-  if (type.includes('bit')) return { duckdbType: 'VARCHAR', isDefault: false };
+  if (type.includes('bigint')) return { clickhouseType: 'Int64', isDefault: false };
+  if (type.includes('tinyint')) return { clickhouseType: 'Int8', isDefault: false };
+  if (type.includes('smallint')) return { clickhouseType: 'Int16', isDefault: false };
+  if (type.includes('mediumint')) return { clickhouseType: 'Int32', isDefault: false };
+  if (type.includes('int')) return { clickhouseType: 'Int32', isDefault: false };
+  if (type.includes('decimal') || type.includes('numeric')) return { clickhouseType: 'Decimal', isDefault: false };
+  if (type.includes('float')) return { clickhouseType: 'Float32', isDefault: false };
+  if (type.includes('double')) return { clickhouseType: 'Float64', isDefault: false };
+  if (type.includes('boolean') || type.includes('bool')) return { clickhouseType: 'UInt8', isDefault: false };
+  if (type.includes('bit')) return { clickhouseType: 'String', isDefault: false };
 
   // Fallback — truly unsupported type
-  return { duckdbType: 'VARCHAR', isDefault: true };
+  return { clickhouseType: 'String', isDefault: true };
 }
 
 // --- Timestamp detection (same priority as sequentialAppenderService) ---
@@ -239,9 +239,9 @@ export async function diagnoseDatabase(
       // Column type mapping
       const unsupported: Array<{ column: string; type: string; mapping: string }> = [];
       for (const col of schema) {
-        const { duckdbType, isDefault } = mapMySQLTypeToDuckDB(col.Type);
+        const { clickhouseType, isDefault } = mapMySQLTypeToClickHouse(col.Type);
         if (isDefault) {
-          unsupported.push({ column: col.Field, type: col.Type, mapping: duckdbType });
+          unsupported.push({ column: col.Field, type: col.Type, mapping: clickhouseType });
         }
       }
 

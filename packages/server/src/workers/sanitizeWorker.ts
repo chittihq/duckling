@@ -4,7 +4,7 @@
  * Worker thread entry point for CPU-heavy row sanitization.
  * Receives raw row batches + column type map from the main thread,
  * runs sanitizeValue() per cell, and returns clean arrays ready for
- * DuckDB append/insert.
+ * batch insertion.
  *
  * Communication protocol (via parentPort):
  *   Main → Worker: { id, rows: Record<string,any>[], columns: string[], columnTypes: Record<string,string> }

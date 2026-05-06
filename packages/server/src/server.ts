@@ -14,9 +14,8 @@ import LogBufferService from './services/logBufferService';
 import QueryMetricsService from './services/queryMetricsService';
 import SystemMetricsService from './services/systemMetricsService';
 import { DatabaseConfigManager } from './database/databaseConfig';
-import type { DatabaseConfig, S3Config } from './database/databaseConfig';
+import type { DatabaseConfig } from './database/databaseConfig';
 import { attachDatabaseContext, RequestWithDatabase } from './middleware/database';
-import s3BackupService from './services/s3BackupService';
 import { diagnoseDatabase, DiagnoseProgressEvent } from './services/diagnoseService';
 import { getQueryGovernor, QueryGovernorError } from './services/queryGovernor';
 import { WorkerPool } from './workers/workerPool';
@@ -268,17 +267,6 @@ class ClickHouseServer {
     this.app.post('/api/databases/:id/diagnose', this.diagnoseDatabaseConnection.bind(this));
     this.app.get('/api/databases/:id/diagnose/stream', this.diagnoseDatabaseConnectionStream.bind(this));
 
-    // S3 config endpoints (per database by :id, no ?db= needed)
-    this.app.get('/api/databases/:id/s3', this.getS3Config.bind(this));
-    this.app.put('/api/databases/:id/s3', this.saveS3Config.bind(this));
-    this.app.delete('/api/databases/:id/s3', this.deleteS3Config.bind(this));
-    this.app.post('/api/databases/:id/s3/test', this.testS3Connection.bind(this));
-
-    // Backup endpoints (use ?db= for database context)
-    this.app.get('/api/backups', attachDatabaseContext, this.listBackups.bind(this));
-    this.app.post('/api/backups/s3', attachDatabaseContext, this.triggerS3Backup.bind(this));
-    this.app.post('/api/backups/s3/restore', attachDatabaseContext, this.restoreFromS3.bind(this));
-
     // Serve static files from Nuxt build output (production)
     const publicPath = path.join(__dirname, '..', 'public');
     this.app.use(express.static(publicPath));
@@ -302,15 +290,7 @@ class ClickHouseServer {
     this.app.get('/automation/status', attachDatabaseContext, this.getAutomationStatus.bind(this));
     this.app.post('/automation/start', attachDatabaseContext, this.startAutomation.bind(this));
     this.app.post('/automation/stop', attachDatabaseContext, this.stopAutomation.bind(this));
-    this.app.post('/automation/backup', attachDatabaseContext, this.manualBackup.bind(this));
-    this.app.post('/automation/restore', attachDatabaseContext, this.restoreFromBackup.bind(this));
     this.app.post('/automation/cleanup', attachDatabaseContext, this.manualCleanup.bind(this));
-
-    // CDC (Change Data Capture) endpoints (with database context)
-    this.app.get('/cdc/status', attachDatabaseContext, this.getCDCStatus.bind(this));
-    this.app.post('/cdc/start', attachDatabaseContext, this.startCDC.bind(this));
-    this.app.post('/cdc/stop', attachDatabaseContext, this.stopCDC.bind(this));
-    this.app.post('/cdc/reset-stats', attachDatabaseContext, this.resetCDCStats.bind(this));
 
     // Data access endpoints (with database context)
     this.app.post('/api/query', attachDatabaseContext, this.executeQuery.bind(this));
@@ -332,9 +312,6 @@ class ClickHouseServer {
 
     // Worker pool endpoint
     this.app.get('/api/workers/stats', this.getWorkerPoolStats.bind(this));
-
-    // Read replica endpoint
-    this.app.get('/api/replica/status', attachDatabaseContext, this.getReplicaStatus.bind(this));
 
     // Validation endpoints
     this.app.get('/api/validation/mysql-tables', attachDatabaseContext, this.getMySQLTables.bind(this));
@@ -717,7 +694,7 @@ class ClickHouseServer {
       }
 
       // Convert BigInt values to strings for JSON serialization
-      // Both DuckDB and MySQL now return objects with column names
+      // Both ClickHouse and MySQL return objects with column names
       const serializedResult = result.map((row: any) => {
         const serializedRow: any = {};
         for (const [key, value] of Object.entries(row)) {
@@ -794,7 +771,7 @@ class ClickHouseServer {
       const data = await clickhouse.execute(query);
 
       // Convert BigInt values to strings for JSON serialization
-      // After executeRaw conversion, both DuckDB and MySQL return objects with column names
+      // Both ClickHouse and MySQL return objects with column names
       const serializedData = data.map((row: any) => {
         const serializedRow: any = {};
         for (const [key, value] of Object.entries(row)) {
@@ -820,7 +797,7 @@ class ClickHouseServer {
       const tables = await clickhouse.getTables();
       const counts: Record<string, number> = {};
 
-      // Count sequentially to avoid flooding the shared DuckDB connection with one query per table.
+      // Count sequentially to avoid flooding the shared ClickHouse connection with one query per table.
       for (const tableName of tables) {
         try {
           const count = await clickhouse.getTableRowCount(tableName);
@@ -955,20 +932,6 @@ class ClickHouseServer {
     }
   }
 
-  private async getReplicaStatus(req: express.Request, res: express.Response): Promise<void> {
-    try {
-      res.status(501).json({
-        success: false,
-        error: 'Read-replica mode is not available in the ClickHouse migration yet'
-      });
-    } catch (error) {
-      logger.error('Get replica status failed:', error);
-      res.status(500).json({
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
-  }
-
   private serializeBigInt(obj: any): any {
     if (obj === null || obj === undefined) {
       return obj;
@@ -1057,45 +1020,6 @@ class ClickHouseServer {
     }
   }
 
-  private async manualBackup(req: express.Request, res: express.Response): Promise<void> {
-    try {
-      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
-      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
-      const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
-      // Trigger manual backup via automation service
-      await automationService.performBackup();
-      res.json({
-        success: true,
-        message: 'Manual backup completed successfully'
-      });
-    } catch (error) {
-      logger.error('Manual backup failed:', error);
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
-  }
-
-  private async restoreFromBackup(req: express.Request, res: express.Response): Promise<void> {
-    try {
-      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
-      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
-      const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
-      await automationService.restoreFromLatestBackup();
-      res.json({
-        success: true,
-        message: 'Restore from backup completed successfully'
-      });
-    } catch (error) {
-      logger.error('Restore from backup failed:', error);
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
-  }
-
   private async manualCleanup(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
@@ -1109,68 +1033,6 @@ class ClickHouseServer {
       });
     } catch (error) {
       logger.error('Manual cleanup failed:', error);
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
-  }
-
-  // CDC (Change Data Capture) endpoint handlers
-  private async getCDCStatus(req: express.Request, res: express.Response): Promise<void> {
-    try {
-      res.status(501).json({
-        success: false,
-        error: 'CDC is not available in the ClickHouse migration yet',
-        enabled: false
-      });
-    } catch (error) {
-      logger.error('Get CDC status failed:', error);
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
-  }
-
-  private async startCDC(req: express.Request, res: express.Response): Promise<void> {
-    try {
-      res.status(501).json({
-        success: false,
-        error: 'CDC start is not available in the ClickHouse migration yet'
-      });
-    } catch (error) {
-      logger.error('Start CDC failed:', error);
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
-  }
-
-  private async stopCDC(req: express.Request, res: express.Response): Promise<void> {
-    try {
-      res.status(501).json({
-        success: false,
-        error: 'CDC stop is not available in the ClickHouse migration yet'
-      });
-    } catch (error) {
-      logger.error('Stop CDC failed:', error);
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
-  }
-
-  private async resetCDCStats(req: express.Request, res: express.Response): Promise<void> {
-    try {
-      res.status(501).json({
-        success: false,
-        error: 'CDC stats reset is not available in the ClickHouse migration yet'
-      });
-    } catch (error) {
-      logger.error('Reset CDC stats failed:', error);
       res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'
@@ -1514,212 +1376,6 @@ class ClickHouseServer {
         sendSSE(res, 'diagnose-error', { error: error instanceof Error ? error.message : 'Unknown error' });
         res.end();
       }
-    }
-  }
-
-  // S3 config handlers
-  private async getS3Config(req: express.Request, res: express.Response): Promise<void> {
-    try {
-      const { id } = req.params;
-      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(id);
-      if (!dbConfig) {
-        res.status(404).json({ success: false, error: 'Database not found' });
-        return;
-      }
-      if (!dbConfig.s3) {
-        res.json({ success: true, s3: null });
-        return;
-      }
-      // Return config with credentials masked
-      res.json({
-        success: true,
-        s3: {
-          ...dbConfig.s3,
-          secretAccessKey: '***',
-          ...(dbConfig.s3.encryptionKey ? { encryptionKey: '***' } : {}),
-        },
-      });
-    } catch (error) {
-      logger.error('Get S3 config failed:', error);
-      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
-    }
-  }
-
-  private async saveS3Config(req: express.Request, res: express.Response): Promise<void> {
-    try {
-      const { id } = req.params;
-      const dbManager = DatabaseConfigManager.getInstance();
-      const dbConfig = dbManager.getDatabase(id);
-      if (!dbConfig) {
-        res.status(404).json({ success: false, error: 'Database not found' });
-        return;
-      }
-
-      const {
-        enabled, bucket, region, accessKeyId, secretAccessKey,
-        endpoint, forcePathStyle, pathPrefix,
-        encryption, kmsKeyId, encryptionKey,
-        s3BackupIntervalHours, s3BackupRetentionDays,
-      } = req.body;
-
-      if (!bucket || !region || !accessKeyId) {
-        res.status(400).json({ success: false, error: 'bucket, region, and accessKeyId are required' });
-        return;
-      }
-
-      const newS3: S3Config = {
-        enabled: enabled !== false,
-        bucket,
-        region,
-        accessKeyId,
-        secretAccessKey: secretAccessKey || dbConfig.s3?.secretAccessKey || '',
-        ...(endpoint ? { endpoint } : {}),
-        ...(forcePathStyle ? { forcePathStyle: true } : {}),
-        ...(pathPrefix ? { pathPrefix } : {}),
-        ...(encryption ? { encryption } : {}),
-        ...(kmsKeyId ? { kmsKeyId } : {}),
-        // Preserve existing encryptionKey if not sending a new one (same pattern as secretAccessKey)
-        ...(encryptionKey
-          ? { encryptionKey }
-          : dbConfig.s3?.encryptionKey
-          ? { encryptionKey: dbConfig.s3.encryptionKey }
-          : {}),
-        ...(s3BackupIntervalHours > 0 ? { s3BackupIntervalHours: Number(s3BackupIntervalHours) } : {}),
-        ...(s3BackupRetentionDays > 0 ? { s3BackupRetentionDays: Number(s3BackupRetentionDays) } : {}),
-      };
-
-      dbManager.updateDatabase(id, { s3: newS3 });
-
-      // Restart the S3 backup schedule on the running automation instance if present
-      await ClickHouseAutomationService.restartS3ScheduleIfRunning(id);
-
-      res.json({ success: true, s3: { ...newS3, secretAccessKey: '***' } });
-    } catch (error) {
-      logger.error('Save S3 config failed:', error);
-      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
-    }
-  }
-
-  private async deleteS3Config(req: express.Request, res: express.Response): Promise<void> {
-    try {
-      const { id } = req.params;
-      const dbManager = DatabaseConfigManager.getInstance();
-      const dbConfig = dbManager.getDatabase(id);
-      if (!dbConfig) {
-        res.status(404).json({ success: false, error: 'Database not found' });
-        return;
-      }
-      dbManager.updateDatabase(id, { s3: undefined });
-      res.json({ success: true, message: 'S3 configuration removed' });
-    } catch (error) {
-      logger.error('Delete S3 config failed:', error);
-      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
-    }
-  }
-
-  private async testS3Connection(req: express.Request, res: express.Response): Promise<void> {
-    try {
-      const { id } = req.params;
-      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(id);
-      if (!dbConfig?.s3) {
-        res.status(400).json({ success: false, error: 'S3 not configured for this database' });
-        return;
-      }
-      await s3BackupService.testConnection(dbConfig.s3);
-      res.json({ success: true, message: 'S3 connection successful' });
-    } catch (error) {
-      logger.error('Test S3 connection failed:', error);
-      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
-    }
-  }
-
-  // Backup list / trigger / restore handlers
-  private async listBackups(req: express.Request, res: express.Response): Promise<void> {
-    try {
-      const { databaseId } = req as RequestWithDatabase;
-      const backups: any[] = [];
-
-      // List local backups
-      const backupDir = config.paths.backups;
-      if (fs.existsSync(backupDir)) {
-        const safeDatabaseId = databaseId.replace(/[^a-zA-Z0-9_-]/g, '_');
-        const escapedDatabaseId = safeDatabaseId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const backupPattern = new RegExp(`^backup-${escapedDatabaseId}-\\d{4}-\\d{2}-\\d{2}T`);
-        const backupFileName = `duckling-${safeDatabaseId}.db`;
-        const isLegacyBackupDirectory = (entry: string): boolean => /^backup-\d{4}-\d{2}-\d{2}$/.test(entry);
-
-        const entries = fs.readdirSync(backupDir);
-        for (const entry of entries) {
-          const entryPath = path.join(backupDir, entry);
-          const stat = fs.statSync(entryPath);
-          if (stat.isDirectory() && (backupPattern.test(entry) || (databaseId === 'default' && isLegacyBackupDirectory(entry)))) {
-            const scopedDbFile = path.join(entryPath, backupFileName);
-            const dbFile = fs.existsSync(scopedDbFile)
-              ? scopedDbFile
-              : path.join(entryPath, 'duckling.db');
-            const size = fs.existsSync(dbFile) ? fs.statSync(dbFile).size : 0;
-            backups.push({
-              name: entry,
-              location: 'local',
-              size,
-              lastModified: stat.mtime.toISOString(),
-              key: entry,
-            });
-          }
-        }
-      }
-
-      // List S3 backups if configured
-      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(databaseId);
-      if (dbConfig?.s3?.enabled) {
-        const s3Backups = await s3BackupService.listBackups(databaseId, dbConfig.s3);
-        for (const b of s3Backups) {
-          backups.push({
-            name: path.basename(b.key),
-            location: 's3',
-            size: b.size,
-            lastModified: b.lastModified.toISOString(),
-            key: b.key,
-          });
-        }
-      }
-
-      backups.sort(
-        (a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime()
-      );
-
-      res.json({ success: true, backups });
-    } catch (error) {
-      logger.error('List backups failed:', error);
-      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
-    }
-  }
-
-  private async triggerS3Backup(req: express.Request, res: express.Response): Promise<void> {
-    try {
-      res.status(501).json({ success: false, error: 'ClickHouse S3 backup is not implemented in this migration yet' });
-    } catch (error) {
-      logger.error('Trigger S3 backup failed:', error);
-      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
-    }
-  }
-
-  private async restoreFromS3(req: express.Request, res: express.Response): Promise<void> {
-    try {
-      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
-      const { key } = req.body;
-      if (!key) {
-        res.status(400).json({ success: false, error: 'Backup key is required' });
-        return;
-      }
-
-      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
-      const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
-      await automationService.restoreFromS3Backup(key);
-      res.json({ success: true, message: 'Database restored from S3 backup successfully' });
-    } catch (error) {
-      logger.error('Restore from S3 failed:', error);
-      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
     }
   }
 

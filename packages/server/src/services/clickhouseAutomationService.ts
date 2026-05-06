@@ -3,10 +3,10 @@ import logger from '../logger';
 import ClickHouseConnection from '../database/clickhouse';
 import MySQLConnection from '../database/mysql';
 import ClickHouseSyncService from './clickhouseSyncService';
-import { AppenderSyncStats } from './sequentialAppenderService';
+import { SyncStats } from './syncTypes';
 
 export type GuardedSyncResult =
-  | { status: 'completed'; stats: AppenderSyncStats }
+  | { status: 'completed'; stats: SyncStats }
   | { status: 'skipped'; reason: string }
   | { status: 'failed'; error: Error };
 
@@ -50,21 +50,6 @@ class ClickHouseAutomationService {
       );
     }
     return ClickHouseAutomationService.instances.get(databaseId)!;
-  }
-
-  static getExistingInstance(databaseId: string): ClickHouseAutomationService | undefined {
-    return ClickHouseAutomationService.instances.get(databaseId);
-  }
-
-  static closeInstance(databaseId: string): void {
-    const instance = ClickHouseAutomationService.instances.get(databaseId);
-    if (!instance) return;
-    instance.stop();
-    ClickHouseAutomationService.instances.delete(databaseId);
-  }
-
-  static async restartS3ScheduleIfRunning(_databaseId: string): Promise<void> {
-    // ClickHouse S3 scheduling is not implemented yet; keep the callsite compatible.
   }
 
   async start(syncOffsetMs = 0): Promise<void> {
@@ -173,18 +158,6 @@ class ClickHouseAutomationService {
 
   async performCleanup(): Promise<void> {
     logger.info(`ClickHouse cleanup noop for ${this.databaseId}`);
-  }
-
-  async performBackup(): Promise<void> {
-    throw new Error('ClickHouse backup is not implemented in this migration yet');
-  }
-
-  async restoreFromLatestBackup(): Promise<void> {
-    throw new Error('ClickHouse restore is not implemented in this migration yet');
-  }
-
-  async restoreFromS3Backup(_backupKey: string): Promise<void> {
-    throw new Error('ClickHouse S3 restore is not implemented in this migration yet');
   }
 
   getStatus(): any {

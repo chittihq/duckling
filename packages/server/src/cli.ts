@@ -34,11 +34,6 @@ async function getDatabaseConnections(databaseId?: string): Promise<{ databaseId
   return { databaseId: dbConfig.id, mysql, clickhouse };
 }
 
-function exitNotImplemented(feature: string): never {
-  console.error(`${feature} is not implemented for the ClickHouse migration yet.`);
-  process.exit(1);
-}
-
 program
   .name('clickhouse-sync')
   .description('ClickHouse MySQL Replication CLI')
@@ -156,36 +151,6 @@ program
       process.exit(1);
     }
   });
-
-// Dump commands
-program
-  .command('dump-create')
-  .description('Create a full database dump')
-  .action(async () => {
-    exitNotImplemented('dump-create');
-  });
-
-program
-  .command('dump-restore <filename>')
-  .description('Restore from a dump file')
-  .action(async () => {
-    exitNotImplemented('dump-restore');
-  });
-
-program
-  .command('dump-list')
-  .description('List available dump files')
-  .action(async () => {
-    exitNotImplemented('dump-list');
-  });
-
-program
-  .command('dump-cleanup [days]')
-  .description('Clean up old dump files (default: 7 days)')
-  .action(async () => {
-    exitNotImplemented('dump-cleanup');
-  });
-
 
 program
   .command('query <sql>')

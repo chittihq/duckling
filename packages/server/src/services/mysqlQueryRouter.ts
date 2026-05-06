@@ -353,7 +353,7 @@ export function routeQuery(
     return buildSchemataResult(norm, databases);
   }
 
-  // INFORMATION_SCHEMA.ROUTINES does not exist in DuckDB; return an empty projected result.
+  // INFORMATION_SCHEMA.ROUTINES is not exposed by this compatibility layer; return an empty projected result.
   if (/FROM\s+[`"]?INFORMATION_SCHEMA[`"]?\.[`"]?ROUTINES[`"]?/i.test(norm)) {
     return buildEmptyProjectedResult(norm);
   }

@@ -5,11 +5,11 @@ import MySQLConnection from '../database/mysql';
 import config from '../config';
 import logger from '../logger';
 import {
-  AppenderSyncResult,
-  AppenderSyncStats,
+  SyncResult,
+  SyncStats,
   SyncAlreadyInProgressError,
   SyncProgressStatus,
-} from './sequentialAppenderService';
+} from './syncTypes';
 
 type TableWatermark = {
   tableName: string;
@@ -66,15 +66,15 @@ class ClickHouseSyncService extends EventEmitter {
     return { ...this.syncProgress };
   }
 
-  async fullSync(): Promise<AppenderSyncStats> {
+  async fullSync(): Promise<SyncStats> {
     return this.runSync('full');
   }
 
-  async incrementalSync(): Promise<AppenderSyncStats> {
+  async incrementalSync(): Promise<SyncStats> {
     return this.runSync('incremental');
   }
 
-  async syncSingleTable(tableName: string): Promise<AppenderSyncResult> {
+  async syncSingleTable(tableName: string): Promise<SyncResult> {
     if (!this.tryAcquireTableLock(tableName)) {
       throw new SyncAlreadyInProgressError();
     }
@@ -195,7 +195,7 @@ class ClickHouseSyncService extends EventEmitter {
     };
   }
 
-  private async runSync(mode: TableSyncMode): Promise<AppenderSyncStats> {
+  private async runSync(mode: TableSyncMode): Promise<SyncStats> {
     const tables = await this.mysql.getTables();
     const lockedTable = tables.find((table) => this.activeTableLocks.has(table));
     if (lockedTable) {
@@ -203,7 +203,7 @@ class ClickHouseSyncService extends EventEmitter {
     }
 
     const startedAt = Date.now();
-    const stats: AppenderSyncStats = {
+    const stats: SyncStats = {
       totalTables: tables.length,
       successfulTables: 0,
       failedTables: 0,
