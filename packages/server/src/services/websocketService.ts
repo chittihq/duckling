@@ -36,7 +36,7 @@ export class WebSocketService {
   private static instance: WebSocketService;
 
   private constructor() {
-    // No longer need a single duckdb instance - we'll get it per-connection
+    // No longer need a single database instance - we'll get it per-connection
   }
 
   static getInstance(): WebSocketService {
@@ -80,7 +80,7 @@ export class WebSocketService {
     ws.databaseName = databaseName;
     ws.clientIp = clientIp;
 
-    // Get database-specific DuckDB connection
+    // Get database-specific ClickHouse connection
     try {
       const dbConfig = DatabaseConfigManager.getInstance().getDatabase(databaseName);
 
