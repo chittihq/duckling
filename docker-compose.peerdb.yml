@@ -23,11 +23,11 @@ services:
     ports:
       - "19002:9000"
     environment:
-      - RUSTFS_ACCESS_KEY_ID=${RUSTFS_ACCESS_KEY_ID:-peerdb}
-      - RUSTFS_SECRET_ACCESS_KEY=${RUSTFS_SECRET_ACCESS_KEY:-peerdbsecret}
+      - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY:-peerdb}
+      - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY:-peerdbsecret}
       - RUSTFS_REGION=${RUSTFS_REGION:-us-east-1}
     volumes:
-      - ./data/rustfs:/data
+      - rustfs-data:/data
     restart: unless-stopped
     networks:
       - peerdb-network
@@ -67,9 +67,25 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PWD=postgres
       - POSTGRES_SEEDS=catalog
-      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development.yaml
+      - DYNAMIC_CONFIG_FILE_PATH=/tmp/development-sql.yaml
     ports:
       - "17233:7233"
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        cat > /tmp/development-sql.yaml <<'EOF'
+        limit.maxIDLength:
+          - value: 255
+            constraints: {}
+        system.forceSearchAttributesCacheRefreshOnRead:
+          - value: true
+            constraints: {}
+        frontend.enableUpdateWorkflowExecution:
+          - value: true
+            constraints: {}
+        EOF
+        exec /etc/temporal/entrypoint.sh autosetup
     restart: unless-stopped
     networks:
       - peerdb-network
@@ -112,7 +128,9 @@ services:
     image: ${PEERDB_FLOW_API_IMAGE:-ghcr.io/peerdb-io/flow-api:stable-v0.36.19}
     container_name: duckling-peerdb-flow-api
     depends_on:
-      temporal-admin-tools:
+      temporal:
+        condition: service_started
+      catalog:
         condition: service_healthy
     environment:
       - PEERDB_CATALOG_HOST=catalog
@@ -143,7 +161,9 @@ services:
     image: ${PEERDB_FLOW_SNAPSHOT_WORKER_IMAGE:-ghcr.io/peerdb-io/flow-snapshot-worker:stable-v0.36.19}
     container_name: duckling-peerdb-flow-snapshot-worker
     depends_on:
-      temporal-admin-tools:
+      temporal:
+        condition: service_started
+      catalog:
         condition: service_healthy
     environment:
       - PEERDB_CATALOG_HOST=catalog
@@ -170,7 +190,9 @@ services:
     image: ${PEERDB_FLOW_WORKER_IMAGE:-ghcr.io/peerdb-io/flow-worker:stable-v0.36.19}
     container_name: duckling-peerdb-flow-worker
     depends_on:
-      temporal-admin-tools:
+      temporal:
+        condition: service_started
+      catalog:
         condition: service_healthy
     environment:
       - PEERDB_CATALOG_HOST=catalog
@@ -318,3 +340,6 @@ networks:
   peerdb-network:
     name: duckling-peerdb-network
     driver: bridge
+
+volumes:
+  rustfs-data:
