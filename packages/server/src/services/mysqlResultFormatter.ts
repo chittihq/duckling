@@ -40,10 +40,14 @@ const CLICKHOUSE_TO_MYSQL_TYPE: Record<string, number> = {
 
   // Integer types
   TINYINT: MySQLTypes.TINY,
+  UINT8: MySQLTypes.TINY,
   SMALLINT: MySQLTypes.SHORT,
+  UINT16: MySQLTypes.SHORT,
   INTEGER: MySQLTypes.LONG,
   INT: MySQLTypes.LONG,
+  UINT32: MySQLTypes.LONGLONG,
   BIGINT: MySQLTypes.LONGLONG,
+  UINT64: MySQLTypes.LONGLONG,
   HUGEINT: MySQLTypes.VAR_STRING, // sent as string to avoid overflow
   UBIGINT: MySQLTypes.VAR_STRING,
   UINTEGER: MySQLTypes.LONGLONG,
@@ -53,7 +57,9 @@ const CLICKHOUSE_TO_MYSQL_TYPE: Record<string, number> = {
 
   // Floating point
   FLOAT: MySQLTypes.FLOAT,
+  FLOAT32: MySQLTypes.FLOAT,
   DOUBLE: MySQLTypes.DOUBLE,
+  FLOAT64: MySQLTypes.DOUBLE,
   REAL: MySQLTypes.DOUBLE,
 
   // Decimal
@@ -160,10 +166,19 @@ export function buildForwardedColumnDefinition(
 
   switch (baseType) {
     case 'TINYINT':
+    case 'UINT8':
     case 'SMALLINT':
+    case 'UINT16':
     case 'INTEGER':
     case 'INT':
+    case 'UINT32':
     case 'BIGINT':
+    case 'UINT64':
+    case 'FLOAT':
+    case 'FLOAT32':
+    case 'DOUBLE':
+    case 'FLOAT64':
+    case 'DECIMAL':
       return buildColumnDefinition(name, clickhouseType, table);
 
     default:

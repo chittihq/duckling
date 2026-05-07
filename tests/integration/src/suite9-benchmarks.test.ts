@@ -2,13 +2,16 @@ import { describe, test, expect, beforeAll } from 'vitest';
 import { triggerFullSync, triggerIncrementalSync } from './helpers/sync';
 import { clickhouseQuery, clickhouseScalarStrict } from './helpers/clickhouse';
 import { mysqlExec } from './helpers/mysql';
-import { sleep } from './helpers/cdc';
 
 const FULL_SYNC_ROWS = 10_000;
 const INCR_SYNC_ROWS = 2_000;
 const SEQ_QUERY_COUNT = 50;
 const CONCURRENT_QUERIES = 20;
 const BATCH_SIZE = 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function seedBenchmarkRows(rowCount: number, startId = 1): Promise<void> {
   await mysqlExec(`

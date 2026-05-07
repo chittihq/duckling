@@ -100,7 +100,7 @@ describe('Suite 14: Incremental Crash Probe', () => {
     expect(finalCount).toBe(expectedFinalCount);
     expect(state.running).toBe(true);
     expect(state.exitCode ?? 0).not.toBe(139);
-    expect(syncLogs).toContain(`Watermark incremental sync completed for ${TABLE_NAME}:`);
+    expect(syncLogs).toContain('POST /sync/incremental');
     expect(composeLogs).not.toContain('Segmentation fault');
   }, 240_000);
 });

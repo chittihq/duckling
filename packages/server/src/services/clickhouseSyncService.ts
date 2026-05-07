@@ -122,6 +122,51 @@ class ClickHouseSyncService extends EventEmitter {
     }
   }
 
+  async forceFullSyncTable(tableName: string): Promise<SyncResult> {
+    if (!this.tryAcquireTableLock(tableName)) {
+      throw new SyncAlreadyInProgressError();
+    }
+
+    const startedAt = Date.now();
+
+    try {
+      const schema = await this.mysql.getTableSchema(tableName);
+      this.updateProgress({
+        inProgress: true,
+        type: 'full',
+        currentTable: tableName,
+      });
+
+      const result = await this.performFullSyncForTable(tableName, schema);
+
+      return {
+        table: tableName,
+        recordsProcessed: result.recordsProcessed,
+        duration: Date.now() - startedAt,
+        status: 'success',
+        syncType: 'sequential',
+        watermark: {
+          lastProcessedId: result.lastProcessedId,
+          lastProcessedTimestamp: result.lastProcessedTimestamp ?? undefined,
+          primaryKey: result.primaryKeyColumns[0],
+        },
+      };
+    } catch (error) {
+      logger.error(`ClickHouse forced full sync failed for ${tableName}:`, error);
+      return {
+        table: tableName,
+        recordsProcessed: 0,
+        duration: Date.now() - startedAt,
+        status: 'error',
+        error: error instanceof Error ? error.message : 'Unknown error',
+        syncType: 'sequential',
+      };
+    } finally {
+      this.releaseTableLock(tableName);
+      this.updateProgress({ inProgress: false, currentTable: null });
+    }
+  }
+
   async getSyncStatus(): Promise<any> {
     const watermarks = await this.clickhouse.execute(`
       SELECT table_name, last_processed_id, last_processed_timestamp, primary_key_column, timestamp_column, updated_at
@@ -435,12 +480,22 @@ class ClickHouseSyncService extends EventEmitter {
 
   private buildProjectionViewSql(tableName: string, rawTableName: string, schema: any[], primaryKeyColumns: string[]): string {
     const userColumns = schema.map((column) => this.q(String(column.Field)));
-    const projection = userColumns.join(', ');
+    const innerProjection = schema.map((column) => {
+      const field = String(column.Field);
+      const quotedField = this.q(field);
+      const mysqlType = String(column.Type || '').toLowerCase();
+      const clickhouseType = this.mapMySQLTypeToClickHouse(mysqlType);
+      if (mysqlType.includes('json') && clickhouseType.includes('JSON')) {
+        return `toJSONString(${quotedField}) AS ${quotedField}`;
+      }
+      return quotedField;
+    }).join(', ');
+    const outerProjection = userColumns.join(', ');
 
     if (primaryKeyColumns.length === 0) {
       return `
         CREATE VIEW ${this.q(tableName)} AS
-        SELECT ${projection}
+        SELECT ${innerProjection}
         FROM ${this.q(rawTableName)}
         WHERE _sync_deleted = 0
       `;
@@ -449,10 +504,10 @@ class ClickHouseSyncService extends EventEmitter {
     const partitionBy = primaryKeyColumns.map((column) => this.q(column)).join(', ');
     return `
       CREATE VIEW ${this.q(tableName)} AS
-      SELECT ${projection}
+      SELECT ${outerProjection}
       FROM (
         SELECT
-          ${projection},
+          ${innerProjection},
           row_number() OVER (
             PARTITION BY ${partitionBy}
             ORDER BY _sync_timestamp DESC, _sync_batch_id DESC
@@ -479,9 +534,7 @@ class ClickHouseSyncService extends EventEmitter {
     }
 
     serializedRow._sync_batch_id = batchId;
-    serializedRow._sync_timestamp = this.formatDateTimeValue(
-      timestampColumn ? this.toDateOrNull(row[timestampColumn]) : new Date()
-    );
+    serializedRow._sync_timestamp = this.formatDateTimeValue(new Date());
     serializedRow._sync_deleted = 0;
     serializedRow._sync_schema_fingerprint = this.computeSchemaFingerprint(schema) + ':' + tableName;
 
@@ -531,6 +584,7 @@ class ClickHouseSyncService extends EventEmitter {
     if (type.startsWith('decimal') || type.startsWith('numeric')) return 'Nullable(Decimal(38, 10))';
     if (type.startsWith('float')) return 'Nullable(Float32)';
     if (type.startsWith('double')) return 'Nullable(Float64)';
+    if (type.includes('json')) return 'Nullable(String)';
     if (type.startsWith('date')) return 'Nullable(String)';
     if (type.startsWith('time')) return 'Nullable(String)';
     if (type.startsWith('timestamp') || type.startsWith('datetime')) return 'Nullable(DateTime64(3, \'UTC\'))';

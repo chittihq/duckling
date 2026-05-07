@@ -244,6 +244,36 @@ function buildSchemataResult(norm: string, databases: string[]): InterceptedResu
   return { type: 'intercepted', columns, rows };
 }
 
+function visibleTableWhereClause(): string {
+  return [
+    'database = currentDatabase()',
+    'is_temporary = 0',
+    "name NOT LIKE '%__raw'",
+    "name NOT IN ('appender_watermarks', 'sync_log', 'full_sync_sessions', 'cdc_binlog_position')",
+  ].join(' AND ');
+}
+
+function buildColumnsMetadataSql(tableName?: string | null): string {
+  const tableFilter = tableName ? ` AND table = '${tableName}'` : '';
+  return [
+    'SELECT',
+    '  table AS table_name,',
+    '  name AS column_name,',
+    '  position AS ordinal_position,',
+    '  type AS data_type,',
+    '  type AS column_type,',
+    "  '' AS character_set_name,",
+    "  'utf8mb4_general_ci' AS collation_name,",
+    "  if(startsWith(type, 'Nullable('), 'YES', 'NO') AS is_nullable,",
+    '  CAST(NULL AS Nullable(String)) AS column_default,',
+    "  '' AS extra,",
+    "  '' AS column_comment",
+    'FROM system.columns',
+    `WHERE database = currentDatabase()${tableFilter}`,
+    'ORDER BY table, position',
+  ].join(' ');
+}
+
 /* ------------------------------------------------------------------ */
 /*  Router                                                             */
 /* ------------------------------------------------------------------ */
@@ -371,16 +401,12 @@ export function routeQuery(
       return {
         type: 'forward',
         sql:
-          `SELECT kcu.column_name AS column_name ` +
-          `FROM information_schema.table_constraints tc ` +
-          `JOIN information_schema.key_column_usage kcu ` +
-          `ON tc.constraint_name = kcu.constraint_name ` +
-          `AND tc.table_schema = kcu.table_schema ` +
-          `AND tc.table_name = kcu.table_name ` +
-          `WHERE tc.constraint_type = 'PRIMARY KEY' ` +
-          `AND kcu.table_schema = 'main' ` +
-          `AND kcu.table_name = '${tableName}' ` +
-          `ORDER BY kcu.ordinal_position`,
+          `SELECT name AS column_name ` +
+          `FROM system.columns ` +
+          `WHERE database = currentDatabase() ` +
+          `AND table = '${tableName}' ` +
+          `AND is_in_primary_key = 1 ` +
+          `ORDER BY position`,
       };
     }
     return buildEmptyProjectedResult(norm);
@@ -388,12 +414,17 @@ export function routeQuery(
 
   // INFORMATION_SCHEMA.COLUMNS compatibility aliases expected by MySQL clients.
   if (/FROM\s+[`"]?INFORMATION_SCHEMA[`"]?\.[`"]?COLUMNS[`"]?/i.test(norm)) {
+    const tableName = sanitiseIdent(extractWhereString(norm, 'table_name') || '');
     let rewrittenColumnsSql = rewriteForClickHouse(norm, currentDatabase);
+    rewrittenColumnsSql = rewrittenColumnsSql.replace(
+      /FROM\s+[`"]?INFORMATION_SCHEMA[`"]?\.[`"]?COLUMNS[`"]?/i,
+      `FROM (${buildColumnsMetadataSql(tableName)}) AS information_schema_columns`,
+    );
     rewrittenColumnsSql = rewrittenColumnsSql
-      .replace(/\bcolumn_type\b/ig, 'data_type')
-      .replace(/\bcharacter_set_name\s+AS\s+([`"]?\w+[`"]?)/ig, "'' AS $1")
-      .replace(/\bcolumn_comment\s+AS\s+([`"]?\w+[`"]?)/ig, "'' AS $1")
-      .replace(/\bextra\s+AS\s+([`"]?\w+[`"]?)/ig, "'' AS $1");
+      .replace(/\bTABLE_SCHEMA\s*=\s*'[^']*'/ig, '1 = 1')
+      .replace(/\bCOLUMN_COMMENT\b/ig, 'column_comment')
+      .replace(/\bCHARACTER_SET_NAME\b/ig, 'character_set_name')
+      .replace(/\bCOLLATION_NAME\b/ig, 'collation_name');
     return { type: 'forward', sql: rewrittenColumnsSql };
   }
 
@@ -461,13 +492,13 @@ export function routeQuery(
   if (upper === 'SHOW TABLES' || upper.startsWith('SHOW TABLES FROM') || upper.startsWith('SHOW TABLES IN')) {
     return {
       type: 'forward',
-      sql: `SELECT table_name AS "Tables_in_${currentDatabase}" FROM information_schema.tables WHERE table_schema = 'main' AND table_type = 'BASE TABLE' ORDER BY table_name`,
+      sql: `SELECT name AS "Tables_in_${currentDatabase}" FROM system.tables WHERE ${visibleTableWhereClause()} ORDER BY name`,
     };
   }
   if (upper.startsWith('SHOW FULL TABLES')) {
     return {
       type: 'forward',
-      sql: `SELECT table_name AS "Tables_in_${currentDatabase}", 'BASE TABLE' AS "Table_type" FROM information_schema.tables WHERE table_schema = 'main' AND table_type = 'BASE TABLE' ORDER BY table_name`,
+      sql: `SELECT name AS "Tables_in_${currentDatabase}", 'BASE TABLE' AS "Table_type" FROM system.tables WHERE ${visibleTableWhereClause()} ORDER BY name`,
     };
   }
 
@@ -475,7 +506,7 @@ export function routeQuery(
   if (upper === 'SHOW TABLE STATUS' || upper.startsWith('SHOW TABLE STATUS FROM') || upper.startsWith('SHOW TABLE STATUS LIKE')) {
     return {
       type: 'forward',
-      sql: `SELECT table_name AS "Name", 'ClickHouse' AS "Engine", '10' AS "Version", 'Dynamic' AS "Row_format", 0 AS "Rows", 0 AS "Avg_row_length", 0 AS "Data_length", 0 AS "Max_data_length", 0 AS "Index_length", 0 AS "Data_free", NULL AS "Auto_increment", NULL AS "Create_time", NULL AS "Update_time", NULL AS "Check_time", 'utf8mb4_general_ci' AS "Collation", NULL AS "Checksum", '' AS "Create_options", '' AS "Comment" FROM information_schema.tables WHERE table_schema = 'main' AND table_type = 'BASE TABLE'`,
+      sql: `SELECT name AS "Name", engine AS "Engine", '10' AS "Version", 'Dynamic' AS "Row_format", 0 AS "Rows", 0 AS "Avg_row_length", 0 AS "Data_length", 0 AS "Max_data_length", 0 AS "Index_length", 0 AS "Data_free", NULL AS "Auto_increment", NULL AS "Create_time", NULL AS "Update_time", NULL AS "Check_time", 'utf8mb4_general_ci' AS "Collation", NULL AS "Checksum", '' AS "Create_options", '' AS "Comment" FROM system.tables WHERE ${visibleTableWhereClause()} ORDER BY name`,
     };
   }
 
@@ -493,7 +524,7 @@ export function routeQuery(
     }
     return {
       type: 'forward',
-      sql: `SELECT column_name AS "Field", data_type AS "Type", CASE WHEN is_nullable = 'YES' THEN 'YES' ELSE 'NO' END AS "Null", '' AS "Key", column_default AS "Default", '' AS "Extra" FROM information_schema.columns WHERE table_name = '${tableName}' AND table_schema = 'main' ORDER BY ordinal_position`,
+      sql: `SELECT name AS "Field", type AS "Type", if(startsWith(type, 'Nullable('), 'YES', 'NO') AS "Null", if(is_in_primary_key = 1, 'PRI', '') AS "Key", CAST(NULL AS Nullable(String)) AS "Default", '' AS "Extra" FROM system.columns WHERE database = currentDatabase() AND table = '${tableName}' ORDER BY position`,
     };
   }
 
@@ -507,7 +538,7 @@ export function routeQuery(
     // We'll forward a query that returns column info; the protocol server will assemble the CREATE TABLE
     return {
       type: 'forward',
-      sql: `SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = '${tableName}' AND table_schema = 'main' ORDER BY ordinal_position`,
+      sql: `SELECT name AS column_name, type AS data_type, if(startsWith(type, 'Nullable('), 'YES', 'NO') AS is_nullable, CAST(NULL AS Nullable(String)) AS column_default FROM system.columns WHERE database = currentDatabase() AND table = '${tableName}' ORDER BY position`,
     };
   }
 
@@ -552,13 +583,14 @@ function tryInterceptSelect(
   currentUser: string,
 ): InterceptedResult | null {
   // Strip leading SELECT and optional whitespace
-  const expr = upper.replace(/^SELECT\s+/i, '').trim();
+  const expr = norm.replace(/^SELECT\s+/i, '').trim();
+  const exprUpper = expr.toUpperCase();
 
   // Multi-expression SELECT with only @@vars (e.g. mysql client init)
   // Example: SELECT @@version_comment, @@max_allowed_packet
   // Must be checked BEFORE single @@variable to handle comma-separated lists.
   // Only trigger when ALL comma-separated parts start with @@ (avoids false positives).
-  if (expr.includes('@@') && expr.includes(',') && !expr.includes('FROM')) {
+  if (exprUpper.includes('@@') && expr.includes(',') && !exprUpper.includes('FROM')) {
     const body = expr.replace(/\s+LIMIT\s+\d+$/i, '').trim();
     const allParts = body.split(',').map(p => p.trim());
     if (allParts.every(p => p.startsWith('@@') || /^@@/i.test(p.replace(/^.*\s+AS\s+/i, '')))) {
@@ -572,33 +604,33 @@ function tryInterceptSelect(
   }
 
   // Function calls
-  if (/^VERSION\s*\(\s*\)/i.test(expr)) {
+  if (/^VERSION\s*\(\s*\)/i.test(exprUpper)) {
     const r = singleValueResult('VERSION()', '8.0.32-Duckling');
     return { type: 'intercepted', ...r };
   }
-  if (/^DATABASE\s*\(\s*\)/i.test(expr)) {
+  if (/^DATABASE\s*\(\s*\)/i.test(exprUpper)) {
     const r = singleValueResult('DATABASE()', currentDatabase);
     return { type: 'intercepted', ...r };
   }
-  if (/^SCHEMA\s*\(\s*\)/i.test(expr)) {
+  if (/^SCHEMA\s*\(\s*\)/i.test(exprUpper)) {
     const r = singleValueResult('SCHEMA()', currentDatabase);
     return { type: 'intercepted', ...r };
   }
-  if (/^CURRENT_USER\s*\(\s*\)/i.test(expr)) {
+  if (/^CURRENT_USER\s*\(\s*\)/i.test(exprUpper)) {
     const r = singleValueResult('CURRENT_USER()', `${currentUser}@%`);
     return { type: 'intercepted', ...r };
   }
-  if (/^USER\s*\(\s*\)/i.test(expr)) {
+  if (/^USER\s*\(\s*\)/i.test(exprUpper)) {
     const r = singleValueResult('USER()', `${currentUser}@localhost`);
     return { type: 'intercepted', ...r };
   }
-  if (/^CONNECTION_ID\s*\(\s*\)/i.test(expr)) {
+  if (/^CONNECTION_ID\s*\(\s*\)/i.test(exprUpper)) {
     const r = singleValueResult('CONNECTION_ID()', String(connectionId), 'BIGINT');
     return { type: 'intercepted', ...r };
   }
 
   // Catch any remaining @@var expressions without FROM (e.g. "SELECT @@unknown_var")
-  if (expr.startsWith('@@') && !expr.includes('FROM')) {
+  if (expr.startsWith('@@') && !exprUpper.includes('FROM')) {
     return interceptSystemVariable(expr, connectionId, currentDatabase, currentUser);
   }
 

@@ -517,12 +517,12 @@ describe('Suite 7: MySQL 8 Type Fidelity', () => {
   describe('Validation endpoint', () => {
     test('type_coverage max ID match', async () => {
       const val = await getValidation('type_coverage');
-      expect(val.duckdb.maxId).toBe(val.mysql.maxId);
+      expect(val.clickhouse.maxId).toBe(val.mysql.maxId);
     });
 
     test('type_coverage checksum match', async () => {
       const val = await getValidation('type_coverage');
-      expect(val.duckdb.checksum).toBe(val.mysql.checksum);
+      expect(val.clickhouse.checksum).toBe(val.mysql.checksum);
     });
   });
 });

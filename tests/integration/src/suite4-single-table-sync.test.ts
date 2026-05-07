@@ -2,7 +2,7 @@ import { describe, test, expect } from 'vitest';
 import { clickhouseScalarStrict } from './helpers/clickhouse.js';
 import { mysqlExec } from './helpers/mysql.js';
 import { triggerTableSync } from './helpers/sync.js';
-import { sleep } from './helpers/cdc.js';
+import { sleep } from './helpers/time.js';
 
 describe('Suite 4: Single Table Sync', () => {
   let usersBefore: string;

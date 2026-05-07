@@ -137,6 +137,17 @@ class ClickHouseConnection {
       ENGINE = ReplacingMergeTree(updated_at)
       ORDER BY table_name
     `);
+
+    await this.runRaw(`
+      CREATE TABLE IF NOT EXISTS ${this.q('cdc_binlog_position')} (
+        database_id String,
+        filename String,
+        position UInt64,
+        updated_at DateTime64(3, 'UTC') DEFAULT now64(3)
+      )
+      ENGINE = ReplacingMergeTree(updated_at)
+      ORDER BY database_id
+    `);
   }
 
   async close(): Promise<void> {
@@ -280,7 +291,8 @@ class ClickHouseConnection {
     return (
       name === 'appender_watermarks' ||
       name === 'sync_log' ||
-      name === 'full_sync_sessions'
+      name === 'full_sync_sessions' ||
+      name === 'cdc_binlog_position'
     );
   }
 

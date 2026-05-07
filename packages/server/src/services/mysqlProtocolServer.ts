@@ -32,6 +32,7 @@ import * as path from 'path';
 // mysql2 is CommonJS — use require for the server-side API
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const mysql2 = require('mysql2');
+const mysql2Packets = require(path.join(path.dirname(require.resolve('mysql2')), 'lib/packets/index.js'));
 
 /* ------------------------------------------------------------------ */
 /*  Monkey-patch: sanitize client handshake flags before mysql2 parses */
@@ -186,6 +187,8 @@ export class MySQLProtocolServer {
   private readonly password: string;
   private readonly defaultDatabase: string;
   private passwordDoubleSha1: Buffer | null = null;
+  private preparedStatements: Map<number, string> = new Map();
+  private nextStatementId = 1;
 
   constructor() {
     this.port = config.mysqlProtocol.port;
@@ -312,15 +315,11 @@ export class MySQLProtocolServer {
     });
 
     // Prepared statements are not yet supported by this protocol adapter.
-    const rejectPreparedStmt = (event: string, detail: string) => {
-      logger.debug(`MySQL protocol: ${event} not supported (connId=${connectionId}, ${detail})`);
-      this.safeWriteError(conn, 1295, 'Prepared statements are not supported by Duckling MySQL protocol');
-    };
     conn.on('stmt_prepare', (sql: string) => {
-      rejectPreparedStmt('stmt_prepare', `db=${this.connections.get(connectionId)?.databaseId || 'n/a'}, sql="${compactSqlForLog(sql)}"`);
+      this.handleStmtPrepare(conn, connectionId, sql);
     });
     conn.on('stmt_execute', (stmtId: number) => {
-      rejectPreparedStmt('stmt_execute', `stmtId=${String(stmtId)}`);
+      void this.handleStmtExecute(conn, connectionId, stmtId);
     });
 
     // USE <database>
@@ -444,7 +443,7 @@ export class MySQLProtocolServer {
           break;
 
         case 'forward':
-          await this.executeClickHouseQuery(conn, state, result.sql);
+          await this.executeClickHouseQuery(conn, state, result.sql, sql);
           break;
       }
     } catch (err: any) {
@@ -456,7 +455,52 @@ export class MySQLProtocolServer {
     }
   }
 
-  private async executeClickHouseQuery(conn: any, state: ConnectionState, sql: string): Promise<void> {
+  private handleStmtPrepare(conn: any, connectionId: number, sql: string): void {
+    logger.debug(
+      `MySQL protocol stmt_prepare (connId=${connectionId}, sql="${compactSqlForLog(sql)}")`,
+    );
+
+    const stmtId = this.nextStatementId++;
+    this.preparedStatements.set(stmtId, sql);
+
+    const packet = new mysql2Packets.Packet(0, Buffer.allocUnsafe(16), 0, 16);
+    packet.offset = 4;
+    packet.writeInt8(0x00);
+    packet.writeInt32(stmtId);
+    packet.writeInt16(0); // num columns
+    packet.writeInt16(0); // num params
+    packet.writeInt8(0);
+    packet.writeInt16(0); // warnings
+    packet._name = 'PreparedStatementHeader';
+
+    try {
+      conn.writePacket(packet);
+      this.resetCommandSequence(conn);
+    } catch (error) {
+      logger.error(`MySQL protocol stmt_prepare failed (connId=${connectionId}):`, error);
+      this.safeWriteError(conn, 1105, 'Failed to prepare statement');
+    }
+  }
+
+  private async handleStmtExecute(conn: any, connectionId: number, stmtId: number): Promise<void> {
+    const sql = this.preparedStatements.get(stmtId);
+    if (!sql) {
+      this.safeWriteError(conn, 1243, `Unknown prepared statement handler (${stmtId}) given to mysqld_stmt_execute`);
+      return;
+    }
+
+    logger.debug(
+      `MySQL protocol stmt_execute (connId=${connectionId}, stmtId=${stmtId}, sql="${compactSqlForLog(sql)}")`,
+    );
+    await this.handleQuery(conn, connectionId, sql);
+  }
+
+  private async executeClickHouseQuery(
+    conn: any,
+    state: ConnectionState,
+    sql: string,
+    originalSql: string,
+  ): Promise<void> {
     const dbConfig = DatabaseConfigManager.getInstance().getDatabase(state.databaseId);
     if (!dbConfig) {
       this.safeWriteError(conn, 1049, `Unknown database '${state.databaseId}'`);
@@ -466,6 +510,13 @@ export class MySQLProtocolServer {
     const clickhouse = ClickHouseConnection.getInstance(state.databaseId, dbConfig.clickhouseDatabase || state.databaseId);
 
     const { rows, columnNames, columnTypes } = await clickhouse.executeWithMetadata(sql);
+
+    if (rows.length === 0 && this.shouldTreatEmptyMetadataAsMissingTable(originalSql)) {
+      const tableName = this.extractMetadataTableName(originalSql);
+      const qualifiedName = tableName ? `${state.databaseId}.${tableName}` : state.databaseId;
+      this.safeWriteError(conn, 1146, `Table '${qualifiedName}' doesn't exist`);
+      return;
+    }
 
     // Forwarded ClickHouse result sets use compatibility-first text metadata.
     const columns = columnNames.map((name: string, i: number) =>
@@ -478,6 +529,25 @@ export class MySQLProtocolServer {
     );
 
     this.writeResultSet(conn, columns, formattedRows);
+  }
+
+  private shouldTreatEmptyMetadataAsMissingTable(sql: string): boolean {
+    return /^\s*(DESCRIBE|DESC)\b/i.test(sql) ||
+      /^\s*SHOW\s+(FULL\s+)?(COLUMNS|FIELDS)\s+FROM\b/i.test(sql) ||
+      /^\s*SHOW\s+CREATE\s+TABLE\b/i.test(sql);
+  }
+
+  private extractMetadataTableName(sql: string): string | null {
+    const describeMatch = sql.match(/^\s*(?:DESCRIBE|DESC)\s+[`"]?([A-Za-z_]\w*)[`"]?/i);
+    if (describeMatch) return describeMatch[1];
+
+    const showCreateMatch = sql.match(/^\s*SHOW\s+CREATE\s+TABLE\s+[`"]?([A-Za-z_]\w*)[`"]?/i);
+    if (showCreateMatch) return showCreateMatch[1];
+
+    const showColumnsMatch = sql.match(
+      /^\s*SHOW\s+(?:FULL\s+)?(?:COLUMNS|FIELDS)\s+FROM\s+[`"]?([A-Za-z_]\w*)[`"]?/i,
+    );
+    return showColumnsMatch ? showColumnsMatch[1] : null;
   }
 
   /* ---------------------------------------------------------------- */
@@ -511,7 +581,7 @@ export class MySQLProtocolServer {
 
   private safeWriteOk(conn: any): void {
     try {
-      conn.writeOk();
+      conn.writeOk({ affectedRows: 0, serverStatus: 2 });
       this.resetCommandSequence(conn);
     } catch (_) { /* ignore */ }
   }

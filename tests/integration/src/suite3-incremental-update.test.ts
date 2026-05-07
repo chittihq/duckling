@@ -3,7 +3,7 @@ import { clickhouseScalarStrict, normalizeDecimal } from './helpers/clickhouse.j
 import { mysqlExec } from './helpers/mysql.js';
 import { triggerIncrementalSync, triggerFullSync } from './helpers/sync.js';
 import { getValidation } from './helpers/validation.js';
-import { sleep } from './helpers/cdc.js';
+import { sleep } from './helpers/time.js';
 
 describe('Suite 3: Incremental Update', () => {
   test('update rows and trigger incremental sync', async () => {
@@ -36,7 +36,7 @@ describe('Suite 3: Incremental Update', () => {
 
   test('products checksum after update', async () => {
     const val = await getValidation('products_simple');
-    expect(val.duckdb.checksum).toBe(val.mysql.checksum);
+    expect(val.clickhouse.checksum).toBe(val.mysql.checksum);
   });
 
   test('run full sync for users_with_timestamps (BLOB workaround)', async () => {
@@ -61,6 +61,6 @@ describe('Suite 3: Incremental Update', () => {
 
   test('users checksum after update', async () => {
     const val = await getValidation('users_with_timestamps');
-    expect(val.duckdb.checksum).toBe(val.mysql.checksum);
+    expect(val.clickhouse.checksum).toBe(val.mysql.checksum);
   });
 });

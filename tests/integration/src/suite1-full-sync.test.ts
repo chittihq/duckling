@@ -16,7 +16,7 @@ describe('Suite 1: Full Sync', () => {
     expect(await clickhouseScalarStrict('SELECT COUNT(*) AS cnt FROM products_simple', 'cnt')).toBe('4');
   });
 
-  test('Alice name in DuckDB', async () => {
+  test('Alice name in ClickHouse', async () => {
     expect(await clickhouseScalarStrict('SELECT name FROM users_with_timestamps WHERE id = 1', 'name')).toBe('Alice');
   });
 
@@ -91,12 +91,12 @@ describe('Suite 1: Full Sync', () => {
 
   test('users validation: max ID match', async () => {
     const val = await getValidation('users_with_timestamps');
-    expect(val.duckdb.maxId).toBe(val.mysql.maxId);
+    expect(val.clickhouse.maxId).toBe(val.mysql.maxId);
   });
 
   test('users validation: checksum match', async () => {
     const val = await getValidation('users_with_timestamps');
-    expect(val.duckdb.checksum).toBe(val.mysql.checksum);
+    expect(val.clickhouse.checksum).toBe(val.mysql.checksum);
   });
 
   test('users validation: columns match', async () => {
@@ -111,16 +111,16 @@ describe('Suite 1: Full Sync', () => {
 
   test('products validation: max ID match', async () => {
     const val = await getValidation('products_simple');
-    expect(val.duckdb.maxId).toBe(val.mysql.maxId);
+    expect(val.clickhouse.maxId).toBe(val.mysql.maxId);
   });
 
   test('products validation: checksum match', async () => {
     const val = await getValidation('products_simple');
-    expect(val.duckdb.checksum).toBe(val.mysql.checksum);
+    expect(val.clickhouse.checksum).toBe(val.mysql.checksum);
   });
 
   test('events validation: max ID match', async () => {
     const val = await getValidation('events_append_only');
-    expect(val.duckdb.maxId).toBe(val.mysql.maxId);
+    expect(val.clickhouse.maxId).toBe(val.mysql.maxId);
   });
 });

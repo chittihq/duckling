@@ -1,6 +1,6 @@
 import { execSync } from 'child_process';
 import { API_KEY, API_URL, DB_ID, INTEGRATION_DIR, TIMEOUT_STARTUP } from './config.js';
-import { sleep } from './cdc.js';
+import { sleep } from './time.js';
 
 export interface DucklingContainerState {
   exitCode: number | null;

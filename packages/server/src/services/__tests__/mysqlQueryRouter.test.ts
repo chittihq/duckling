@@ -52,7 +52,7 @@ describe('mysqlQueryRouter', () => {
 
     test('SELECT @@version_comment', () => {
       const r = expectIntercepted(route('SELECT @@version_comment'));
-      expect(r.rows[0][0]).toBe('Duckling DuckDB Server');
+      expect(r.rows[0][0]).toBe('Duckling ClickHouse Server');
     });
 
     test('SELECT @@max_allowed_packet', () => {
@@ -86,7 +86,7 @@ describe('mysqlQueryRouter', () => {
     test('multi-variable: SELECT @@version_comment, @@max_allowed_packet', () => {
       const r = expectIntercepted(route('SELECT @@version_comment, @@max_allowed_packet'));
       expect(r.columns).toHaveLength(2);
-      expect(r.rows[0][0]).toBe('Duckling DuckDB Server');
+      expect(r.rows[0][0]).toBe('Duckling ClickHouse Server');
       expect(r.rows[0][1]).toBe('67108864');
     });
 
@@ -214,10 +214,10 @@ describe('mysqlQueryRouter', () => {
   // =====================================================================
 
   describe('SHOW TABLES', () => {
-    test('forwards to information_schema', () => {
+    test('forwards to system.tables', () => {
       const r = expectForward(route('SHOW TABLES'));
-      expect(r.sql).toContain('information_schema.tables');
-      expect(r.sql).toContain("table_schema = 'main'");
+      expect(r.sql).toContain('system.tables');
+      expect(r.sql).toContain('currentDatabase()');
     });
 
     test('SHOW FULL TABLES includes Table_type', () => {
@@ -313,14 +313,14 @@ describe('mysqlQueryRouter', () => {
   });
 
   describe('INFORMATION_SCHEMA.STATISTICS', () => {
-    test('primary key query forwards to DuckDB key_column_usage', () => {
+    test('primary key query forwards to ClickHouse system.columns', () => {
       const r = expectForward(route(
         "SELECT column_name as column_name FROM information_schema.statistics " +
         "WHERE table_schema = 'mydb' AND table_name = 'users' AND index_name = 'PRIMARY'",
       ));
-      expect(r.sql).toContain('key_column_usage');
-      expect(r.sql).toContain("table_name = 'users'");
-      expect(r.sql).toContain("constraint_type = 'PRIMARY KEY'");
+      expect(r.sql).toContain('system.columns');
+      expect(r.sql).toContain("table = 'users'");
+      expect(r.sql).toContain('is_in_primary_key = 1');
     });
 
     test('non-primary index returns empty', () => {
@@ -349,36 +349,36 @@ describe('mysqlQueryRouter', () => {
       const r = expectForward(route(
         "SELECT column_type FROM information_schema.columns WHERE table_schema='mydb' AND table_name='users'",
       ));
-      expect(r.sql).toContain('data_type');
-      expect(r.sql).not.toContain('column_type');
+      expect(r.sql).toContain('system.columns');
+      expect(r.sql).toContain('column_type');
     });
 
     test('replaces character_set_name AS alias with empty string', () => {
       const r = expectForward(route(
         "SELECT character_set_name AS charset FROM information_schema.columns WHERE table_schema='mydb'",
       ));
-      expect(r.sql).toContain("'' AS charset");
+      expect(r.sql).toContain("'' AS character_set_name");
     });
 
     test('replaces column_comment AS alias with empty string', () => {
       const r = expectForward(route(
         "SELECT column_comment AS comment FROM information_schema.columns WHERE table_schema='mydb'",
       ));
-      expect(r.sql).toContain("'' AS comment");
+      expect(r.sql).toContain("'' AS column_comment");
     });
 
     test('replaces extra AS alias with empty string', () => {
       const r = expectForward(route(
         "SELECT extra AS extra_info FROM information_schema.columns WHERE table_schema='mydb'",
       ));
-      expect(r.sql).toContain("'' AS extra_info");
+      expect(r.sql).toContain("'' AS extra");
     });
 
     test('rewrites TABLE_SCHEMA to main', () => {
       const r = expectForward(route(
         "SELECT column_name FROM information_schema.columns WHERE table_schema='mydb'",
       ));
-      expect(r.sql).toContain("TABLE_SCHEMA = 'main'");
+      expect(r.sql).toContain('database = currentDatabase()');
     });
   });
 
@@ -446,7 +446,7 @@ describe('mysqlQueryRouter', () => {
   // SQL rewriting (backticks, db qualifiers)
   // =====================================================================
 
-  describe('DuckDB SQL rewriting', () => {
+  describe('ClickHouse SQL rewriting', () => {
     test('backticks converted to double quotes for forwarded queries', () => {
       const r = expectForward(route('SELECT * FROM `users`'));
       expect(r.sql).toContain('"users"');
@@ -481,9 +481,9 @@ describe('mysqlQueryRouter', () => {
   // =====================================================================
 
   describe('SHOW TABLE STATUS', () => {
-    test('forwards to information_schema', () => {
+    test('forwards to system.tables', () => {
       const r = expectForward(route('SHOW TABLE STATUS'));
-      expect(r.sql).toContain('information_schema.tables');
+      expect(r.sql).toContain('system.tables');
     });
   });
 

@@ -3,7 +3,7 @@ import { clickhouseScalarStrict } from './helpers/clickhouse.js';
 import { mysqlExec } from './helpers/mysql.js';
 import { triggerIncrementalSync } from './helpers/sync.js';
 import { getValidation } from './helpers/validation.js';
-import { sleep } from './helpers/cdc.js';
+import { sleep } from './helpers/time.js';
 
 describe('Suite 2: Incremental Insert', () => {
   test('insert new rows and sync', async () => {
@@ -30,7 +30,7 @@ describe('Suite 2: Incremental Insert', () => {
     expect(await clickhouseScalarStrict('SELECT COUNT(*) AS cnt FROM products_simple', 'cnt')).toBe('5');
   });
 
-  test('Frank exists in DuckDB', async () => {
+  test('Frank exists in ClickHouse', async () => {
     expect(await clickhouseScalarStrict('SELECT name FROM users_with_timestamps WHERE id = 6', 'name')).toBe('Frank');
   });
 
@@ -58,21 +58,21 @@ describe('Suite 2: Incremental Insert', () => {
     expect(await clickhouseScalarStrict('SELECT role FROM users_with_timestamps WHERE id = 6', 'role')).toBe('viewer');
   });
 
-  test('Logout event exists in DuckDB', async () => {
+  test('Logout event exists in ClickHouse', async () => {
     expect(await clickhouseScalarStrict('SELECT event_type FROM events_append_only WHERE id = 4', 'event_type')).toBe('logout');
   });
 
-  test('Widget E exists in DuckDB', async () => {
+  test('Widget E exists in ClickHouse', async () => {
     expect(await clickhouseScalarStrict('SELECT name FROM products_simple WHERE id = 5', 'name')).toBe('Widget E');
   });
 
   test('users validation: max ID after insert', async () => {
     const val = await getValidation('users_with_timestamps');
-    expect(val.duckdb.maxId).toBe(val.mysql.maxId);
+    expect(val.clickhouse.maxId).toBe(val.mysql.maxId);
   });
 
   test('users validation: checksum after insert', async () => {
     const val = await getValidation('users_with_timestamps');
-    expect(val.duckdb.checksum).toBe(val.mysql.checksum);
+    expect(val.clickhouse.checksum).toBe(val.mysql.checksum);
   });
 });

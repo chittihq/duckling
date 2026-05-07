@@ -30,12 +30,12 @@ describe('Suite 5: Idempotent Re-sync', () => {
 
   test('users checksum after re-sync', async () => {
     const val = await getValidation('users_with_timestamps');
-    expect(val.duckdb.checksum).toBe(val.mysql.checksum);
+    expect(val.clickhouse.checksum).toBe(val.mysql.checksum);
   });
 
   test('products checksum after re-sync', async () => {
     const val = await getValidation('products_simple');
-    expect(val.duckdb.checksum).toBe(val.mysql.checksum);
+    expect(val.clickhouse.checksum).toBe(val.mysql.checksum);
   });
 
   test('users no error after re-sync', async () => {

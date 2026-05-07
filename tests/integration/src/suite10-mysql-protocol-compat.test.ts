@@ -137,10 +137,10 @@ describe('Suite 10: MySQL Protocol Compatibility', () => {
     expect(count).toBeGreaterThanOrEqual(0);
   });
 
-  test('Prepared statement path is explicitly unsupported (known rough edge)', async () => {
+  test('Prepared statement path supports simple SET commands', async () => {
     await expect(
       mysqlProtocolExecute('SET NAMES utf8'),
-    ).rejects.toThrow(/Prepared statements are not supported/i);
+    ).resolves.toEqual([]);
   });
 });
 
@@ -268,7 +268,7 @@ describe('Suite 10d: System Variables', () => {
 
   test('@@version_comment', async () => {
     const rows = await mysqlProtocolQuery('SELECT @@version_comment AS vc');
-    expect(pickValue(rows[0], 'vc')).toBe('Duckling DuckDB Server');
+    expect(pickValue(rows[0], 'vc')).toBe('Duckling ClickHouse Server');
   });
 
   test('@@character_set_client returns utf8mb4', async () => {
@@ -466,7 +466,7 @@ describe('Suite 10g: SHOW Commands', () => {
     const rows = await mysqlProtocolQuery('SHOW TABLE STATUS');
     expect(rows.length).toBeGreaterThan(0);
     const row = rows[0];
-    expect(pickValue(row, 'Engine')).toBe('DuckDB');
+    expect(pickValue(row, 'Engine')).toBe('View');
   });
 
   test('SHOW INDEX FROM table returns empty', async () => {
@@ -556,7 +556,7 @@ describe('Suite 10h: Query Execution', () => {
     }
   });
 
-  test('LIKE operator works in DuckDB queries', async () => {
+  test('LIKE operator works in ClickHouse-backed queries', async () => {
     const rows = await mysqlProtocolQuery(
       `SELECT name FROM \`${DB_ID}\`.\`users_with_timestamps\` WHERE name LIKE 'A%'`,
     );

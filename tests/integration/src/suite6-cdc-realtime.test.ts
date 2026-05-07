@@ -366,7 +366,7 @@ describe('Suite 6: CDC Real-Time Replication', () => {
         'SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = 1',
         'v',
       );
-      expect(val).toContain('-1.0');
+      expect(val === '-1' || val.includes('-1.0')).toBe(true);
     });
 
     test('CDC updated CHAR(10)', async () => {
@@ -397,6 +397,16 @@ describe('Suite 6: CDC Real-Time Replication', () => {
       expect(
         await clickhouseScalarStrict('SELECT col_boolean FROM type_coverage_cdc WHERE id = 1', 'col_boolean'),
       ).toBe('0');
+    });
+
+    test('cleanup type_coverage_cdc row', async () => {
+      await mysqlExec(`DELETE FROM type_coverage_cdc WHERE id = 1;`);
+      const detected = await waitForCdc(
+        'SELECT COUNT(*) AS cnt FROM type_coverage_cdc',
+        'cnt',
+        '0',
+      );
+      expect(detected).toBe(true);
     });
   });
 

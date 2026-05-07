@@ -182,6 +182,32 @@ class MySQLConnection {
     }
   }
 
+  async getTableChangeToken(tableName: string): Promise<string | null> {
+    try {
+      const columns = await this.getTableSchema(tableName);
+      const timestampColumn = columns.find(col =>
+        col.Field === 'updatedAt' || col.Field === 'updated_at' ||
+        col.Field === 'modifiedAt' || col.Field === 'modified_at'
+      ) || columns.find(col =>
+        col.Field === 'createdAt' || col.Field === 'created_at'
+      ) || columns.find(col =>
+        col.Field === 'timestamp'
+      );
+
+      if (!timestampColumn) return null;
+
+      const result = await this.execute(
+        `SELECT MAX(${this.q(timestampColumn.Field)}) as max_timestamp FROM ${this.q(tableName)}`
+      );
+
+      const raw = result[0]?.max_timestamp;
+      return raw === null || raw === undefined ? null : String(raw);
+    } catch (error) {
+      logger.warn(`Could not get change token for ${tableName}:`, error);
+      return null;
+    }
+  }
+
   async getTableData(tableName: string, limit?: number, offset?: number): Promise<any[]> {
     let query = `SELECT * FROM ${this.q(tableName)}`;
 

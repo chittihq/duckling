@@ -9,6 +9,7 @@ import ClickHouseConnection from './database/clickhouse';
 import MySQLConnection from './database/mysql';
 import ClickHouseSyncService from './services/clickhouseSyncService';
 import ClickHouseAutomationService from './services/clickhouseAutomationService';
+import CdcCompatibilityService from './services/cdcCompatibilityService';
 import WebSocketService from './services/websocketService';
 import LogBufferService from './services/logBufferService';
 import QueryMetricsService from './services/queryMetricsService';
@@ -291,6 +292,11 @@ class ClickHouseServer {
     this.app.post('/automation/start', attachDatabaseContext, this.startAutomation.bind(this));
     this.app.post('/automation/stop', attachDatabaseContext, this.stopAutomation.bind(this));
     this.app.post('/automation/cleanup', attachDatabaseContext, this.manualCleanup.bind(this));
+
+    // CDC compatibility endpoints (with database context)
+    this.app.get('/cdc/status', attachDatabaseContext, this.getCdcStatus.bind(this));
+    this.app.post('/cdc/start', attachDatabaseContext, this.startCdc.bind(this));
+    this.app.post('/cdc/stop', attachDatabaseContext, this.stopCdc.bind(this));
 
     // Data access endpoints (with database context)
     this.app.post('/api/query', attachDatabaseContext, this.executeQuery.bind(this));
@@ -1036,6 +1042,65 @@ class ClickHouseServer {
       res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  private async getCdcStatus(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
+      const cdcService = CdcCompatibilityService.getInstance(databaseId, syncService, clickhouse, mysql);
+      res.json({
+        success: true,
+        status: cdcService.getStatus(),
+        architecture: 'clickhouse-compat',
+      });
+    } catch (error) {
+      logger.error('Get CDC status failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  private async startCdc(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
+      const cdcService = CdcCompatibilityService.getInstance(databaseId, syncService, clickhouse, mysql);
+      const status = await cdcService.start();
+      res.json({
+        success: true,
+        message: 'CDC compatibility service started successfully',
+        status,
+      });
+    } catch (error) {
+      logger.error('Start CDC failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  private async stopCdc(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
+      const cdcService = CdcCompatibilityService.getInstance(databaseId, syncService, clickhouse, mysql);
+      const status = cdcService.stop();
+      res.json({
+        success: true,
+        message: 'CDC compatibility service stopped successfully',
+        status,
+      });
+    } catch (error) {
+      logger.error('Stop CDC failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
