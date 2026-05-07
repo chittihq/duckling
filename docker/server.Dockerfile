@@ -30,7 +30,10 @@ RUN pnpm install && pnpm rebuild
 COPY packages/shared ./packages/shared
 COPY packages/server ./packages/server
 COPY packages/sdk ./packages/sdk
-COPY packages/frontend ./packages/frontend
+
+# The server runtime does not need frontend source files. Keep only the
+# frontend package manifest copied above so pnpm can resolve the workspace
+# graph without forcing the backend image to ship the frontend tree.
 
 # Create necessary directories
 RUN mkdir -p /var/lib/duckdb /app/logs /app/data
