@@ -290,7 +290,7 @@ services:
       - REPLICATION_BACKEND=peerdb
       - PEERDB_ENABLED=true
       - PEERDB_API_URL=${PEERDB_API_URL:-http://flow-api:8112}
-      - PEERDB_UI_URL=${PEERDB_UI_URL:-http://localhost:13003}
+      - PEERDB_UI_URL=${PEERDB_UI_URL:-http://peerdb-ui:3000}
       - PEERDB_SQL_HOST=${PEERDB_SQL_HOST:-peerdb}
       - PEERDB_SQL_PORT=${PEERDB_SQL_PORT:-9900}
       - PEERDB_SQL_USER=${PEERDB_SQL_USER:-peerdb}
@@ -312,10 +312,8 @@ services:
       - SESSION_SECRET=${SESSION_SECRET}
       - LOG_LEVEL=${LOG_LEVEL:-debug}
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./packages/server/src:/app/packages/server/src
-      - ./packages/shared/src:/app/packages/shared/src
+      - peerdb-runtime-data:/app/data
+      - peerdb-runtime-logs:/app/logs
     restart: unless-stopped
     depends_on:
       - clickhouse
@@ -354,3 +352,5 @@ networks:
 
 volumes:
   rustfs-data:
+  peerdb-runtime-data:
+  peerdb-runtime-logs:

@@ -479,8 +479,6 @@ class ClickHouseServer {
       if (this.usesPeerDB(databaseId)) {
         const orchestrator = this.getPeerDBOrchestrator(databaseId);
         const tables = await mysql.getTables();
-        await orchestrator.createMySQLSourcePeer();
-        await orchestrator.createClickHouseTargetPeer();
 
         const actions = [];
         for (const tableName of tables) {
@@ -529,8 +527,6 @@ class ClickHouseServer {
       if (this.usesPeerDB(databaseId)) {
         const orchestrator = this.getPeerDBOrchestrator(databaseId);
         const tables = await mysql.getTables();
-        await orchestrator.createMySQLSourcePeer();
-        await orchestrator.createClickHouseTargetPeer();
 
         const actions = [];
         for (const tableName of tables) {
@@ -580,8 +576,6 @@ class ClickHouseServer {
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
       if (this.usesPeerDB(databaseId)) {
         const orchestrator = this.getPeerDBOrchestrator(databaseId);
-        await orchestrator.createMySQLSourcePeer();
-        await orchestrator.createClickHouseTargetPeer();
         const existing = await orchestrator.getMirrorStatus(tableName);
         if (existing) {
           await orchestrator.resyncMirror(tableName);

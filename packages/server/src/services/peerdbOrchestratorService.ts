@@ -58,17 +58,28 @@ class PeerDBOrchestratorService {
 
   async getMirrorStatus(tableName: string): Promise<PeerDBMirrorStatus | null> {
     const mirrorName = this.getMirrorName(tableName);
-    const response = await this.request({
-      path: `/api/v1/mirrors/status`,
-      body: {
-        flowJobName: mirrorName,
-        includeFlowInfo: true,
-      },
-    });
-    if (!response || response.ok === false && response.currentFlowState === 'STATUS_UNKNOWN') {
+    try {
+      const response = await this.request({
+        path: `/api/v1/mirrors/status`,
+        body: {
+          flowJobName: mirrorName,
+          includeFlowInfo: true,
+        },
+      });
+      if (!response || response.ok === false && response.currentFlowState === 'STATUS_UNKNOWN') {
+        return null;
+      }
+      return response as PeerDBMirrorStatus;
+    } catch (error) {
+      if (this.getErrorStatus(error) === 404) {
+        return null;
+      }
+      logger.warn(`PeerDB HTTP status lookup failed for ${mirrorName}`, {
+        databaseId: this.databaseId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
-    return response as PeerDBMirrorStatus;
   }
 
   async createMySQLSourcePeer(): Promise<unknown> {
@@ -110,7 +121,7 @@ class PeerDBOrchestratorService {
   }
 
   async createMirror(tableName: string): Promise<unknown> {
-    const sourceTable = tableName.includes('.') ? tableName : `public.${tableName}`;
+    const sourceTable = this.getSourceTableIdentifier(tableName);
     const sql = [
       `CREATE MIRROR IF NOT EXISTS ${this.q(this.getMirrorName(tableName))}`,
       `FROM ${this.q(this.getSourcePeerName())} TO ${this.q(this.getTargetPeerName())}`,
@@ -127,7 +138,27 @@ class PeerDBOrchestratorService {
       `soft_delete_col_name = '_peerdb_is_deleted'`,
       `);`,
     ].join(' ');
-    return this.sqlClient.execute(sql);
+    const attempts = 5;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        return await this.sqlClient.execute(sql);
+      } catch (error) {
+        if (!this.isPeerAvailabilityError(error) || attempt === attempts) {
+          throw error;
+        }
+        await this.createMySQLSourcePeer();
+        await this.createClickHouseTargetPeer();
+        logger.warn(`PeerDB mirror creation waiting for peer availability`, {
+          databaseId: this.databaseId,
+          tableName,
+          attempt,
+          sourcePeer: this.getSourcePeerName(),
+          targetPeer: this.getTargetPeerName(),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        await this.sleep(1000 * attempt);
+      }
+    }
   }
 
   async resyncMirror(tableName: string): Promise<unknown> {
@@ -144,6 +175,32 @@ class PeerDBOrchestratorService {
 
   private q(identifier: string): string {
     return `"${identifier.replace(/"/g, '""')}"`;
+  }
+
+  private getSourceTableIdentifier(tableName: string): string {
+    if (tableName.includes('.')) {
+      return tableName;
+    }
+    const uri = new URL(this.dbConfig.mysqlConnectionString);
+    const databaseName = uri.pathname.replace(/^\//, '');
+    return `${databaseName}.${tableName}`;
+  }
+
+  private getErrorStatus(error: unknown): number | undefined {
+    if (error && typeof error === 'object' && 'status' in error) {
+      const status = (error as { status?: unknown }).status;
+      return typeof status === 'number' ? status : undefined;
+    }
+    return undefined;
+  }
+
+  private isPeerAvailabilityError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes('peers not found');
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   private getMySQLFlavor(): 'mysql' | 'mariadb' {
@@ -191,7 +248,9 @@ class PeerDBOrchestratorService {
         status: response.status,
         body: data || text,
       });
-      throw new Error(`PeerDB request failed (${response.status})`);
+      const error = new Error(`PeerDB request failed (${response.status})`) as Error & { status?: number };
+      error.status = response.status;
+      throw error;
     }
 
     return data;
