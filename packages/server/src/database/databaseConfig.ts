@@ -30,6 +30,9 @@ export interface DatabaseConfig {
     sourcePeerName?: string;
     targetPeerName?: string;
     mirrorPrefix?: string;
+    mysqlDisableTls?: boolean;
+    mysqlFlavor?: 'mysql' | 'mariadb';
+    replicationMechanism?: 'auto' | 'gtid' | 'filepos';
     mirrors?: Array<{
       table: string;
       mirrorName: string;

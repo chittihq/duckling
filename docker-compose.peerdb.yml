@@ -114,7 +114,15 @@ services:
       - TEMPORAL_CLI_SHOW_STACKS=1
     stdin_open: true
     tty: true
-    command: ["sh", "-lc", "tail -f /dev/null"]
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        sleep 5
+        if ! temporal operator search-attribute list --namespace default | grep -w MirrorName >/dev/null 2>&1; then
+          temporal operator search-attribute create --name MirrorName --type Text --namespace default
+        fi
+        exec tail -f /dev/null
     healthcheck:
       test: ["CMD", "tctl", "workflow", "list"]
       interval: 2s
@@ -289,7 +297,10 @@ services:
       - PEERDB_SQL_PASSWORD=${PEERDB_SQL_PASSWORD:-peerdb}
       - PEERDB_SQL_DATABASE=${PEERDB_SQL_DATABASE:-peerdb}
       - PEERDB_CLICKHOUSE_HOST=${PEERDB_CLICKHOUSE_HOST:-clickhouse}
-      - PEERDB_CLICKHOUSE_PORT=${PEERDB_CLICKHOUSE_PORT:-9440}
+      - PEERDB_CLICKHOUSE_PORT=${PEERDB_CLICKHOUSE_PORT:-9000}
+      - PEERDB_MYSQL_DISABLE_TLS=${PEERDB_MYSQL_DISABLE_TLS:-true}
+      - PEERDB_MYSQL_FLAVOR=${PEERDB_MYSQL_FLAVOR:-mysql}
+      - PEERDB_MYSQL_REPLICATION_MECHANISM=${PEERDB_MYSQL_REPLICATION_MECHANISM:-auto}
       - AWS_ENDPOINT_URL_S3=${AWS_ENDPOINT_URL_S3:-http://rustfs:9000}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-peerdb}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-peerdbsecret}

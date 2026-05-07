@@ -73,6 +73,8 @@ class PeerDBOrchestratorService {
 
   async createMySQLSourcePeer(): Promise<unknown> {
     const uri = new URL(this.dbConfig.mysqlConnectionString);
+    const mysqlFlavor = this.getMySQLFlavor();
+    const replicationMechanism = this.getReplicationMechanism();
     const sql = [
       `CREATE PEER ${this.q(this.getSourcePeerName())} FROM MYSQL WITH (`,
       `host='${this.escape(uri.hostname)}',`,
@@ -80,7 +82,9 @@ class PeerDBOrchestratorService {
       `user='${this.escape(decodeURIComponent(uri.username))}',`,
       `password='${this.escape(decodeURIComponent(uri.password))}',`,
       `database='${this.escape(uri.pathname.replace(/^\//, ''))}',`,
-      `disable_tls=false`,
+      `disable_tls=${this.getMySQLDisableTls() ? 'true' : 'false'},`,
+      `flavor='${mysqlFlavor}',`,
+      `replication_mechanism='${replicationMechanism}'`,
       `);`,
     ].join(' ');
     return this.sqlClient.execute(sql);
@@ -119,8 +123,8 @@ class PeerDBOrchestratorService {
       `snapshot_max_parallel_workers = 4,`,
       `snapshot_num_tables_in_parallel = 1,`,
       `soft_delete = true,`,
-      `synced_at_col_name = '_PEERDB_SYNCED_AT',`,
-      `soft_delete_col_name = '_PEERDB_IS_DELETED'`,
+      `synced_at_col_name = '_peerdb_synced_at',`,
+      `soft_delete_col_name = '_peerdb_is_deleted'`,
       `);`,
     ].join(' ');
     return this.sqlClient.execute(sql);
@@ -140,6 +144,22 @@ class PeerDBOrchestratorService {
 
   private q(identifier: string): string {
     return `"${identifier.replace(/"/g, '""')}"`;
+  }
+
+  private getMySQLFlavor(): 'mysql' | 'mariadb' {
+    return this.dbConfig.peerdb?.mysqlFlavor || (config.peerdb.mysqlFlavor === 'mariadb' ? 'mariadb' : 'mysql');
+  }
+
+  private getMySQLDisableTls(): boolean {
+    return this.dbConfig.peerdb?.mysqlDisableTls ?? config.peerdb.mysqlDisableTls;
+  }
+
+  private getReplicationMechanism(): 'auto' | 'gtid' | 'filepos' {
+    const mechanism = this.dbConfig.peerdb?.replicationMechanism || config.peerdb.mysqlReplicationMechanism;
+    if (mechanism === 'gtid' || mechanism === 'filepos') {
+      return mechanism;
+    }
+    return 'auto';
   }
 
   private escape(value: string): string {

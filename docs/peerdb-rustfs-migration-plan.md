@@ -275,7 +275,10 @@ Before replacing the current runtime path, verify:
 6. Schema changes behave acceptably.
 7. Restarting PeerDB services does not require manual repair.
 8. ClickHouse can always reach RustFS.
-9. The same setup works for your MySQL mode:
+9. Current self-hosted PeerDB ClickHouse CDC uses lowercase mirror columns:
+   `_peerdb_synced_at` and `_peerdb_is_deleted`.
+   This should be validated explicitly because some PeerDB docs/UI defaults still show uppercase `_PEERDB_*`.
+10. The same setup works for your MySQL mode:
    - GTID
    - file-position
    - MariaDB
