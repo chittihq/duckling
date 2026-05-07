@@ -3,8 +3,8 @@ services:
     image: clickhouse/clickhouse-server:25.8
     container_name: duckling-peerdb-clickhouse
     ports:
-      - "8123:8123"
-      - "9000:9000"
+      - "18123:8123"
+      - "19000:9000"
     environment:
       - CLICKHOUSE_DB=${CLICKHOUSE_DATABASE:-default}
       - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
@@ -21,7 +21,7 @@ services:
     image: rustfs/rustfs:latest
     container_name: duckling-rustfs
     ports:
-      - "9002:9000"
+      - "19002:9000"
     environment:
       - RUSTFS_ACCESS_KEY_ID=${RUSTFS_ACCESS_KEY_ID:-peerdb}
       - RUSTFS_SECRET_ACCESS_KEY=${RUSTFS_SECRET_ACCESS_KEY:-peerdbsecret}
@@ -45,7 +45,7 @@ services:
       - ./data/peerdb/catalog:/var/lib/postgresql
     restart: unless-stopped
     ports:
-      - "9901:5432"
+      - "19901:5432"
     healthcheck:
       test: ["CMD", "pg_isready", "-d", "postgres", "-U", "postgres"]
       interval: 10s
@@ -69,7 +69,7 @@ services:
       - POSTGRES_SEEDS=catalog
       - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development.yaml
     ports:
-      - "7233:7233"
+      - "17233:7233"
     restart: unless-stopped
     networks:
       - peerdb-network
@@ -80,7 +80,7 @@ services:
     environment:
       - TEMPORAL_ADDRESS=temporal:7233
     ports:
-      - "8233:8080"
+      - "18233:8080"
     depends_on:
       - temporal
     restart: unless-stopped
@@ -133,8 +133,8 @@ services:
       - PEERDB_CLICKHOUSE_AWS_S3_BUCKET_NAME=${PEERDB_S3_BUCKET:-peerdb-stage}
       - PEERDB_ALLOWED_TARGETS=
     ports:
-      - "8112:8112"
-      - "8113:8113"
+      - "18112:8112"
+      - "18113:8113"
     restart: unless-stopped
     networks:
       - peerdb-network
@@ -210,7 +210,7 @@ services:
       - RUST_LOG=info
       - RUST_BACKTRACE=1
     ports:
-      - "9900:9900"
+      - "19900:9900"
     restart: unless-stopped
     networks:
       - peerdb-network
@@ -228,12 +228,12 @@ services:
       - PEERDB_CATALOG_DATABASE=postgres
       - PEERDB_FLOW_SERVER_HTTP=http://flow-api:8113
       - NEXTAUTH_SECRET=__changeme__
-      - NEXTAUTH_URL=http://localhost:3003
+      - NEXTAUTH_URL=http://localhost:13003
       - PEERDB_ALLOWED_TARGETS=
       - PEERDB_CLICKHOUSE_ALLOWED_DOMAINS=
       - PEERDB_EXPERIMENTAL_ENABLE_SCRIPTING=true
     ports:
-      - "3003:3000"
+      - "13003:3000"
     restart: unless-stopped
     networks:
       - peerdb-network
@@ -244,8 +244,8 @@ services:
       context: .
       dockerfile: docker/server.Dockerfile
     ports:
-      - "3001:3000"
-      - "3307:3307"
+      - "13001:3000"
+      - "13307:3307"
     env_file:
       - .env
     environment:
@@ -260,7 +260,7 @@ services:
       - REPLICATION_BACKEND=peerdb
       - PEERDB_ENABLED=true
       - PEERDB_API_URL=${PEERDB_API_URL:-http://flow-api:8112}
-      - PEERDB_UI_URL=${PEERDB_UI_URL:-http://localhost:3003}
+      - PEERDB_UI_URL=${PEERDB_UI_URL:-http://localhost:13003}
       - PEERDB_SQL_HOST=${PEERDB_SQL_HOST:-peerdb}
       - PEERDB_SQL_PORT=${PEERDB_SQL_PORT:-9900}
       - PEERDB_SQL_USER=${PEERDB_SQL_USER:-peerdb}
@@ -291,17 +291,17 @@ services:
       - peerdb-network
 
   clickhouse-frontend:
-    container_name: duckling-frontend
+    container_name: duckling-peerdb-frontend
     profiles:
       - ui
     build:
       context: .
       dockerfile: docker/frontend.Dockerfile
     ports:
-      - "3000:3000"
+      - "13000:3000"
     environment:
       - NODE_ENV=${NODE_ENV:-development}
-      - NUXT_PUBLIC_API_BASE=http://localhost:3001
+      - NUXT_PUBLIC_API_BASE=http://localhost:13001
     volumes:
       - ./packages/frontend/app:/app/packages/frontend/app
       - ./packages/frontend/nuxt.config.ts:/app/packages/frontend/nuxt.config.ts
