@@ -32,29 +32,26 @@ services:
     networks:
       - peerdb-network
 
-  peerdb-catalog-postgres:
-    image: postgres:16
-    container_name: duckling-peerdb-catalog-postgres
+  catalog:
+    image: postgres:18-alpine
+    container_name: duckling-peerdb-catalog
     environment:
-      - POSTGRES_DB=${PEERDB_CATALOG_POSTGRES_DB:-peerdb}
-      - POSTGRES_USER=${PEERDB_CATALOG_POSTGRES_USER:-peerdb}
-      - POSTGRES_PASSWORD=${PEERDB_CATALOG_POSTGRES_PASSWORD:-peerdb}
+      - PGUSER=postgres
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_INITDB_ARGS=--locale=C.UTF-8
     volumes:
-      - ./data/peerdb/catalog-postgres:/var/lib/postgresql/data
+      - ./data/peerdb/catalog:/var/lib/postgresql
     restart: unless-stopped
-    networks:
-      - peerdb-network
-
-  peerdb-temporal-postgres:
-    image: postgres:16
-    container_name: duckling-peerdb-temporal-postgres
-    environment:
-      - POSTGRES_DB=${PEERDB_TEMPORAL_POSTGRES_DB:-temporal}
-      - POSTGRES_USER=${PEERDB_TEMPORAL_POSTGRES_USER:-temporal}
-      - POSTGRES_PASSWORD=${PEERDB_TEMPORAL_POSTGRES_PASSWORD:-temporal}
-    volumes:
-      - ./data/peerdb/temporal-postgres:/var/lib/postgresql/data
-    restart: unless-stopped
+    ports:
+      - "9901:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-d", "postgres", "-U", "postgres"]
+      interval: 10s
+      timeout: 30s
+      retries: 5
+      start_period: 60s
     networks:
       - peerdb-network
 
@@ -62,13 +59,14 @@ services:
     image: temporalio/auto-setup:1.25.1
     container_name: duckling-temporal
     depends_on:
-      - peerdb-temporal-postgres
+      catalog:
+        condition: service_healthy
     environment:
       - DB=postgres12
       - DB_PORT=5432
-      - POSTGRES_USER=${PEERDB_TEMPORAL_POSTGRES_USER:-temporal}
-      - POSTGRES_PWD=${PEERDB_TEMPORAL_POSTGRES_PASSWORD:-temporal}
-      - POSTGRES_SEEDS=peerdb-temporal-postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PWD=postgres
+      - POSTGRES_SEEDS=catalog
       - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development.yaml
     ports:
       - "7233:7233"
@@ -89,95 +87,151 @@ services:
     networks:
       - peerdb-network
 
-  peerdb-server:
-    image: ${PEERDB_SERVER_IMAGE:-ghcr.io/peerdb-io/peerdb/peerdb-server:latest}
-    container_name: duckling-peerdb-server
+  temporal-admin-tools:
+    image: temporalio/admin-tools:1.25.2-tctl-1.18.1-cli-1.1.1
+    container_name: duckling-temporal-admin-tools
     depends_on:
-      - peerdb-catalog-postgres
       - temporal
     environment:
-      - PEERDB_CATALOG_HOST=peerdb-catalog-postgres
-      - PEERDB_CATALOG_PORT=5432
-      - PEERDB_CATALOG_DB=${PEERDB_CATALOG_POSTGRES_DB:-peerdb}
-      - PEERDB_CATALOG_USER=${PEERDB_CATALOG_POSTGRES_USER:-peerdb}
-      - PEERDB_CATALOG_PASSWORD=${PEERDB_CATALOG_POSTGRES_PASSWORD:-peerdb}
       - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CLI_ADDRESS=temporal:7233
+      - TEMPORAL_CLI_SHOW_STACKS=1
+    stdin_open: true
+    tty: true
+    command: ["sh", "-lc", "tail -f /dev/null"]
+    healthcheck:
+      test: ["CMD", "tctl", "workflow", "list"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  flow-api:
+    image: ${PEERDB_FLOW_API_IMAGE:-ghcr.io/peerdb-io/flow-api:stable-v0.36.19}
+    container_name: duckling-peerdb-flow-api
+    depends_on:
+      temporal-admin-tools:
+        condition: service_healthy
+    environment:
+      - PEERDB_CATALOG_HOST=catalog
+      - PEERDB_CATALOG_PORT=5432
+      - PEERDB_CATALOG_USER=postgres
+      - PEERDB_CATALOG_PASSWORD=postgres
+      - PEERDB_CATALOG_DATABASE=postgres
+      - TEMPORAL_HOST_PORT=temporal:7233
+      - PEERDB_TEMPORAL_NAMESPACE=default
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-peerdb}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-peerdbsecret}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ENDPOINT=${AWS_ENDPOINT_URL_S3:-http://rustfs:9000}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-peerdb}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-peerdbsecret}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_REGION=${AWS_REGION:-us-east-1}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ENDPOINT_URL_S3=${AWS_ENDPOINT_URL_S3:-http://rustfs:9000}
+      - PEERDB_CLICKHOUSE_AWS_S3_BUCKET_NAME=${PEERDB_S3_BUCKET:-peerdb-stage}
+      - PEERDB_ALLOWED_TARGETS=
+    ports:
+      - "8112:8112"
+      - "8113:8113"
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  flow-snapshot-worker:
+    image: ${PEERDB_FLOW_SNAPSHOT_WORKER_IMAGE:-ghcr.io/peerdb-io/flow-snapshot-worker:stable-v0.36.19}
+    container_name: duckling-peerdb-flow-snapshot-worker
+    depends_on:
+      temporal-admin-tools:
+        condition: service_healthy
+    environment:
+      - PEERDB_CATALOG_HOST=catalog
+      - PEERDB_CATALOG_PORT=5432
+      - PEERDB_CATALOG_USER=postgres
+      - PEERDB_CATALOG_PASSWORD=postgres
+      - PEERDB_CATALOG_DATABASE=postgres
+      - TEMPORAL_HOST_PORT=temporal:7233
+      - PEERDB_TEMPORAL_NAMESPACE=default
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-peerdb}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-peerdbsecret}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ENDPOINT=${AWS_ENDPOINT_URL_S3:-http://rustfs:9000}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-peerdb}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-peerdbsecret}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_REGION=${AWS_REGION:-us-east-1}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ENDPOINT_URL_S3=${AWS_ENDPOINT_URL_S3:-http://rustfs:9000}
+      - PEERDB_CLICKHOUSE_AWS_S3_BUCKET_NAME=${PEERDB_S3_BUCKET:-peerdb-stage}
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  flow-worker:
+    image: ${PEERDB_FLOW_WORKER_IMAGE:-ghcr.io/peerdb-io/flow-worker:stable-v0.36.19}
+    container_name: duckling-peerdb-flow-worker
+    depends_on:
+      temporal-admin-tools:
+        condition: service_healthy
+    environment:
+      - PEERDB_CATALOG_HOST=catalog
+      - PEERDB_CATALOG_PORT=5432
+      - PEERDB_CATALOG_USER=postgres
+      - PEERDB_CATALOG_PASSWORD=postgres
+      - PEERDB_CATALOG_DATABASE=postgres
+      - TEMPORAL_HOST_PORT=temporal:7233
+      - PEERDB_TEMPORAL_NAMESPACE=default
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-peerdb}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-peerdbsecret}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ENDPOINT=${AWS_ENDPOINT_URL_S3:-http://rustfs:9000}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-peerdb}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-peerdbsecret}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_REGION=${AWS_REGION:-us-east-1}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ENDPOINT_URL_S3=${AWS_ENDPOINT_URL_S3:-http://rustfs:9000}
+      - PEERDB_CLICKHOUSE_AWS_S3_BUCKET_NAME=${PEERDB_S3_BUCKET:-peerdb-stage}
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  peerdb:
+    image: ${PEERDB_SERVER_IMAGE:-ghcr.io/peerdb-io/peerdb-server:stable-v0.36.19}
+    container_name: duckling-peerdb-server
+    depends_on:
+      catalog:
+        condition: service_healthy
+    environment:
+      - PEERDB_CATALOG_HOST=catalog
+      - PEERDB_CATALOG_PORT=5432
+      - PEERDB_CATALOG_USER=postgres
+      - PEERDB_CATALOG_PASSWORD=postgres
+      - PEERDB_CATALOG_DATABASE=postgres
+      - PEERDB_PASSWORD=${PEERDB_SQL_PASSWORD:-peerdb}
+      - PEERDB_FLOW_SERVER_ADDRESS=grpc://flow-api:8112
+      - RUST_LOG=info
+      - RUST_BACKTRACE=1
     ports:
       - "9900:9900"
     restart: unless-stopped
     networks:
       - peerdb-network
 
-  flow-api:
-    image: ${PEERDB_FLOW_API_IMAGE:-ghcr.io/peerdb-io/peerdb/flow-api:latest}
-    container_name: duckling-peerdb-flow-api
-    depends_on:
-      - peerdb-server
-      - temporal
-    environment:
-      - PEERDB_SERVER_HOST=peerdb-server
-      - PEERDB_SERVER_PORT=9900
-      - TEMPORAL_ADDRESS=temporal:7233
-      - AWS_ENDPOINT_URL_S3=${AWS_ENDPOINT_URL_S3:-http://rustfs:9000}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-peerdb}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-peerdbsecret}
-      - AWS_REGION=${AWS_REGION:-us-east-1}
-      - PEERDB_S3_BUCKET=${PEERDB_S3_BUCKET:-peerdb-stage}
-    ports:
-      - "8112:8112"
-    restart: unless-stopped
-    networks:
-      - peerdb-network
-
-  flow-worker:
-    image: ${PEERDB_FLOW_WORKER_IMAGE:-ghcr.io/peerdb-io/peerdb/flow-worker:latest}
-    container_name: duckling-peerdb-flow-worker
-    depends_on:
-      - peerdb-server
-      - temporal
-      - rustfs
-      - clickhouse
-    environment:
-      - PEERDB_SERVER_HOST=peerdb-server
-      - PEERDB_SERVER_PORT=9900
-      - TEMPORAL_ADDRESS=temporal:7233
-      - AWS_ENDPOINT_URL_S3=${AWS_ENDPOINT_URL_S3:-http://rustfs:9000}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-peerdb}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-peerdbsecret}
-      - AWS_REGION=${AWS_REGION:-us-east-1}
-      - PEERDB_S3_BUCKET=${PEERDB_S3_BUCKET:-peerdb-stage}
-    restart: unless-stopped
-    networks:
-      - peerdb-network
-
-  flow-snapshot-worker:
-    image: ${PEERDB_FLOW_SNAPSHOT_WORKER_IMAGE:-ghcr.io/peerdb-io/peerdb/flow-snapshot-worker:latest}
-    container_name: duckling-peerdb-flow-snapshot-worker
-    depends_on:
-      - peerdb-server
-      - temporal
-      - rustfs
-      - clickhouse
-    environment:
-      - PEERDB_SERVER_HOST=peerdb-server
-      - PEERDB_SERVER_PORT=9900
-      - TEMPORAL_ADDRESS=temporal:7233
-      - AWS_ENDPOINT_URL_S3=${AWS_ENDPOINT_URL_S3:-http://rustfs:9000}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-peerdb}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-peerdbsecret}
-      - AWS_REGION=${AWS_REGION:-us-east-1}
-      - PEERDB_S3_BUCKET=${PEERDB_S3_BUCKET:-peerdb-stage}
-    restart: unless-stopped
-    networks:
-      - peerdb-network
-
   peerdb-ui:
-    image: ${PEERDB_UI_IMAGE:-ghcr.io/peerdb-io/peerdb/peerdb-ui:latest}
+    image: ${PEERDB_UI_IMAGE:-ghcr.io/peerdb-io/peerdb-ui:stable-v0.36.19}
     container_name: duckling-peerdb-ui
     depends_on:
       - flow-api
     environment:
-      - PEERDB_API_URL=http://flow-api:8112
+      - PEERDB_CATALOG_HOST=catalog
+      - PEERDB_CATALOG_PORT=5432
+      - PEERDB_CATALOG_USER=postgres
+      - PEERDB_CATALOG_PASSWORD=postgres
+      - PEERDB_CATALOG_DATABASE=postgres
+      - PEERDB_FLOW_SERVER_HTTP=http://flow-api:8113
+      - NEXTAUTH_SECRET=__changeme__
+      - NEXTAUTH_URL=http://localhost:3003
+      - PEERDB_ALLOWED_TARGETS=
+      - PEERDB_CLICKHOUSE_ALLOWED_DOMAINS=
+      - PEERDB_EXPERIMENTAL_ENABLE_SCRIPTING=true
     ports:
       - "3003:3000"
     restart: unless-stopped
@@ -206,8 +260,8 @@ services:
       - REPLICATION_BACKEND=peerdb
       - PEERDB_ENABLED=true
       - PEERDB_API_URL=${PEERDB_API_URL:-http://flow-api:8112}
-      - PEERDB_UI_URL=${PEERDB_UI_URL:-http://peerdb-ui:3000}
-      - PEERDB_SQL_HOST=${PEERDB_SQL_HOST:-peerdb-server}
+      - PEERDB_UI_URL=${PEERDB_UI_URL:-http://localhost:3003}
+      - PEERDB_SQL_HOST=${PEERDB_SQL_HOST:-peerdb}
       - PEERDB_SQL_PORT=${PEERDB_SQL_PORT:-9900}
       - PEERDB_SQL_USER=${PEERDB_SQL_USER:-peerdb}
       - PEERDB_SQL_PASSWORD=${PEERDB_SQL_PASSWORD:-peerdb}
