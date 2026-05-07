@@ -44,6 +44,33 @@ export const config = {
     password: process.env.CLICKHOUSE_PASSWORD || '',
     database: process.env.CLICKHOUSE_DATABASE || 'default',
   },
+
+  replication: {
+    backend: process.env.REPLICATION_BACKEND === 'peerdb' ? 'peerdb' : 'duckling',
+  },
+
+  peerdb: {
+    enabled: process.env.PEERDB_ENABLED === 'true',
+    apiUrl: process.env.PEERDB_API_URL || 'http://localhost:8112',
+    uiUrl: process.env.PEERDB_UI_URL || 'http://localhost:3003',
+    apiKey: process.env.PEERDB_API_KEY || '',
+    sourcePeerPrefix: process.env.PEERDB_SOURCE_PEER_PREFIX || 'mysql',
+    targetPeerPrefix: process.env.PEERDB_TARGET_PEER_PREFIX || 'clickhouse',
+    mirrorPrefix: process.env.PEERDB_MIRROR_PREFIX || 'duckling',
+    clickhouseHost: process.env.PEERDB_CLICKHOUSE_HOST || 'clickhouse',
+    clickhousePort: parseInt(process.env.PEERDB_CLICKHOUSE_PORT || '9440'),
+    clickhouseTls: process.env.PEERDB_CLICKHOUSE_TLS === 'true',
+    defaultFlowJobNamePrefix: process.env.PEERDB_FLOW_JOB_PREFIX || 'duckling',
+  },
+
+  rustfs: {
+    endpoint: process.env.RUSTFS_ENDPOINT || process.env.AWS_ENDPOINT_URL_S3 || 'http://localhost:9000',
+    accessKeyId: process.env.RUSTFS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.RUSTFS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY || '',
+    region: process.env.RUSTFS_REGION || process.env.AWS_REGION || 'us-east-1',
+    bucket: process.env.RUSTFS_BUCKET || process.env.PEERDB_S3_BUCKET || 'peerdb-stage',
+    usePathStyle: process.env.RUSTFS_USE_PATH_STYLE !== 'false',
+  },
   
   sync: {
     intervalMinutes: parseInt(process.env.SYNC_INTERVAL_MINUTES || '15'),

@@ -25,6 +25,16 @@ export interface DatabaseConfig {
   name: string;
   mysqlConnectionString: string;
   clickhouseDatabase: string;
+  peerdb?: {
+    enabled: boolean;
+    sourcePeerName?: string;
+    targetPeerName?: string;
+    mirrorPrefix?: string;
+    mirrors?: Array<{
+      table: string;
+      mirrorName: string;
+    }>;
+  };
   createdAt: string;
   updatedAt: string;
   s3?: S3Config;

@@ -1,0 +1,259 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    container_name: duckling-clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      - CLICKHOUSE_DB=${CLICKHOUSE_DATABASE:-default}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    volumes:
+      - ./data/clickhouse:/var/lib/clickhouse
+      - ./logs/clickhouse:/var/log/clickhouse-server
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: duckling-rustfs
+    ports:
+      - "9002:9000"
+    environment:
+      - RUSTFS_ACCESS_KEY_ID=${RUSTFS_ACCESS_KEY_ID:-peerdb}
+      - RUSTFS_SECRET_ACCESS_KEY=${RUSTFS_SECRET_ACCESS_KEY:-peerdbsecret}
+      - RUSTFS_REGION=${RUSTFS_REGION:-us-east-1}
+    volumes:
+      - ./data/rustfs:/data
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  peerdb-catalog-postgres:
+    image: postgres:16
+    container_name: duckling-peerdb-catalog-postgres
+    environment:
+      - POSTGRES_DB=${PEERDB_CATALOG_POSTGRES_DB:-peerdb}
+      - POSTGRES_USER=${PEERDB_CATALOG_POSTGRES_USER:-peerdb}
+      - POSTGRES_PASSWORD=${PEERDB_CATALOG_POSTGRES_PASSWORD:-peerdb}
+    volumes:
+      - ./data/peerdb/catalog-postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  peerdb-temporal-postgres:
+    image: postgres:16
+    container_name: duckling-peerdb-temporal-postgres
+    environment:
+      - POSTGRES_DB=${PEERDB_TEMPORAL_POSTGRES_DB:-temporal}
+      - POSTGRES_USER=${PEERDB_TEMPORAL_POSTGRES_USER:-temporal}
+      - POSTGRES_PASSWORD=${PEERDB_TEMPORAL_POSTGRES_PASSWORD:-temporal}
+    volumes:
+      - ./data/peerdb/temporal-postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  temporal:
+    image: temporalio/auto-setup:1.25.1
+    container_name: duckling-temporal
+    depends_on:
+      - peerdb-temporal-postgres
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=${PEERDB_TEMPORAL_POSTGRES_USER:-temporal}
+      - POSTGRES_PWD=${PEERDB_TEMPORAL_POSTGRES_PASSWORD:-temporal}
+      - POSTGRES_SEEDS=peerdb-temporal-postgres
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development.yaml
+    ports:
+      - "7233:7233"
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  temporal-ui:
+    image: temporalio/ui:2.31.2
+    container_name: duckling-temporal-ui
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    ports:
+      - "8233:8080"
+    depends_on:
+      - temporal
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  peerdb-server:
+    image: ${PEERDB_SERVER_IMAGE:-ghcr.io/peerdb-io/peerdb/peerdb-server:latest}
+    container_name: duckling-peerdb-server
+    depends_on:
+      - peerdb-catalog-postgres
+      - temporal
+    environment:
+      - PEERDB_CATALOG_HOST=peerdb-catalog-postgres
+      - PEERDB_CATALOG_PORT=5432
+      - PEERDB_CATALOG_DB=${PEERDB_CATALOG_POSTGRES_DB:-peerdb}
+      - PEERDB_CATALOG_USER=${PEERDB_CATALOG_POSTGRES_USER:-peerdb}
+      - PEERDB_CATALOG_PASSWORD=${PEERDB_CATALOG_POSTGRES_PASSWORD:-peerdb}
+      - TEMPORAL_ADDRESS=temporal:7233
+    ports:
+      - "9900:9900"
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  flow-api:
+    image: ${PEERDB_FLOW_API_IMAGE:-ghcr.io/peerdb-io/peerdb/flow-api:latest}
+    container_name: duckling-peerdb-flow-api
+    depends_on:
+      - peerdb-server
+      - temporal
+    environment:
+      - PEERDB_SERVER_HOST=peerdb-server
+      - PEERDB_SERVER_PORT=9900
+      - TEMPORAL_ADDRESS=temporal:7233
+      - AWS_ENDPOINT_URL_S3=${AWS_ENDPOINT_URL_S3:-http://rustfs:9000}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-peerdb}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-peerdbsecret}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - PEERDB_S3_BUCKET=${PEERDB_S3_BUCKET:-peerdb-stage}
+    ports:
+      - "8112:8112"
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  flow-worker:
+    image: ${PEERDB_FLOW_WORKER_IMAGE:-ghcr.io/peerdb-io/peerdb/flow-worker:latest}
+    container_name: duckling-peerdb-flow-worker
+    depends_on:
+      - peerdb-server
+      - temporal
+      - rustfs
+      - clickhouse
+    environment:
+      - PEERDB_SERVER_HOST=peerdb-server
+      - PEERDB_SERVER_PORT=9900
+      - TEMPORAL_ADDRESS=temporal:7233
+      - AWS_ENDPOINT_URL_S3=${AWS_ENDPOINT_URL_S3:-http://rustfs:9000}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-peerdb}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-peerdbsecret}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - PEERDB_S3_BUCKET=${PEERDB_S3_BUCKET:-peerdb-stage}
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  flow-snapshot-worker:
+    image: ${PEERDB_FLOW_SNAPSHOT_WORKER_IMAGE:-ghcr.io/peerdb-io/peerdb/flow-snapshot-worker:latest}
+    container_name: duckling-peerdb-flow-snapshot-worker
+    depends_on:
+      - peerdb-server
+      - temporal
+      - rustfs
+      - clickhouse
+    environment:
+      - PEERDB_SERVER_HOST=peerdb-server
+      - PEERDB_SERVER_PORT=9900
+      - TEMPORAL_ADDRESS=temporal:7233
+      - AWS_ENDPOINT_URL_S3=${AWS_ENDPOINT_URL_S3:-http://rustfs:9000}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-peerdb}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-peerdbsecret}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - PEERDB_S3_BUCKET=${PEERDB_S3_BUCKET:-peerdb-stage}
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  peerdb-ui:
+    image: ${PEERDB_UI_IMAGE:-ghcr.io/peerdb-io/peerdb/peerdb-ui:latest}
+    container_name: duckling-peerdb-ui
+    depends_on:
+      - flow-api
+    environment:
+      - PEERDB_API_URL=http://flow-api:8112
+    ports:
+      - "3003:3000"
+    restart: unless-stopped
+    networks:
+      - peerdb-network
+
+  clickhouse-server:
+    container_name: duckling-server
+    build:
+      context: .
+      dockerfile: docker/server.Dockerfile
+    ports:
+      - "3001:3000"
+      - "3307:3307"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${PORT:-3000}
+      - MYSQL_CONNECTION_STRING=${MYSQL_CONNECTION_STRING}
+      - MYSQL_MAX_CONNECTIONS=${MYSQL_MAX_CONNECTIONS:-5}
+      - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://clickhouse:8123}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+      - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-default}
+      - REPLICATION_BACKEND=peerdb
+      - PEERDB_ENABLED=true
+      - PEERDB_API_URL=${PEERDB_API_URL:-http://flow-api:8112}
+      - PEERDB_UI_URL=${PEERDB_UI_URL:-http://peerdb-ui:3000}
+      - PEERDB_CLICKHOUSE_HOST=${PEERDB_CLICKHOUSE_HOST:-clickhouse}
+      - PEERDB_CLICKHOUSE_PORT=${PEERDB_CLICKHOUSE_PORT:-9440}
+      - AWS_ENDPOINT_URL_S3=${AWS_ENDPOINT_URL_S3:-http://rustfs:9000}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-peerdb}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-peerdbsecret}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - PEERDB_S3_BUCKET=${PEERDB_S3_BUCKET:-peerdb-stage}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - DUCKLING_API_KEY=${DUCKLING_API_KEY}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - LOG_LEVEL=${LOG_LEVEL:-debug}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./packages/server/src:/app/packages/server/src
+      - ./packages/shared/src:/app/packages/shared/src
+    restart: unless-stopped
+    depends_on:
+      - clickhouse
+      - flow-api
+    networks:
+      - peerdb-network
+
+  clickhouse-frontend:
+    container_name: duckling-frontend
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - NUXT_PUBLIC_API_BASE=http://localhost:3001
+    volumes:
+      - ./packages/frontend/app:/app/packages/frontend/app
+      - ./packages/frontend/nuxt.config.ts:/app/packages/frontend/nuxt.config.ts
+      - ./packages/frontend/tailwind.config.ts:/app/packages/frontend/tailwind.config.ts
+      - ./packages/shared/src:/app/packages/shared/src
+      - ./packages/sdk/src:/app/packages/sdk/src
+    restart: unless-stopped
+    depends_on:
+      - clickhouse-server
+    networks:
+      - peerdb-network
+
+networks:
+  peerdb-network:
+    name: duckling-peerdb-network
+    driver: bridge

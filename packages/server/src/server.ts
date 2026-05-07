@@ -10,6 +10,7 @@ import MySQLConnection from './database/mysql';
 import ClickHouseSyncService from './services/clickhouseSyncService';
 import ClickHouseAutomationService from './services/clickhouseAutomationService';
 import CdcCompatibilityService from './services/cdcCompatibilityService';
+import PeerDBOrchestratorService from './services/peerdbOrchestratorService';
 import WebSocketService from './services/websocketService';
 import LogBufferService from './services/logBufferService';
 import QueryMetricsService from './services/queryMetricsService';
@@ -345,6 +346,19 @@ class ClickHouseServer {
     this.app.use(this.errorHandler.bind(this));
   }
 
+  private usesPeerDB(databaseId: string): boolean {
+    const dbConfig = DatabaseConfigManager.getInstance().getDatabase(databaseId);
+    return config.replication.backend === 'peerdb' || dbConfig?.peerdb?.enabled === true;
+  }
+
+  private getPeerDBOrchestrator(databaseId: string): PeerDBOrchestratorService {
+    const dbConfig = DatabaseConfigManager.getInstance().getDatabase(databaseId);
+    if (!dbConfig) {
+      throw new Error(`Unknown database '${databaseId}'`);
+    }
+    return new PeerDBOrchestratorService(databaseId, dbConfig);
+  }
+
   private async healthCheck(req: express.Request, res: express.Response): Promise<void> {
     try {
       const dbManager = DatabaseConfigManager.getInstance();
@@ -462,6 +476,34 @@ class ClickHouseServer {
   private async fullSync(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      if (this.usesPeerDB(databaseId)) {
+        const orchestrator = this.getPeerDBOrchestrator(databaseId);
+        const tables = await mysql.getTables();
+        await orchestrator.createMySQLSourcePeer();
+        await orchestrator.createClickHouseTargetPeer();
+
+        const actions = [];
+        for (const tableName of tables) {
+          const existing = await orchestrator.getMirrorStatus(tableName);
+          if (existing) {
+            await orchestrator.resyncMirror(tableName);
+            actions.push({ table: tableName, action: 'resync' });
+          } else {
+            await orchestrator.createMirror(tableName);
+            actions.push({ table: tableName, action: 'create' });
+          }
+        }
+
+        res.json({
+          success: true,
+          backend: 'peerdb',
+          databaseId,
+          sourcePeer: orchestrator.getSourcePeerName(),
+          targetPeer: orchestrator.getTargetPeerName(),
+          tables: actions,
+        });
+        return;
+      }
       const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
       const result = await automationService.performFullSyncWithStats();
@@ -484,6 +526,34 @@ class ClickHouseServer {
   private async incrementalSync(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      if (this.usesPeerDB(databaseId)) {
+        const orchestrator = this.getPeerDBOrchestrator(databaseId);
+        const tables = await mysql.getTables();
+        await orchestrator.createMySQLSourcePeer();
+        await orchestrator.createClickHouseTargetPeer();
+
+        const actions = [];
+        for (const tableName of tables) {
+          const existing = await orchestrator.getMirrorStatus(tableName);
+          if (existing) {
+            await orchestrator.resumeMirror(tableName);
+            actions.push({ table: tableName, action: 'resume' });
+          } else {
+            await orchestrator.createMirror(tableName);
+            actions.push({ table: tableName, action: 'create' });
+          }
+        }
+
+        res.json({
+          success: true,
+          backend: 'peerdb',
+          databaseId,
+          sourcePeer: orchestrator.getSourcePeerName(),
+          targetPeer: orchestrator.getTargetPeerName(),
+          tables: actions,
+        });
+        return;
+      }
       const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
       const result = await automationService.performIncrementalSyncWithStats();
@@ -508,6 +578,26 @@ class ClickHouseServer {
       const { tableName } = req.params;
       q(tableName); // validate
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      if (this.usesPeerDB(databaseId)) {
+        const orchestrator = this.getPeerDBOrchestrator(databaseId);
+        await orchestrator.createMySQLSourcePeer();
+        await orchestrator.createClickHouseTargetPeer();
+        const existing = await orchestrator.getMirrorStatus(tableName);
+        if (existing) {
+          await orchestrator.resyncMirror(tableName);
+        } else {
+          await orchestrator.createMirror(tableName);
+        }
+        res.json({
+          success: true,
+          backend: 'peerdb',
+          databaseId,
+          table: tableName,
+          action: existing ? 'resync' : 'create',
+          mirrorName: orchestrator.getMirrorName(tableName),
+        });
+        return;
+      }
       const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const result = await syncService.syncSingleTable(tableName);
       res.json(result);
@@ -520,6 +610,28 @@ class ClickHouseServer {
   private async getSyncStatus(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      if (this.usesPeerDB(databaseId)) {
+        const orchestrator = this.getPeerDBOrchestrator(databaseId);
+        const [mirrors, mysqlTables, clickhouseTables] = await Promise.all([
+          orchestrator.listMirrors(),
+          mysql.getTables(),
+          clickhouse.getTables(),
+        ]);
+        res.json({
+          backend: 'peerdb',
+          databaseId,
+          sourcePeer: orchestrator.getSourcePeerName(),
+          targetPeer: orchestrator.getTargetPeerName(),
+          mirrors,
+          tables: {
+            mysql: mysqlTables.length,
+            clickhouse: clickhouseTables.length,
+            mirrored: mirrors.length,
+          },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
       const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const status = await syncService.getSyncStatus();
       res.json(this.serializeBigInt(status));
@@ -971,6 +1083,21 @@ class ClickHouseServer {
   private async getAutomationStatus(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      if (this.usesPeerDB(databaseId)) {
+        const orchestrator = this.getPeerDBOrchestrator(databaseId);
+        const mirrors = await orchestrator.listMirrors();
+        res.json({
+          success: true,
+          status: {
+            backend: 'peerdb',
+            sourcePeer: orchestrator.getSourcePeerName(),
+            targetPeer: orchestrator.getTargetPeerName(),
+            mirrorCount: mirrors.length,
+          },
+          architecture: 'peerdb'
+        });
+        return;
+      }
       const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
       const status = automationService.getStatus();
@@ -991,6 +1118,23 @@ class ClickHouseServer {
   private async startAutomation(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      if (this.usesPeerDB(databaseId)) {
+        const orchestrator = this.getPeerDBOrchestrator(databaseId);
+        const tables = await mysql.getTables();
+        for (const tableName of tables) {
+          const existing = await orchestrator.getMirrorStatus(tableName);
+          if (existing) {
+            await orchestrator.resumeMirror(tableName);
+          } else {
+            await orchestrator.createMirror(tableName);
+          }
+        }
+        res.json({
+          success: true,
+          message: 'PeerDB-backed replication started successfully'
+        });
+        return;
+      }
       const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
       await automationService.start();
@@ -1010,6 +1154,21 @@ class ClickHouseServer {
   private async stopAutomation(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      if (this.usesPeerDB(databaseId)) {
+        const orchestrator = this.getPeerDBOrchestrator(databaseId);
+        const tables = await mysql.getTables();
+        for (const tableName of tables) {
+          const existing = await orchestrator.getMirrorStatus(tableName);
+          if (existing) {
+            await orchestrator.pauseMirror(tableName);
+          }
+        }
+        res.json({
+          success: true,
+          message: 'PeerDB-backed replication paused successfully'
+        });
+        return;
+      }
       const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
       automationService.stop();
@@ -1049,6 +1208,20 @@ class ClickHouseServer {
   private async getCdcStatus(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      if (this.usesPeerDB(databaseId)) {
+        const orchestrator = this.getPeerDBOrchestrator(databaseId);
+        const mirrors = await orchestrator.listMirrors();
+        res.json({
+          success: true,
+          status: {
+            backend: 'peerdb',
+            isRunning: mirrors.length > 0,
+            mirrors,
+          },
+          architecture: 'peerdb',
+        });
+        return;
+      }
       const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const cdcService = CdcCompatibilityService.getInstance(databaseId, syncService, clickhouse, mysql);
       res.json({
@@ -1068,6 +1241,29 @@ class ClickHouseServer {
   private async startCdc(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      if (this.usesPeerDB(databaseId)) {
+        const orchestrator = this.getPeerDBOrchestrator(databaseId);
+        const tables = await mysql.getTables();
+        for (const tableName of tables) {
+          const existing = await orchestrator.getMirrorStatus(tableName);
+          if (existing) {
+            await orchestrator.resumeMirror(tableName);
+          } else {
+            await orchestrator.createMirror(tableName);
+          }
+        }
+        const mirrors = await orchestrator.listMirrors();
+        res.json({
+          success: true,
+          message: 'PeerDB CDC started successfully',
+          status: {
+            backend: 'peerdb',
+            isRunning: true,
+            mirrors,
+          },
+        });
+        return;
+      }
       const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const cdcService = CdcCompatibilityService.getInstance(databaseId, syncService, clickhouse, mysql);
       const status = await cdcService.start();
@@ -1088,6 +1284,25 @@ class ClickHouseServer {
   private async stopCdc(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+      if (this.usesPeerDB(databaseId)) {
+        const orchestrator = this.getPeerDBOrchestrator(databaseId);
+        const tables = await mysql.getTables();
+        for (const tableName of tables) {
+          const existing = await orchestrator.getMirrorStatus(tableName);
+          if (existing) {
+            await orchestrator.pauseMirror(tableName);
+          }
+        }
+        res.json({
+          success: true,
+          message: 'PeerDB CDC stopped successfully',
+          status: {
+            backend: 'peerdb',
+            isRunning: false,
+          },
+        });
+        return;
+      }
       const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const cdcService = CdcCompatibilityService.getInstance(databaseId, syncService, clickhouse, mysql);
       const status = cdcService.stop();
