@@ -1,4 +1,18 @@
 services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: integration-clickhouse
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "8124:8123"
+      - "9001:9000"
+    networks:
+      - integration-net
+
   mysql:
     image: mysql:8.0
     container_name: integration-mysql
@@ -40,8 +54,9 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
-      - DUCKDB_PATH=data/default.db
       - MYSQL_CONNECTION_STRING=${DUCKLING_TEST_MYSQL_CONNECTION_STRING:-mysql://integration:integrationpass@mysql:3306/integration_db?charset=utf8mb4}
+      - CLICKHOUSE_URL=http://clickhouse:8123
+      - CLICKHOUSE_DATABASE=default
       - DUCKLING_API_KEY=integration-test-key
       - ADMIN_USERNAME=admin
       - ADMIN_PASSWORD=integrationadmin
@@ -58,15 +73,12 @@ services:
       - AUTO_BACKUP=false
       - AUTO_RESTART=false
       - ENABLE_CORS=true
-      - CDC_ENABLED=true
-      - CDC_AUTO_START=false
-      - CDC_SSL_REJECT_UNAUTHORIZED=false
       - RATE_LIMIT_ENABLED=false
-    volumes:
-      - ./data:/app/data
     depends_on:
       mysql:
         condition: service_healthy
+      clickhouse:
+        condition: service_started
     networks:
       - integration-net
 

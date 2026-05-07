@@ -117,7 +117,7 @@ main().catch((error) => {
           include: ['index.ts'],
         }, null, 2),
         'index.ts': `
-import { ConnectionState, DuckDBError, DuckDBErrorType, DucklingClient } from '@chittihq/duckling';
+import { ConnectionState, ClickHouseError, ClickHouseErrorType, DucklingClient } from '@chittihq/duckling';
 
 const client = new DucklingClient({
   url: ${quoted(WS_URL)},
@@ -130,7 +130,7 @@ client.on('reconnecting', (attempt) => {
   void typedAttempt;
 });
 
-const maybeError = new DuckDBError(DuckDBErrorType.CONNECTION_ERROR, 'boom');
+const maybeError = new ClickHouseError(ClickHouseErrorType.CONNECTION_ERROR, 'boom');
 const state: ConnectionState = ConnectionState.DISCONNECTED;
 
 void client;
@@ -153,7 +153,7 @@ void state;
       files: {
         'index.mjs': `
 import assert from 'node:assert/strict';
-import { DuckDBError, DuckDBErrorType, DucklingClient } from '@chittihq/duckling';
+import { ClickHouseError, ClickHouseErrorType, DucklingClient } from '@chittihq/duckling';
 
 const client = new DucklingClient({
   url: ${quoted(WS_URL)},
@@ -168,8 +168,8 @@ try {
   await client.connect();
   throw new Error('Expected auth failure');
 } catch (error) {
-  assert.equal(error instanceof DuckDBError, true);
-  assert.equal(error.type, DuckDBErrorType.AUTH_ERROR);
+  assert.equal(error instanceof ClickHouseError, true);
+  assert.equal(error.type, ClickHouseErrorType.AUTH_ERROR);
 } finally {
   client.close();
 }

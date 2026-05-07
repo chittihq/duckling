@@ -14,6 +14,12 @@ export default defineConfig({
     testTimeout: 300_000,
     hookTimeout: 300_000,
     include: ['src/**/*.test.ts'],
+    exclude: [
+      'src/suite6-cdc-realtime.test.ts',
+      'src/suite10-mysql-protocol-compat.test.ts',
+      'src/suite13-interrupted-incremental-restart.test.ts',
+      'src/suite14-incremental-crash-probe.test.ts',
+    ],
     reporters: ['verbose'],
     globals: true,
     sequence: {

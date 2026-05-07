@@ -492,10 +492,23 @@ class ClickHouseSyncService extends EventEmitter {
     if (value === null || value === undefined) return null;
 
     const type = mysqlType.toLowerCase();
+    if (type.startsWith('date')) {
+      const raw = typeof value === 'string' ? value : this.formatDateTimeValue(this.toDateOrNull(value));
+      if (!raw || raw.startsWith('0000-00-00')) return null;
+      return raw.slice(0, 10);
+    }
+    if (type.startsWith('time')) {
+      const raw = typeof value === 'string' ? value : String(value);
+      return raw.startsWith('00:00:00') || /^\d{2}:\d{2}:\d{2}/.test(raw) ? raw : String(value);
+    }
+    if (type.includes('bit') && Buffer.isBuffer(value)) {
+      const numeric = [...value].reduce((acc, byte) => (acc << 8) + byte, 0);
+      return String(numeric);
+    }
     if (Buffer.isBuffer(value)) return value.toString('base64');
     if (value instanceof Date) return this.formatDateTimeValue(value);
     if (type.includes('json')) return typeof value === 'string' ? value : JSON.stringify(value);
-    if (type.includes('date') || type.includes('time')) return this.formatDateTimeValue(this.toDateOrNull(value));
+    if (type.includes('timestamp') || type.includes('datetime')) return this.formatDateTimeValue(this.toDateOrNull(value));
     if (typeof value === 'bigint') return value.toString();
     if (typeof value === 'boolean') return value ? 1 : 0;
     return value;
@@ -518,8 +531,10 @@ class ClickHouseSyncService extends EventEmitter {
     if (type.startsWith('decimal') || type.startsWith('numeric')) return 'Nullable(Decimal(38, 10))';
     if (type.startsWith('float')) return 'Nullable(Float32)';
     if (type.startsWith('double')) return 'Nullable(Float64)';
-    if (type.startsWith('date')) return 'Nullable(DateTime64(3, \'UTC\'))';
-    if (type.startsWith('timestamp') || type.startsWith('datetime') || type.startsWith('time')) return 'Nullable(DateTime64(3, \'UTC\'))';
+    if (type.startsWith('date')) return 'Nullable(String)';
+    if (type.startsWith('time')) return 'Nullable(String)';
+    if (type.startsWith('timestamp') || type.startsWith('datetime')) return 'Nullable(DateTime64(3, \'UTC\'))';
+    if (type.includes('bit')) return 'Nullable(String)';
     if (type.includes('blob') || type.includes('binary') || type.includes('varbinary')) return 'Nullable(String)';
     return 'Nullable(String)';
   }

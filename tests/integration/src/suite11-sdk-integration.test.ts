@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, describe, expect, test } from 'vitest';
 
-import type { DuckDBSDKConfig } from '@chittihq/duckling';
-import { DuckDBError, DuckDBErrorType, DucklingClient } from '@chittihq/duckling';
+import type { ClickHouseSDKConfig } from '@chittihq/duckling';
+import { ClickHouseError, ClickHouseErrorType, DucklingClient } from '@chittihq/duckling';
 
 import { API_KEY, DB_ID, WS_URL } from './helpers/config.js';
 import { triggerFullSync } from './helpers/sync.js';
@@ -13,7 +13,7 @@ function delay(ms: number): Promise<void> {
 describe('Suite 11: SDK Integration', () => {
   const clients: DucklingClient[] = [];
 
-  type ClientOverrides = Partial<DuckDBSDKConfig>;
+  type ClientOverrides = Partial<ClickHouseSDKConfig>;
 
   function createClient(overrides: ClientOverrides = {}): DucklingClient {
     const client = new DucklingClient({
@@ -128,8 +128,8 @@ describe('Suite 11: SDK Integration', () => {
     const client = createClient();
 
     await expect(client.query('SELECT * FROM does_not_exist')).rejects.toMatchObject({
-      name: 'DuckDBError',
-      type: DuckDBErrorType.QUERY_ERROR,
+      name: 'ClickHouseError',
+      type: ClickHouseErrorType.QUERY_ERROR,
     });
 
     const rows = await client.query<{ count: number }>(
@@ -166,12 +166,12 @@ describe('Suite 11: SDK Integration', () => {
     expect(messageIds.length).toBeGreaterThanOrEqual(3);
   });
 
-  test('query failures surface as typed DuckDBError instances', async () => {
+  test('query failures surface as typed ClickHouseError instances', async () => {
     const client = createClient();
 
     await expect(client.query('SELECT * FROM does_not_exist')).rejects.toMatchObject({
-      name: 'DuckDBError',
-      type: DuckDBErrorType.QUERY_ERROR,
+      name: 'ClickHouseError',
+      type: ClickHouseErrorType.QUERY_ERROR,
     });
   });
 
@@ -193,8 +193,8 @@ describe('Suite 11: SDK Integration', () => {
     });
 
     await expect(client.connect()).rejects.toMatchObject({
-      name: 'DuckDBError',
-      type: DuckDBErrorType.AUTH_ERROR,
+      name: 'ClickHouseError',
+      type: ClickHouseErrorType.AUTH_ERROR,
     });
 
     await delay(150);
@@ -220,7 +220,7 @@ describe('Suite 11: SDK Integration', () => {
       exhaustedEvents.push(attempts);
     });
 
-    await expect(client.connect()).rejects.toBeInstanceOf(DuckDBError);
+    await expect(client.connect()).rejects.toBeInstanceOf(ClickHouseError);
     await delay(150);
 
     expect(reconnectAttempts).toEqual([]);

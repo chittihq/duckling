@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, test } from 'vitest';
 import { startBackgroundIncrementalSync, triggerFullSync, triggerIncrementalSync } from './helpers/sync.js';
-import { duckdbScalarStrict } from './helpers/duckdb.js';
+import { clickhouseScalarStrict } from './helpers/clickhouse.js';
 import { mysqlExec } from './helpers/mysql.js';
 import { sleep } from './helpers/cdc.js';
 import {
@@ -18,8 +18,8 @@ const FULL_SYNC_ROWS = 5_000;
 const INCREMENTAL_ROWS = 50_000;
 const INSERT_BATCH_SIZE = 1_000;
 
-function recreateRestartReproTable(): void {
-  mysqlExec(`
+async function recreateRestartReproTable(): Promise<void> {
+  await mysqlExec(`
     DROP TABLE IF EXISTS ${TABLE_NAME};
     CREATE TABLE ${TABLE_NAME} (
       id INT PRIMARY KEY,
@@ -31,14 +31,14 @@ function recreateRestartReproTable(): void {
   `);
 }
 
-function seedRestartReproRows(rowCount: number, startId = 1): void {
+async function seedRestartReproRows(rowCount: number, startId = 1): Promise<void> {
   for (let i = startId; i < startId + rowCount; i += INSERT_BATCH_SIZE) {
     const end = Math.min(i + INSERT_BATCH_SIZE, startId + rowCount);
     const values: string[] = [];
     for (let j = i; j < end; j++) {
       values.push(`(${j}, 'restart-row-${j}', ${(j * 1.11).toFixed(2)}, NOW(), NOW())`);
     }
-    mysqlExec(
+    await mysqlExec(
       `INSERT INTO ${TABLE_NAME} (id, val, num, created_at, updated_at) VALUES ${values.join(',')};`,
     );
   }
@@ -46,13 +46,13 @@ function seedRestartReproRows(rowCount: number, startId = 1): void {
 
 describe('Suite 13: Interrupted Incremental Restart', () => {
   beforeAll(async () => {
-    recreateRestartReproTable();
-    seedRestartReproRows(FULL_SYNC_ROWS);
+    await recreateRestartReproTable();
+    await seedRestartReproRows(FULL_SYNC_ROWS);
     await triggerFullSync();
   }, 120_000);
 
   test('restarts mid-incremental-sync on the same DuckDB volume and completes recovery sync', async () => {
-    const watermarkBefore = await duckdbScalarStrict(
+    const watermarkBefore = await clickhouseScalarStrict(
       `SELECT last_processed_id AS id FROM appender_watermarks WHERE table_name = '${TABLE_NAME}'`,
       'id',
     );
@@ -60,7 +60,7 @@ describe('Suite 13: Interrupted Incremental Restart', () => {
     expect(Number(watermarkBefore)).toBe(FULL_SYNC_ROWS);
 
     await sleep(2000);
-    seedRestartReproRows(INCREMENTAL_ROWS, FULL_SYNC_ROWS + 1);
+    await seedRestartReproRows(INCREMENTAL_ROWS, FULL_SYNC_ROWS + 1);
 
     const inFlightSync = startBackgroundIncrementalSync();
 
@@ -80,7 +80,7 @@ describe('Suite 13: Interrupted Incremental Restart', () => {
     await waitForDucklingReady();
 
     const recoveryResult = await triggerIncrementalSync();
-    const finalCount = await duckdbScalarStrict(
+    const finalCount = await clickhouseScalarStrict(
       `SELECT COUNT(*) AS cnt FROM ${TABLE_NAME}`,
       'cnt',
     );

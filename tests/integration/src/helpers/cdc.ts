@@ -1,6 +1,6 @@
 import { apiPost, apiGet } from './api.js';
 import { DB_ID, TIMEOUT_CDC, TIMEOUT_CDC_START } from './config.js';
-import { duckdbScalar } from './duckdb.js';
+import { clickhouseScalar } from './clickhouse.js';
 
 export async function cdcStart(): Promise<any> {
   try {
@@ -48,7 +48,7 @@ export async function waitForCdc(
 ): Promise<boolean> {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    const actual = await duckdbScalar(sql, field);
+    const actual = await clickhouseScalar(sql, field);
     if (actual === expected) return true;
     await sleep(1000);
   }

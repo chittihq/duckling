@@ -18,16 +18,20 @@ cd "$SCRIPT_DIR"
 
 # --------------- Configuration ---------------
 API_KEY="integration-test-key"
-API_URL="http://localhost:3002"
-DB_ID="${DUCKLING_TEST_DB_ID:-integration}"
-DUCKDB_RELATIVE_PATH="${DUCKLING_TEST_DUCKDB_PATH:-data/integration.db}"
+DB_ID="${DUCKLING_TEST_DB_ID:-default}"
 MYSQL_CONNECTION_STRING="${DUCKLING_TEST_MYSQL_CONNECTION_STRING:-mysql://integration:integrationpass@mysql:3306/integration_db?charset=utf8mb4}"
 TIMEOUT_STARTUP="${DUCKLING_TEST_TIMEOUT_STARTUP:-180}"
 DUCKLING_TEST_VITEST_ARGS="${DUCKLING_TEST_VITEST_ARGS:-}"
-DUCKDB_STATE_DIR="${DUCKLING_TEST_DUCKDB_STATE_DIR:-}"
-PRESERVE_DUCKDB_DATA="${DUCKLING_TEST_PRESERVE_DUCKDB_DATA:-false}"
 SKIP_DEFAULT_MYSQL_SEED="${DUCKLING_TEST_SKIP_DEFAULT_MYSQL_SEED:-false}"
 MYSQL_SEED_FILE="${DUCKLING_TEST_MYSQL_SEED_FILE:-}"
+
+DOCKER_REMOTE_ALIAS=""
+if [[ "${DOCKER_HOST:-}" == ssh://* ]]; then
+  DOCKER_REMOTE_ALIAS="${DOCKER_HOST#ssh://}"
+fi
+API_URL="${DUCKLING_TEST_API_URL:-http://127.0.0.1:3002}"
+MYSQL_PROTOCOL_HOST="${DUCKLING_TEST_MYSQL_PROTOCOL_HOST:-127.0.0.1}"
+SSH_TUNNEL_PID=""
 
 # --------------- Helpers ---------------
 log() { echo -e "\033[0;34m[$(date +%H:%M:%S)]\033[0m $*"; }
@@ -40,30 +44,6 @@ is_true() {
   esac
 }
 
-should_preserve_duckdb_data() {
-  if [ -n "$DUCKDB_STATE_DIR" ]; then
-    return 0
-  fi
-  is_true "$PRESERVE_DUCKDB_DATA"
-}
-
-prepare_duckdb_data_dir() {
-  if [ -n "$DUCKDB_STATE_DIR" ]; then
-    if [ ! -d "$DUCKDB_STATE_DIR" ]; then
-      fail "DUCKLING_TEST_DUCKDB_STATE_DIR does not exist: $DUCKDB_STATE_DIR"
-      exit 1
-    fi
-    log "Copying DuckDB state from ${DUCKDB_STATE_DIR}"
-    rm -rf data/ 2>/dev/null || true
-    mkdir -p data
-    cp -R "${DUCKDB_STATE_DIR}/." data/
-    ok "Copied DuckDB state snapshot"
-    return
-  fi
-
-  mkdir -p data
-}
-
 cleanup() {
   local exit_code=$?
   echo ""
@@ -73,12 +53,11 @@ cleanup() {
   docker compose exec -T duckling tail -200 /app/data/logs/sync.log 2>/dev/null || echo "(no sync.log)"
   log "--- End server logs ---"
   log "Cleaning up..."
-  docker compose down -v 2>/dev/null || true
-  if should_preserve_duckdb_data; then
-    log "Preserving tests/integration/data for inspection"
-  else
-    rm -rf data/ 2>/dev/null || true
+  if [ -n "$SSH_TUNNEL_PID" ]; then
+    kill "$SSH_TUNNEL_PID" 2>/dev/null || true
+    wait "$SSH_TUNNEL_PID" 2>/dev/null || true
   fi
+  docker compose down -v 2>/dev/null || true
   log "Done."
   trap - EXIT
   exit "$exit_code"
@@ -102,12 +81,30 @@ check_deps() {
 
 pre_cleanup() {
   log "Cleaning up previous run..."
-  docker compose down -v 2>/dev/null || true
-  if [ -n "$DUCKDB_STATE_DIR" ]; then
-    rm -rf data/ 2>/dev/null || true
-  elif ! should_preserve_duckdb_data; then
-    rm -rf data/ 2>/dev/null || true
+  if [ -n "$DOCKER_REMOTE_ALIAS" ]; then
+    pkill -f "ssh .*127.0.0.1:3002:127.0.0.1:3002.*${DOCKER_REMOTE_ALIAS}" 2>/dev/null || true
   fi
+  docker compose down -v 2>/dev/null || true
+}
+
+start_ssh_tunnel() {
+  if [ -z "$DOCKER_REMOTE_ALIAS" ]; then
+    return
+  fi
+
+  log "Starting SSH tunnel to remote Docker host (${DOCKER_REMOTE_ALIAS})..."
+  ssh \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    -N \
+    -L 3308:127.0.0.1:3308 \
+    -L 3002:127.0.0.1:3002 \
+    -L 3309:127.0.0.1:3309 \
+    "$DOCKER_REMOTE_ALIAS" &
+  SSH_TUNNEL_PID=$!
+  sleep 2
+  ok "SSH tunnel ready"
 }
 
 protocol_smoke() {
@@ -159,7 +156,7 @@ assert_no_protocol_regressions() {
 
 echo -e "\033[1m\033[0;36m╔══════════════════════════════════════════════════════════════╗\033[0m"
 echo -e "\033[1m\033[0;36m║           Duckling Integration Test Suite                    ║\033[0m"
-echo -e "\033[1m\033[0;36m║   MySQL → DuckDB Replication + SDK Integration (vitest)      ║\033[0m"
+echo -e "\033[1m\033[0;36m║ MySQL → ClickHouse Replication + SDK Integration (vitest)    ║\033[0m"
 echo -e "\033[1m\033[0;36m╚══════════════════════════════════════════════════════════════╝\033[0m"
 echo ""
 
@@ -169,28 +166,16 @@ fi
 
 check_deps
 pre_cleanup
+start_ssh_tunnel
 
 export DUCKLING_TEST_API_KEY="${API_KEY}"
 export DUCKLING_TEST_API_URL="${API_URL}"
 export DUCKLING_TEST_DB_ID="${DB_ID}"
-export DUCKLING_TEST_DUCKDB_PATH="${DUCKDB_RELATIVE_PATH}"
 export DUCKLING_TEST_MYSQL_CONNECTION_STRING="${MYSQL_CONNECTION_STRING}"
+export DUCKLING_TEST_MYSQL_PROTOCOL_HOST="${MYSQL_PROTOCOL_HOST}"
 
 # ------- Step 1: Prepare environment -------
 log "[1/8] Preparing environment..."
-prepare_duckdb_data_dir
-cat > data/databases.json << EOJSON
-[
-  {
-    "id": "${DB_ID}",
-    "name": "Integration",
-    "mysqlConnectionString": "${MYSQL_CONNECTION_STRING}",
-    "duckdbPath": "${DUCKDB_RELATIVE_PATH}",
-    "createdAt": "2025-01-01T00:00:00.000Z",
-    "updatedAt": "2025-01-01T00:00:00.000Z"
-  }
-]
-EOJSON
 ok "Environment ready"
 
 # ------- Step 2: Start MySQL & seed data -------
@@ -211,6 +196,10 @@ echo ""
 ok "MySQL is ready"
 
 if ! is_true "$SKIP_DEFAULT_MYSQL_SEED"; then
+  log "Applying MySQL schema..."
+  docker compose exec -T mysql mysql -h 127.0.0.1 -uroot -prootpass --default-character-set=utf8mb4 integration_db < ./mysql-init/01-schema.sql
+  ok "Schema applied"
+
   log "Seeding default test data..."
   docker compose exec -T mysql mysql -h 127.0.0.1 -uroot -prootpass --default-character-set=utf8mb4 integration_db << 'EOSQL'
 

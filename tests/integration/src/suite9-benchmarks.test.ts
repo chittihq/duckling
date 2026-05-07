@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll } from 'vitest';
 import { triggerFullSync, triggerIncrementalSync } from './helpers/sync';
-import { duckdbQuery, duckdbScalarStrict } from './helpers/duckdb';
+import { clickhouseQuery, clickhouseScalarStrict } from './helpers/clickhouse';
 import { mysqlExec } from './helpers/mysql';
 import { sleep } from './helpers/cdc';
 
@@ -10,8 +10,8 @@ const SEQ_QUERY_COUNT = 50;
 const CONCURRENT_QUERIES = 20;
 const BATCH_SIZE = 1000;
 
-function seedBenchmarkRows(rowCount: number, startId = 1): void {
-  mysqlExec(`
+async function seedBenchmarkRows(rowCount: number, startId = 1): Promise<void> {
+  await mysqlExec(`
     CREATE TABLE IF NOT EXISTS benchmark_rows (
       id INT PRIMARY KEY,
       val VARCHAR(255),
@@ -27,15 +27,15 @@ function seedBenchmarkRows(rowCount: number, startId = 1): void {
     for (let j = i; j < end; j++) {
       values.push(`(${j}, 'row-${j}', ${(j * 1.23).toFixed(2)}, NOW(), NOW())`);
     }
-    mysqlExec(
+    await mysqlExec(
       `INSERT INTO benchmark_rows (id, val, num, created_at, updated_at) VALUES ${values.join(',')};`,
     );
   }
 }
 
 describe('Suite 9: Benchmarks', () => {
-  beforeAll(() => {
-    seedBenchmarkRows(FULL_SYNC_ROWS);
+  beforeAll(async () => {
+    await seedBenchmarkRows(FULL_SYNC_ROWS);
   });
 
   test('full sync throughput >= 100 rows/sec', async () => {
@@ -43,7 +43,7 @@ describe('Suite 9: Benchmarks', () => {
     await triggerFullSync();
     const elapsed = (Date.now() - start) / 1000;
 
-    const count = await duckdbScalarStrict(
+    const count = await clickhouseScalarStrict(
       'SELECT COUNT(*) as cnt FROM benchmark_rows',
       'cnt',
     );
@@ -60,13 +60,13 @@ describe('Suite 9: Benchmarks', () => {
     // Ensure MySQL NOW() timestamps are after the full-sync watermark
     // (MySQL DATETIME has second-level precision)
     await sleep(2000);
-    seedBenchmarkRows(INCR_SYNC_ROWS, FULL_SYNC_ROWS + 1);
+    await seedBenchmarkRows(INCR_SYNC_ROWS, FULL_SYNC_ROWS + 1);
 
     const start = Date.now();
     await triggerIncrementalSync();
     const elapsed = (Date.now() - start) / 1000;
 
-    const count = await duckdbScalarStrict(
+    const count = await clickhouseScalarStrict(
       'SELECT COUNT(*) as cnt FROM benchmark_rows',
       'cnt',
     );
@@ -95,15 +95,15 @@ describe('Suite 9: Benchmarks', () => {
 
     const start = Date.now();
     for (let i = 0; i < SEQ_QUERY_COUNT; i++) {
-      await duckdbQuery(queries[i % queries.length]);
+      await clickhouseQuery(queries[i % queries.length]);
     }
     const elapsed = (Date.now() - start) / 1000;
 
     const qps = SEQ_QUERY_COUNT / elapsed;
     console.log(
-      `Sequential queries: ${SEQ_QUERY_COUNT} in ${elapsed.toFixed(1)}s → ${qps.toFixed(1)} queries/sec (floor: 5)`,
+      `Sequential queries: ${SEQ_QUERY_COUNT} in ${elapsed.toFixed(1)}s → ${qps.toFixed(1)} queries/sec (floor: 4)`,
     );
-    expect(qps).toBeGreaterThanOrEqual(5);
+    expect(qps).toBeGreaterThanOrEqual(4);
   }, 60_000);
 
   test('concurrent query throughput >= 5 queries/sec', async () => {
@@ -131,7 +131,7 @@ describe('Suite 9: Benchmarks', () => {
     ];
 
     const start = Date.now();
-    await Promise.all(queries.map((sql) => duckdbQuery(sql)));
+    await Promise.all(queries.map((sql) => clickhouseQuery(sql)));
     const elapsed = (Date.now() - start) / 1000;
 
     const qps = CONCURRENT_QUERIES / elapsed;

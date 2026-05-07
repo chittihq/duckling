@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { duckdbQuery, duckdbScalarStrict, normalizeDecimal } from './helpers/duckdb.js';
+import { clickhouseQuery, clickhouseScalarStrict, normalizeDecimal } from './helpers/clickhouse.js';
 import { triggerFullSync } from './helpers/sync.js';
 import { getValidation } from './helpers/validation.js';
 
@@ -11,26 +11,26 @@ describe('Suite 1: Full Sync', () => {
   });
 
   test('record counts match seed data', async () => {
-    expect(await duckdbScalarStrict('SELECT COUNT(*) AS cnt FROM users_with_timestamps', 'cnt')).toBe('5');
-    expect(await duckdbScalarStrict('SELECT COUNT(*) AS cnt FROM events_append_only', 'cnt')).toBe('3');
-    expect(await duckdbScalarStrict('SELECT COUNT(*) AS cnt FROM products_simple', 'cnt')).toBe('4');
+    expect(await clickhouseScalarStrict('SELECT COUNT(*) AS cnt FROM users_with_timestamps', 'cnt')).toBe('5');
+    expect(await clickhouseScalarStrict('SELECT COUNT(*) AS cnt FROM events_append_only', 'cnt')).toBe('3');
+    expect(await clickhouseScalarStrict('SELECT COUNT(*) AS cnt FROM products_simple', 'cnt')).toBe('4');
   });
 
   test('Alice name in DuckDB', async () => {
-    expect(await duckdbScalarStrict('SELECT name FROM users_with_timestamps WHERE id = 1', 'name')).toBe('Alice');
+    expect(await clickhouseScalarStrict('SELECT name FROM users_with_timestamps WHERE id = 1', 'name')).toBe('Alice');
   });
 
   test('Alice age (TINYINT)', async () => {
-    expect(await duckdbScalarStrict('SELECT age FROM users_with_timestamps WHERE id = 1', 'age')).toBe('30');
+    expect(await clickhouseScalarStrict('SELECT age FROM users_with_timestamps WHERE id = 1', 'age')).toBe('30');
   });
 
   test('Alice balance (DECIMAL)', async () => {
-    const raw = await duckdbScalarStrict('SELECT balance FROM users_with_timestamps WHERE id = 1', 'balance');
+    const raw = await clickhouseScalarStrict('SELECT balance FROM users_with_timestamps WHERE id = 1', 'balance');
     expect(normalizeDecimal(raw)).toBe('1500.5');
   });
 
   test('Alice balance via CAST (cross-check)', async () => {
-    const raw = await duckdbScalarStrict(
+    const raw = await clickhouseScalarStrict(
       'SELECT CAST(balance AS DOUBLE) AS bal FROM users_with_timestamps WHERE id = 1',
       'bal',
     );
@@ -38,32 +38,32 @@ describe('Suite 1: Full Sync', () => {
   });
 
   test('Alice role (ENUM)', async () => {
-    expect(await duckdbScalarStrict('SELECT role FROM users_with_timestamps WHERE id = 1', 'role')).toBe('admin');
+    expect(await clickhouseScalarStrict('SELECT role FROM users_with_timestamps WHERE id = 1', 'role')).toBe('admin');
   });
 
   test('Alice is_active (BOOLEAN)', async () => {
-    const val = await duckdbScalarStrict('SELECT is_active FROM users_with_timestamps WHERE id = 1', 'is_active');
+    const val = await clickhouseScalarStrict('SELECT is_active FROM users_with_timestamps WHERE id = 1', 'is_active');
     expect(val === 'true' || val === '1').toBe(true);
   });
 
   test('Alice JSON metadata.level', async () => {
-    const raw = await duckdbScalarStrict('SELECT metadata FROM users_with_timestamps WHERE id = 1', 'metadata');
+    const raw = await clickhouseScalarStrict('SELECT metadata FROM users_with_timestamps WHERE id = 1', 'metadata');
     const parsed = JSON.parse(raw);
     expect(String(parsed.level)).toBe('5');
   });
 
   test('Diana bio is NULL', async () => {
-    const data = await duckdbQuery('SELECT bio FROM users_with_timestamps WHERE id = 4');
+    const data = await clickhouseQuery('SELECT bio FROM users_with_timestamps WHERE id = 4');
     expect(data.result[0].bio).toBeNull();
   });
 
   test('Alice score (FLOAT)', async () => {
-    const raw = await duckdbScalarStrict('SELECT score FROM users_with_timestamps WHERE id = 1', 'score');
+    const raw = await clickhouseScalarStrict('SELECT score FROM users_with_timestamps WHERE id = 1', 'score');
     expect(normalizeDecimal(raw)).toBe('92.5');
   });
 
   test('Alice birth_date (DATE)', async () => {
-    let val = await duckdbScalarStrict(
+    let val = await clickhouseScalarStrict(
       'SELECT CAST(birth_date AS VARCHAR) AS bd FROM users_with_timestamps WHERE id = 1',
       'bd',
     );
@@ -72,17 +72,17 @@ describe('Suite 1: Full Sync', () => {
 
   test('Event BIGINT id', async () => {
     expect(
-      await duckdbScalarStrict("SELECT id FROM events_append_only WHERE event_type = 'purchase'", 'id'),
+      await clickhouseScalarStrict("SELECT id FROM events_append_only WHERE event_type = 'purchase'", 'id'),
     ).toBe('2');
   });
 
   test('Event amount DECIMAL(10,4)', async () => {
-    const raw = await duckdbScalarStrict('SELECT amount FROM events_append_only WHERE id = 2', 'amount');
+    const raw = await clickhouseScalarStrict('SELECT amount FROM events_append_only WHERE id = 2', 'amount');
     expect(normalizeDecimal(raw)).toBe('149.99');
   });
 
   test('Event amount via CAST (cross-check)', async () => {
-    const raw = await duckdbScalarStrict(
+    const raw = await clickhouseScalarStrict(
       'SELECT CAST(amount AS DOUBLE) AS amt FROM events_append_only WHERE id = 2',
       'amt',
     );
