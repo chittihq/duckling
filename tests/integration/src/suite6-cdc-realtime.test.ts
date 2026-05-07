@@ -6,6 +6,13 @@ import { cdcStart, cdcStop, cdcStatus, waitForCdcRunning, waitForCdc, sleep } fr
 import { DB_ID, TIMEOUT_CDC } from './helpers/config.js';
 
 describe('Suite 6: CDC Real-Time Replication', () => {
+  const CDC_PRODUCT_ID = 7007;
+  const CDC_EVENT_ID = 7005;
+  const RESTART_PRODUCT_ID = 7009;
+  const STOPPED_PRODUCT_ID = 7008;
+  const CHECKPOINT_PRODUCT_ID = 7010;
+  const CHECKPOINT_ADVANCE_ID = 7011;
+  const TYPE_COVERAGE_CDC_ID = 7001;
   let productsBaseline: number;
   let eventsBaseline: number;
 
@@ -23,9 +30,10 @@ describe('Suite 6: CDC Real-Time Replication', () => {
   // --- CDC INSERT ---
   describe('CDC INSERT', () => {
     test('products_simple INSERT detected', async () => {
+      await mysqlExec(`DELETE FROM products_simple WHERE id = ${CDC_PRODUCT_ID};`);
       await mysqlExec(`
         INSERT INTO products_simple (id, name, price, quantity, updated_at)
-        VALUES (7, 'CDC Widget', 19.99, 50, NOW());
+        VALUES (${CDC_PRODUCT_ID}, 'CDC Widget', 19.99, 50, NOW());
       `);
 
       const detected = await waitForCdc(
@@ -37,21 +45,22 @@ describe('Suite 6: CDC Real-Time Replication', () => {
     });
 
     test('CDC Widget name in DuckDB', async () => {
-      expect(await clickhouseScalarStrict('SELECT name FROM products_simple WHERE id = 7', 'name')).toBe('CDC Widget');
+      expect(await clickhouseScalarStrict(`SELECT name FROM products_simple WHERE id = ${CDC_PRODUCT_ID}`, 'name')).toBe('CDC Widget');
     });
 
     test('CDC Widget price', async () => {
       const raw = await clickhouseScalarStrict(
-        'SELECT CAST(price AS DOUBLE) AS p FROM products_simple WHERE id = 7',
+        `SELECT CAST(price AS DOUBLE) AS p FROM products_simple WHERE id = ${CDC_PRODUCT_ID}`,
         'p',
       );
       expect(normalizeDecimal(raw)).toBe('19.99');
     });
 
     test('events_append_only INSERT detected', async () => {
+      await mysqlExec(`DELETE FROM events_append_only WHERE id = ${CDC_EVENT_ID};`);
       await mysqlExec(`
         INSERT INTO events_append_only (id, event_type, payload, amount, created_at)
-        VALUES (5, 'cdc_test', '{"source":"cdc"}', 42.5000, NOW());
+        VALUES (${CDC_EVENT_ID}, 'cdc_test', '{"source":"cdc"}', 42.5000, NOW());
       `);
 
       const detected = await waitForCdc(
@@ -64,7 +73,7 @@ describe('Suite 6: CDC Real-Time Replication', () => {
 
     test('CDC event_type in DuckDB', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT event_type FROM events_append_only WHERE id = 5', 'event_type'),
+        await clickhouseScalarStrict(`SELECT event_type FROM events_append_only WHERE id = ${CDC_EVENT_ID}`, 'event_type'),
       ).toBe('cdc_test');
     });
   });
@@ -72,10 +81,10 @@ describe('Suite 6: CDC Real-Time Replication', () => {
   // --- CDC UPDATE ---
   describe('CDC UPDATE', () => {
     test('products_simple UPDATE detected', async () => {
-      await mysqlExec(`UPDATE products_simple SET price = 24.99, quantity = 40 WHERE id = 7;`);
+      await mysqlExec(`UPDATE products_simple SET price = 24.99, quantity = 40 WHERE id = ${CDC_PRODUCT_ID};`);
 
       const detected = await waitForCdc(
-        'SELECT CAST(price AS DOUBLE) AS p FROM products_simple WHERE id = 7',
+        `SELECT CAST(price AS DOUBLE) AS p FROM products_simple WHERE id = ${CDC_PRODUCT_ID}`,
         'p',
         '24.99',
       );
@@ -83,7 +92,7 @@ describe('Suite 6: CDC Real-Time Replication', () => {
     });
 
     test('CDC updated quantity', async () => {
-      expect(await clickhouseScalarStrict('SELECT quantity FROM products_simple WHERE id = 7', 'quantity')).toBe('40');
+      expect(await clickhouseScalarStrict(`SELECT quantity FROM products_simple WHERE id = ${CDC_PRODUCT_ID}`, 'quantity')).toBe('40');
     });
 
     test('products count unchanged after CDC UPDATE', async () => {
@@ -96,7 +105,7 @@ describe('Suite 6: CDC Real-Time Replication', () => {
   // --- CDC DELETE ---
   describe('CDC DELETE', () => {
     test('products_simple DELETE detected', async () => {
-      await mysqlExec(`DELETE FROM products_simple WHERE id = 7;`);
+      await mysqlExec(`DELETE FROM products_simple WHERE id = ${CDC_PRODUCT_ID};`);
 
       const detected = await waitForCdc(
         'SELECT COUNT(*) AS cnt FROM products_simple',
@@ -107,7 +116,7 @@ describe('Suite 6: CDC Real-Time Replication', () => {
     });
 
     test('CDC deleted row not queryable', async () => {
-      const val = await clickhouseScalar('SELECT name FROM products_simple WHERE id = 7', 'name');
+      const val = await clickhouseScalar(`SELECT name FROM products_simple WHERE id = ${CDC_PRODUCT_ID}`, 'name');
       expect(val).toBe('null');
     });
   });
@@ -132,9 +141,10 @@ describe('Suite 6: CDC Real-Time Replication', () => {
       await sleep(1000);
 
       // Insert while CDC is stopped
+      await mysqlExec(`DELETE FROM products_simple WHERE id = ${RESTART_PRODUCT_ID};`);
       await mysqlExec(`
         INSERT INTO products_simple (id, name, price, quantity, updated_at)
-        VALUES (9, 'Restart Test', 9.99, 5, NOW());
+        VALUES (${RESTART_PRODUCT_ID}, 'Restart Test', 9.99, 5, NOW());
       `);
 
       // Restart CDC
@@ -149,11 +159,11 @@ describe('Suite 6: CDC Real-Time Replication', () => {
     });
 
     test('Restart row name correct', async () => {
-      expect(await clickhouseScalarStrict('SELECT name FROM products_simple WHERE id = 9', 'name')).toBe('Restart Test');
+      expect(await clickhouseScalarStrict(`SELECT name FROM products_simple WHERE id = ${RESTART_PRODUCT_ID}`, 'name')).toBe('Restart Test');
     });
 
     test('cleanup restart test row', async () => {
-      await mysqlExec(`DELETE FROM products_simple WHERE id = 9;`);
+      await mysqlExec(`DELETE FROM products_simple WHERE id = ${RESTART_PRODUCT_ID};`);
       // Best-effort wait — bash used || true
       await waitForCdc(
         'SELECT COUNT(*) AS cnt FROM products_simple',
@@ -191,6 +201,7 @@ describe('Suite 6: CDC Real-Time Replication', () => {
   // --- CDC Type Fidelity INSERT ---
   describe('CDC type fidelity', () => {
     test('type_coverage_cdc INSERT detected', async () => {
+      await mysqlExec(`DELETE FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID};`);
       await mysqlExec(`
         SET SESSION sql_mode = REPLACE(@@sql_mode, 'NO_ZERO_DATE', '');
         INSERT INTO type_coverage_cdc (
@@ -202,7 +213,7 @@ describe('Suite 6: CDC Real-Time Replication', () => {
           col_json, col_enum, col_boolean, col_utf8_emoji, col_date_zero,
           created_at, updated_at
         ) VALUES (
-          1, -42, 1000, 500000,
+          ${TYPE_COVERAGE_CDC_ID}, -42, 1000, 500000,
           3000000000, 9999999999,
           2.71828, 12345, 9876543210.1234500000,
           'CDC-TEST', 'cdc tiny', 'cdc medium text', 'cdc long text',
@@ -218,31 +229,31 @@ describe('Suite 6: CDC Real-Time Replication', () => {
 
     test('CDC type TINYINT', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_tinyint_signed FROM type_coverage_cdc WHERE id = 1', 'col_tinyint_signed'),
+        await clickhouseScalarStrict(`SELECT col_tinyint_signed FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_tinyint_signed'),
       ).toBe('-42');
     });
 
     test('CDC type SMALLINT', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_smallint FROM type_coverage_cdc WHERE id = 1', 'col_smallint'),
+        await clickhouseScalarStrict(`SELECT col_smallint FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_smallint'),
       ).toBe('1000');
     });
 
     test('CDC type MEDIUMINT', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_mediumint FROM type_coverage_cdc WHERE id = 1', 'col_mediumint'),
+        await clickhouseScalarStrict(`SELECT col_mediumint FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_mediumint'),
       ).toBe('500000');
     });
 
     test('CDC type INT UNSIGNED', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_int_unsigned FROM type_coverage_cdc WHERE id = 1', 'col_int_unsigned'),
+        await clickhouseScalarStrict(`SELECT col_int_unsigned FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_int_unsigned'),
       ).toBe('3000000000');
     });
 
     test('CDC type DOUBLE', async () => {
       const val = await clickhouseScalarStrict(
-        'SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = 1',
+        `SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`,
         'v',
       );
       expect(val).toContain('2.71828');
@@ -250,7 +261,7 @@ describe('Suite 6: CDC Real-Time Replication', () => {
 
     test('CDC type DECIMAL(5,0)', async () => {
       const raw = await clickhouseScalarStrict(
-        'SELECT col_decimal_5_0 FROM type_coverage_cdc WHERE id = 1',
+        `SELECT col_decimal_5_0 FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`,
         'col_decimal_5_0',
       );
       expect(normalizeDecimal(raw)).toBe('12345');
@@ -258,50 +269,50 @@ describe('Suite 6: CDC Real-Time Replication', () => {
 
     test('CDC type CHAR(10)', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_char_10 FROM type_coverage_cdc WHERE id = 1', 'col_char_10'),
+        await clickhouseScalarStrict(`SELECT col_char_10 FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_char_10'),
       ).toBe('CDC-TEST');
     });
 
     test('CDC type TINYTEXT', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_tinytext FROM type_coverage_cdc WHERE id = 1', 'col_tinytext'),
+        await clickhouseScalarStrict(`SELECT col_tinytext FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_tinytext'),
       ).toBe('cdc tiny');
     });
 
     test('CDC type MEDIUMTEXT', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_mediumtext FROM type_coverage_cdc WHERE id = 1', 'col_mediumtext'),
+        await clickhouseScalarStrict(`SELECT col_mediumtext FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_mediumtext'),
       ).toBe('cdc medium text');
     });
 
     test('CDC type LONGTEXT', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_longtext FROM type_coverage_cdc WHERE id = 1', 'col_longtext'),
+        await clickhouseScalarStrict(`SELECT col_longtext FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_longtext'),
       ).toBe('cdc long text');
     });
 
     test('CDC type YEAR', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_year FROM type_coverage_cdc WHERE id = 1', 'col_year'),
+        await clickhouseScalarStrict(`SELECT col_year FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_year'),
       ).toBe('2024');
     });
 
     test('CDC type SET', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_set FROM type_coverage_cdc WHERE id = 1', 'col_set'),
+        await clickhouseScalarStrict(`SELECT col_set FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_set'),
       ).toBe('b,d');
     });
 
     test('CDC type DATE', async () => {
       const val = await clickhouseScalarStrict(
-        'SELECT CAST(col_date AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = 1',
+        `SELECT CAST(col_date AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`,
         'v',
       );
       expect(val).toContain('2024-12-25');
     });
 
     test('CDC type JSON', async () => {
-      const raw = await clickhouseScalarStrict('SELECT col_json FROM type_coverage_cdc WHERE id = 1', 'col_json');
+      const raw = await clickhouseScalarStrict(`SELECT col_json FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_json');
       const parsed = JSON.parse(raw);
       expect(parsed.cdc).toBe(true);
       expect(parsed.items).toEqual([1, 2, 3]);
@@ -309,25 +320,25 @@ describe('Suite 6: CDC Real-Time Replication', () => {
 
     test('CDC type ENUM', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_enum FROM type_coverage_cdc WHERE id = 1', 'col_enum'),
+        await clickhouseScalarStrict(`SELECT col_enum FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_enum'),
       ).toBe('beta');
     });
 
     test('CDC type BOOLEAN', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_boolean FROM type_coverage_cdc WHERE id = 1', 'col_boolean'),
+        await clickhouseScalarStrict(`SELECT col_boolean FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_boolean'),
       ).toBe('1');
     });
 
     test('CDC type UTF-8 emoji', async () => {
-      const val = await clickhouseScalarStrict('SELECT col_utf8_emoji FROM type_coverage_cdc WHERE id = 1', 'col_utf8_emoji');
+      const val = await clickhouseScalarStrict(`SELECT col_utf8_emoji FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_utf8_emoji');
       expect(val).toContain('🦆');
       expect(val).toBe('CDC 🦆 emoji');
     });
 
     test('CDC type zero date becomes null', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_date_zero FROM type_coverage_cdc WHERE id = 1', 'col_date_zero'),
+        await clickhouseScalarStrict(`SELECT col_date_zero FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_date_zero'),
       ).toBe('null');
     });
 
@@ -344,11 +355,11 @@ describe('Suite 6: CDC Real-Time Replication', () => {
           col_enum = 'delta',
           col_boolean = FALSE,
           updated_at = NOW()
-        WHERE id = 1;
+        WHERE id = ${TYPE_COVERAGE_CDC_ID};
       `);
 
       const detected = await waitForCdc(
-        'SELECT col_tinyint_signed FROM type_coverage_cdc WHERE id = 1',
+        `SELECT col_tinyint_signed FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`,
         'col_tinyint_signed',
         '127',
       );
@@ -357,13 +368,13 @@ describe('Suite 6: CDC Real-Time Replication', () => {
 
     test('CDC updated SMALLINT', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_smallint FROM type_coverage_cdc WHERE id = 1', 'col_smallint'),
+        await clickhouseScalarStrict(`SELECT col_smallint FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_smallint'),
       ).toBe('32767');
     });
 
     test('CDC updated DOUBLE', async () => {
       const val = await clickhouseScalarStrict(
-        'SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = 1',
+        `SELECT CAST(col_double AS VARCHAR) AS v FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`,
         'v',
       );
       expect(val === '-1' || val.includes('-1.0')).toBe(true);
@@ -371,36 +382,36 @@ describe('Suite 6: CDC Real-Time Replication', () => {
 
     test('CDC updated CHAR(10)', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_char_10 FROM type_coverage_cdc WHERE id = 1', 'col_char_10'),
+        await clickhouseScalarStrict(`SELECT col_char_10 FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_char_10'),
       ).toBe('UPDATED');
     });
 
     test('CDC updated SET', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_set FROM type_coverage_cdc WHERE id = 1', 'col_set'),
+        await clickhouseScalarStrict(`SELECT col_set FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_set'),
       ).toBe('a,b,c');
     });
 
     test('CDC updated JSON', async () => {
-      const raw = await clickhouseScalarStrict('SELECT col_json FROM type_coverage_cdc WHERE id = 1', 'col_json');
+      const raw = await clickhouseScalarStrict(`SELECT col_json FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_json');
       const parsed = JSON.parse(raw);
       expect(parsed.updated).toBe(true);
     });
 
     test('CDC updated ENUM', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_enum FROM type_coverage_cdc WHERE id = 1', 'col_enum'),
+        await clickhouseScalarStrict(`SELECT col_enum FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_enum'),
       ).toBe('delta');
     });
 
     test('CDC updated BOOLEAN', async () => {
       expect(
-        await clickhouseScalarStrict('SELECT col_boolean FROM type_coverage_cdc WHERE id = 1', 'col_boolean'),
+        await clickhouseScalarStrict(`SELECT col_boolean FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID}`, 'col_boolean'),
       ).toBe('0');
     });
 
     test('cleanup type_coverage_cdc row', async () => {
-      await mysqlExec(`DELETE FROM type_coverage_cdc WHERE id = 1;`);
+      await mysqlExec(`DELETE FROM type_coverage_cdc WHERE id = ${TYPE_COVERAGE_CDC_ID};`);
       const detected = await waitForCdc(
         'SELECT COUNT(*) AS cnt FROM type_coverage_cdc',
         'cnt',
@@ -419,14 +430,15 @@ describe('Suite 6: CDC Real-Time Replication', () => {
     });
 
     test('no replication after stop', async () => {
+      await mysqlExec(`DELETE FROM products_simple WHERE id = ${STOPPED_PRODUCT_ID};`);
       await mysqlExec(`
         INSERT INTO products_simple (id, name, price, quantity, updated_at)
-        VALUES (8, 'After Stop', 5.00, 10, NOW());
+        VALUES (${STOPPED_PRODUCT_ID}, 'After Stop', 5.00, 10, NOW());
       `);
 
       await sleep(3000);
 
-      const val = await clickhouseScalar('SELECT name FROM products_simple WHERE id = 8', 'name');
+      const val = await clickhouseScalar(`SELECT name FROM products_simple WHERE id = ${STOPPED_PRODUCT_ID}`, 'name');
       expect(val).toBe('null');
     });
   });
@@ -455,9 +467,10 @@ describe('Suite 6: CDC Real-Time Replication', () => {
       await clickhouseQuery('DROP TABLE IF EXISTS products_simple').catch(() => {});
 
       // Insert a row — CDC will try (and fail) to apply this event
+      await mysqlExec(`DELETE FROM products_simple WHERE id = ${CHECKPOINT_PRODUCT_ID};`);
       await mysqlExec(`
         INSERT INTO products_simple (id, name, price, quantity, updated_at)
-        VALUES (10, 'Checkpoint Test', 1.00, 1, NOW());
+        VALUES (${CHECKPOINT_PRODUCT_ID}, 'Checkpoint Test', 1.00, 1, NOW());
       `);
 
       // Start CDC — resumes from checkpoint, reads the INSERT event, fails on missing table
@@ -500,23 +513,24 @@ describe('Suite 6: CDC Real-Time Replication', () => {
 
       // Verify the checkpoint-test row is present (via sync or CDC replay)
       const detected = await waitForCdc(
-        'SELECT name FROM products_simple WHERE id = 10',
+        `SELECT name FROM products_simple WHERE id = ${CHECKPOINT_PRODUCT_ID}`,
         'name',
         'Checkpoint Test',
       );
       if (!detected) {
         // Fallback: already present from sync
-        const ctName = await clickhouseScalarStrict('SELECT name FROM products_simple WHERE id = 10', 'name');
+        const ctName = await clickhouseScalarStrict(`SELECT name FROM products_simple WHERE id = ${CHECKPOINT_PRODUCT_ID}`, 'name');
         expect(ctName).toBe('Checkpoint Test');
       }
 
       // Force a post-recovery CDC event so checkpoint advancement is deterministic.
+      await mysqlExec(`DELETE FROM products_simple WHERE id = ${CHECKPOINT_ADVANCE_ID};`);
       await mysqlExec(`
         INSERT INTO products_simple (id, name, price, quantity, updated_at)
-        VALUES (11, 'Checkpoint Advance', 2.00, 2, NOW());
+        VALUES (${CHECKPOINT_ADVANCE_ID}, 'Checkpoint Advance', 2.00, 2, NOW());
       `);
       const advanceDetected = await waitForCdc(
-        'SELECT name FROM products_simple WHERE id = 11',
+        `SELECT name FROM products_simple WHERE id = ${CHECKPOINT_ADVANCE_ID}`,
         'name',
         'Checkpoint Advance',
       );
@@ -542,7 +556,7 @@ describe('Suite 6: CDC Real-Time Replication', () => {
     });
 
     test('cleanup checkpoint test', async () => {
-      await mysqlExec(`DELETE FROM products_simple WHERE id IN (10, 11);`);
+      await mysqlExec(`DELETE FROM products_simple WHERE id IN (${CHECKPOINT_PRODUCT_ID}, ${CHECKPOINT_ADVANCE_ID}, ${STOPPED_PRODUCT_ID});`);
       await cdcStop();
     });
   });
