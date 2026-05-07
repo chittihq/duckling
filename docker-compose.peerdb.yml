@@ -1,7 +1,7 @@
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:25.8
-    container_name: duckling-clickhouse
+    container_name: duckling-peerdb-clickhouse
     ports:
       - "8123:8123"
       - "9000:9000"
@@ -239,7 +239,7 @@ services:
       - peerdb-network
 
   clickhouse-server:
-    container_name: duckling-server
+    container_name: duckling-peerdb-runtime
     build:
       context: .
       dockerfile: docker/server.Dockerfile
@@ -292,6 +292,8 @@ services:
 
   clickhouse-frontend:
     container_name: duckling-frontend
+    profiles:
+      - ui
     build:
       context: .
       dockerfile: docker/frontend.Dockerfile
