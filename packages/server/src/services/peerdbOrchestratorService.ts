@@ -45,15 +45,30 @@ class PeerDBOrchestratorService {
   }
 
   async listMirrors(): Promise<PeerDBMirrorStatus[]> {
-    const knownMirrors = this.dbConfig.peerdb?.mirrors || [];
-    const mirrors: PeerDBMirrorStatus[] = [];
-    for (const mirror of knownMirrors) {
-      const status = await this.getMirrorStatus(mirror.table);
-      if (status) {
-        mirrors.push(status);
-      }
+    try {
+      const response = await this.request({
+        method: 'GET',
+        path: '/api/v1/mirrors/list',
+      });
+      const mirrors = Array.isArray((response as any)?.mirrors) ? (response as any).mirrors : [];
+      return mirrors
+        .filter((mirror: any) =>
+          mirror?.sourceName === this.getSourcePeerName() &&
+          mirror?.destinationName === this.getTargetPeerName()
+        )
+        .map((mirror: any) => ({
+          flowJobName: mirror.name,
+          currentFlowState: mirror.status,
+          ok: true,
+          sourceName: mirror.sourceName,
+          destinationName: mirror.destinationName,
+        }));
+    } catch (error) {
+      logger.warn(`PeerDB mirror list lookup failed for ${this.databaseId}`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
     }
-    return mirrors;
   }
 
   async getMirrorStatus(tableName: string): Promise<PeerDBMirrorStatus | null> {
@@ -121,33 +136,58 @@ class PeerDBOrchestratorService {
   }
 
   async createMirror(tableName: string): Promise<unknown> {
-    const sourceTable = this.getSourceTableIdentifier(tableName);
-    const sql = [
-      `CREATE MIRROR IF NOT EXISTS ${this.q(this.getMirrorName(tableName))}`,
-      `FROM ${this.q(this.getSourcePeerName())} TO ${this.q(this.getTargetPeerName())}`,
-      `WITH TABLE MAPPING (${sourceTable}:${tableName})`,
-      `WITH (`,
-      `do_initial_copy = true,`,
-      `max_batch_size = ${config.sync.batchSize},`,
-      `sync_interval = ${Math.max(1, config.sync.intervalMinutes * 60)},`,
-      `snapshot_num_rows_per_partition = ${config.sync.fullSyncBatchSize},`,
-      `snapshot_max_parallel_workers = 4,`,
-      `snapshot_num_tables_in_parallel = 1,`,
-      `soft_delete = true,`,
-      `synced_at_col_name = '_peerdb_synced_at',`,
-      `soft_delete_col_name = '_peerdb_is_deleted'`,
-      `);`,
-    ].join(' ');
-    const attempts = 5;
+    const payload = {
+      connectionConfigs: {
+        flowJobName: this.getMirrorName(tableName),
+        tableMappings: [{
+          sourceTableIdentifier: this.getSourceTableIdentifier(tableName),
+          destinationTableIdentifier: tableName,
+          partitionKey: '',
+          exclude: [],
+          columns: [],
+          engine: 'CH_ENGINE_REPLACING_MERGE_TREE',
+          shardingKey: '',
+          policyName: '',
+          partitionByExpr: '',
+        }],
+        maxBatchSize: config.sync.batchSize,
+        idleTimeoutSeconds: Math.max(60, config.sync.intervalMinutes * 60),
+        cdcStagingPath: '',
+        publicationName: '',
+        replicationSlotName: '',
+        doInitialSnapshot: true,
+        snapshotNumRowsPerPartition: config.sync.fullSyncBatchSize,
+        snapshotNumPartitionsOverride: 0,
+        snapshotStagingPath: '',
+        snapshotMaxParallelWorkers: 4,
+        snapshotNumTablesInParallel: 1,
+        resync: false,
+        initialSnapshotOnly: false,
+        softDeleteColName: '_peerdb_is_deleted',
+        syncedAtColName: '_peerdb_synced_at',
+        script: '',
+        system: 'Q',
+        sourceName: this.getSourcePeerName(),
+        destinationName: this.getTargetPeerName(),
+        env: {},
+        version: 0,
+        flags: [],
+      },
+    };
+    const attempts = 10;
+    let bootstrappedPeers = false;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
-        return await this.sqlClient.execute(sql);
+        return await this.requestToFlowApi('/v1/flows/cdc/create', payload);
       } catch (error) {
         if (!this.isPeerAvailabilityError(error) || attempt === attempts) {
           throw error;
         }
-        await this.createMySQLSourcePeer();
-        await this.createClickHouseTargetPeer();
+        if (!bootstrappedPeers) {
+          await this.createMySQLSourcePeer();
+          await this.createClickHouseTargetPeer();
+          bootstrappedPeers = true;
+        }
         logger.warn(`PeerDB mirror creation waiting for peer availability`, {
           databaseId: this.databaseId,
           tableName,
@@ -156,7 +196,7 @@ class PeerDBOrchestratorService {
           targetPeer: this.getTargetPeerName(),
           error: error instanceof Error ? error.message : String(error),
         });
-        await this.sleep(1000 * attempt);
+        await this.sleep(3000);
       }
     }
   }
@@ -249,6 +289,34 @@ class PeerDBOrchestratorService {
         body: data || text,
       });
       const error = new Error(`PeerDB request failed (${response.status})`) as Error & { status?: number };
+      error.status = response.status;
+      throw error;
+    }
+
+    return data;
+  }
+
+  private async requestToFlowApi(path: string, body: unknown): Promise<any> {
+    const url = new URL(path, config.peerdb.apiUrl.endsWith('/') ? config.peerdb.apiUrl : `${config.peerdb.apiUrl}/`);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    const text = await response.text();
+    const data = text ? this.tryParseJson(text) : null;
+
+    if (!response.ok) {
+      logger.error(`PeerDB flow-api request failed for ${this.databaseId}: POST ${url}`, {
+        status: response.status,
+        body: data || text,
+      });
+      const error = new Error(typeof data === 'object' && data && 'message' in (data as Record<string, unknown>)
+        ? String((data as Record<string, unknown>).message)
+        : `PeerDB flow-api request failed (${response.status})`) as Error & { status?: number };
       error.status = response.status;
       throw error;
     }

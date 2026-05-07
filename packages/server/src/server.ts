@@ -487,6 +487,7 @@ class ClickHouseServer {
             await orchestrator.resyncMirror(tableName);
             actions.push({ table: tableName, action: 'resync' });
           } else {
+            await this.cleanupLegacyClickHouseArtifacts(clickhouse, tableName);
             await orchestrator.createMirror(tableName);
             actions.push({ table: tableName, action: 'create' });
           }
@@ -535,6 +536,7 @@ class ClickHouseServer {
             await orchestrator.resumeMirror(tableName);
             actions.push({ table: tableName, action: 'resume' });
           } else {
+            await this.cleanupLegacyClickHouseArtifacts(clickhouse, tableName);
             await orchestrator.createMirror(tableName);
             actions.push({ table: tableName, action: 'create' });
           }
@@ -580,6 +582,7 @@ class ClickHouseServer {
         if (existing) {
           await orchestrator.resyncMirror(tableName);
         } else {
+          await this.cleanupLegacyClickHouseArtifacts(clickhouse, tableName);
           await orchestrator.createMirror(tableName);
         }
         res.json({
@@ -1908,6 +1911,30 @@ class ClickHouseServer {
     }
   }
 
+  private async cleanupLegacyClickHouseArtifacts(clickhouse: ClickHouseConnection, tableName: string): Promise<void> {
+    const objectNames = await clickhouse.getTables();
+    if (objectNames.includes(tableName)) {
+      try {
+        await clickhouse.dropView(tableName);
+      } catch (error) {
+        logger.warn(`Legacy ClickHouse view cleanup skipped for ${tableName}:`, error);
+      }
+      try {
+        await clickhouse.dropTable(tableName);
+      } catch (error) {
+        logger.warn(`Legacy ClickHouse table cleanup skipped for ${tableName}:`, error);
+      }
+    }
+    const rawTableName = `${tableName}__raw`;
+    if (objectNames.includes(rawTableName)) {
+      try {
+        await clickhouse.dropTable(rawTableName);
+      } catch (error) {
+        logger.warn(`Legacy ClickHouse raw-table cleanup skipped for ${tableName}:`, error);
+      }
+    }
+  }
+
   private errorHandler(err: Error, req: express.Request, res: express.Response, next: express.NextFunction): void {
     logger.error('Unhandled error:', err);
     res.status(500).json({
@@ -1951,6 +1978,11 @@ class ClickHouseServer {
           const mysql = MySQLConnection.getInstance(dbConfig.id, dbConfig.mysqlConnectionString);
           const clickhouse = ClickHouseConnection.getInstance(dbConfig.id, dbConfig.clickhouseDatabase || dbConfig.id);
           await clickhouse.initializeDatabase();
+
+          if (this.usesPeerDB(dbConfig.id)) {
+            console.log(`✓ Database ${dbConfig.name} initialized successfully (PeerDB backend)`);
+            return;
+          }
 
           const syncService = ClickHouseSyncService.getInstance(dbConfig.id, mysql, clickhouse);
           const automationService = ClickHouseAutomationService.getInstance(dbConfig.id, syncService, clickhouse, mysql);
