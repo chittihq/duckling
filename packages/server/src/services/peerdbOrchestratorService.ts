@@ -1,6 +1,7 @@
 import config from '../config';
 import logger from '../logger';
 import type { DatabaseConfig } from '../database/databaseConfig';
+import PeerDBSqlClient from './peerdbSqlClient';
 
 type PeerDBHttpOptions = {
   method?: 'GET' | 'POST';
@@ -19,10 +20,12 @@ type PeerDBMirrorStatus = {
 class PeerDBOrchestratorService {
   private readonly databaseId: string;
   private readonly dbConfig: DatabaseConfig;
+  private readonly sqlClient: PeerDBSqlClient;
 
   constructor(databaseId: string, dbConfig: DatabaseConfig) {
     this.databaseId = databaseId;
     this.dbConfig = dbConfig;
+    this.sqlClient = new PeerDBSqlClient();
   }
 
   getSourcePeerName(): string {
@@ -69,121 +72,78 @@ class PeerDBOrchestratorService {
   }
 
   async createMySQLSourcePeer(): Promise<unknown> {
-    return this.request({
-      path: `/api/v1/peers/create`,
-      body: {
-        peer: {
-          name: this.getSourcePeerName(),
-          type: 3,
-          postgres_config: {
-            connection_string: this.dbConfig.mysqlConnectionString,
-          },
-        },
-        allow_update: true,
-      },
-    });
+    const uri = new URL(this.dbConfig.mysqlConnectionString);
+    const sql = [
+      `CREATE PEER ${this.q(this.getSourcePeerName())} FROM MYSQL WITH (`,
+      `host='${this.escape(uri.hostname)}',`,
+      `port=${uri.port ? Number(uri.port) : 3306},`,
+      `user='${this.escape(decodeURIComponent(uri.username))}',`,
+      `password='${this.escape(decodeURIComponent(uri.password))}',`,
+      `database='${this.escape(uri.pathname.replace(/^\//, ''))}',`,
+      `disable_tls=false`,
+      `);`,
+    ].join(' ');
+    return this.sqlClient.execute(sql);
   }
 
   async createClickHouseTargetPeer(): Promise<unknown> {
-    return this.request({
-      path: `/api/v1/peers/create`,
-      body: {
-        peer: {
-          name: this.getTargetPeerName(),
-          type: 8,
-          clickhouse_config: {
-            host: config.peerdb.clickhouseHost,
-            port: config.peerdb.clickhousePort,
-            user: config.clickhouse.username,
-            password: config.clickhouse.password,
-            database: this.dbConfig.clickhouseDatabase,
-            disable_tls: !config.peerdb.clickhouseTls,
-            s3_path: `s3://${config.rustfs.bucket}/${this.databaseId}`,
-            access_key_id: config.rustfs.accessKeyId,
-            secret_access_key: config.rustfs.secretAccessKey,
-            region: config.rustfs.region,
-            endpoint: config.rustfs.endpoint,
-          },
-        },
-        allow_update: true,
-      },
-    });
+    const sql = [
+      `CREATE PEER ${this.q(this.getTargetPeerName())} FROM CLICKHOUSE WITH (`,
+      `host='${this.escape(config.peerdb.clickhouseHost)}',`,
+      `port=${config.peerdb.clickhousePort},`,
+      `user='${this.escape(config.clickhouse.username)}',`,
+      `password='${this.escape(config.clickhouse.password)}',`,
+      `database='${this.escape(this.dbConfig.clickhouseDatabase)}',`,
+      `disable_tls=${config.peerdb.clickhouseTls ? 'false' : 'true'},`,
+      `s3_path='s3://${this.escape(config.rustfs.bucket)}/${this.escape(this.databaseId)}',`,
+      `access_key_id='${this.escape(config.rustfs.accessKeyId)}',`,
+      `secret_access_key='${this.escape(config.rustfs.secretAccessKey)}',`,
+      `region='${this.escape(config.rustfs.region)}',`,
+      `endpoint='${this.escape(config.rustfs.endpoint)}'`,
+      `);`,
+    ].join(' ');
+    return this.sqlClient.execute(sql);
   }
 
   async createMirror(tableName: string): Promise<unknown> {
-    return this.request({
-      path: `/api/v1/flows/cdc/create`,
-      body: {
-        connection_configs: {
-          flow_job_name: this.getMirrorName(tableName),
-          source_name: this.getSourcePeerName(),
-          destination_name: this.getTargetPeerName(),
-          table_mappings: [{
-            source_table_identifier: tableName.includes('.') ? tableName : `public.${tableName}`,
-            destination_table_identifier: tableName,
-          }],
-          max_batch_size: config.sync.batchSize,
-          idle_timeout_seconds: Math.max(1, config.sync.intervalMinutes * 60),
-          publication_name: '',
-          do_initial_snapshot: true,
-          snapshot_num_rows_per_partition: config.sync.fullSyncBatchSize,
-          snapshot_max_parallel_workers: 4,
-          snapshot_num_tables_in_parallel: 1,
-          resync: false,
-          initial_snapshot_only: false,
-          soft_delete_col_name: '_peerdb_is_deleted',
-          synced_at_col_name: '_peerdb_synced_at',
-        }
-      },
-    });
+    const sourceTable = tableName.includes('.') ? tableName : `public.${tableName}`;
+    const sql = [
+      `CREATE MIRROR IF NOT EXISTS ${this.q(this.getMirrorName(tableName))}`,
+      `FROM ${this.q(this.getSourcePeerName())} TO ${this.q(this.getTargetPeerName())}`,
+      `WITH TABLE MAPPING (${sourceTable}:${tableName})`,
+      `WITH (`,
+      `do_initial_copy = true,`,
+      `max_batch_size = ${config.sync.batchSize},`,
+      `sync_interval = ${Math.max(1, config.sync.intervalMinutes * 60)},`,
+      `snapshot_num_rows_per_partition = ${config.sync.fullSyncBatchSize},`,
+      `snapshot_max_parallel_workers = 4,`,
+      `snapshot_num_tables_in_parallel = 1,`,
+      `soft_delete = true,`,
+      `synced_at_col_name = '_PEERDB_SYNCED_AT',`,
+      `soft_delete_col_name = '_PEERDB_IS_DELETED'`,
+      `);`,
+    ].join(' ');
+    return this.sqlClient.execute(sql);
   }
 
   async resyncMirror(tableName: string): Promise<unknown> {
-    return this.request({
-      path: `/api/v1/flows/cdc/create`,
-      body: {
-        connection_configs: {
-          flow_job_name: this.getMirrorName(tableName),
-          source_name: this.getSourcePeerName(),
-          destination_name: this.getTargetPeerName(),
-          table_mappings: [{
-            source_table_identifier: tableName.includes('.') ? tableName : `public.${tableName}`,
-            destination_table_identifier: tableName,
-          }],
-          max_batch_size: config.sync.batchSize,
-          idle_timeout_seconds: Math.max(1, config.sync.intervalMinutes * 60),
-          publication_name: '',
-          do_initial_snapshot: true,
-          snapshot_num_rows_per_partition: config.sync.fullSyncBatchSize,
-          snapshot_max_parallel_workers: 4,
-          snapshot_num_tables_in_parallel: 1,
-          resync: true,
-          initial_snapshot_only: false,
-          soft_delete_col_name: '_peerdb_is_deleted',
-          synced_at_col_name: '_peerdb_synced_at',
-        }
-      },
-    });
+    return this.sqlClient.execute(`RESYNC MIRROR IF EXISTS ${this.q(this.getMirrorName(tableName))};`);
   }
 
   async pauseMirror(tableName: string): Promise<unknown> {
-    return this.request({
-      path: `/api/v1/mirrors/state_change`,
-      body: {
-        flowJobName: this.getMirrorName(tableName),
-        requestedFlowState: 'STATUS_PAUSED',
-      },
-    });
+    return this.sqlClient.execute(`PAUSE MIRROR IF EXISTS ${this.q(this.getMirrorName(tableName))};`);
   }
 
   async resumeMirror(tableName: string): Promise<unknown> {
-    return this.request({
-      path: `/api/v1/mirrors/state_change`,
-      body: {
-        flowJobName: this.getMirrorName(tableName),
-        requestedFlowState: 'STATUS_RUNNING',
-      },
-    });
+    return this.sqlClient.execute(`RESUME MIRROR IF EXISTS ${this.q(this.getMirrorName(tableName))};`);
+  }
+
+  private q(identifier: string): string {
+    return `"${identifier.replace(/"/g, '""')}"`;
+  }
+
+  private escape(value: string): string {
+    return value.replace(/'/g, "''");
   }
 
   private async request(options: PeerDBHttpOptions): Promise<any> {
