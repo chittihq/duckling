@@ -101,7 +101,9 @@ fetch('http://127.0.0.1:3000/sync/status?db=default', {
 done
 
 log "Triggering PeerDB-backed full sync"
-docker exec duckling-peerdb-runtime node -e "
+sync_ok=0
+for _ in $(seq 1 20); do
+  if docker exec duckling-peerdb-runtime node -e "
 fetch('http://127.0.0.1:3000/sync/full?db=default', {
   method: 'POST',
   headers: { Authorization: 'Bearer ${API_KEY}' }
@@ -110,7 +112,14 @@ fetch('http://127.0.0.1:3000/sync/full?db=default', {
   if (!r.ok) throw new Error(text);
   console.log(text);
 }).catch((err) => { console.error(err); process.exit(1); });
-"
+"; then
+    sync_ok=1
+    break
+  fi
+  sleep 3
+done
+
+[[ "$sync_ok" == "1" ]] || fail "PeerDB-backed full sync never became ready"
 
 log "Waiting for mirror to become visible"
 for _ in $(seq 1 30); do

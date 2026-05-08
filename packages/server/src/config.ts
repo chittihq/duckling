@@ -51,7 +51,7 @@ export const config = {
 
   peerdb: {
     enabled: process.env.PEERDB_ENABLED === 'true',
-    apiUrl: process.env.PEERDB_API_URL || 'http://localhost:8112',
+    apiUrl: process.env.PEERDB_API_URL || 'http://localhost:8113',
     uiUrl: process.env.PEERDB_UI_URL || 'http://localhost:3003',
     apiKey: process.env.PEERDB_API_KEY || '',
     sqlHost: process.env.PEERDB_SQL_HOST || 'localhost',

@@ -289,7 +289,7 @@ services:
       - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-default}
       - REPLICATION_BACKEND=peerdb
       - PEERDB_ENABLED=true
-      - PEERDB_API_URL=${PEERDB_API_URL:-http://flow-api:8112}
+      - PEERDB_API_URL=${PEERDB_API_URL:-http://flow-api:8113}
       - PEERDB_UI_URL=${PEERDB_UI_URL:-http://peerdb-ui:3000}
       - PEERDB_SQL_HOST=${PEERDB_SQL_HOST:-peerdb}
       - PEERDB_SQL_PORT=${PEERDB_SQL_PORT:-9900}
