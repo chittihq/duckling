@@ -151,7 +151,7 @@ class PeerDBOrchestratorService {
           partitionByExpr: '',
         }],
         maxBatchSize: config.sync.batchSize,
-        idleTimeoutSeconds: Math.max(60, config.sync.intervalMinutes * 60),
+        idleTimeoutSeconds: 10,
         cdcStagingPath: '',
         publicationName: '',
         replicationSlotName: '',

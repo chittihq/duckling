@@ -21,6 +21,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 cleanup() {
   docker rm -f "${MYSQL_CONTAINER}" >/dev/null 2>&1 || true
   docker compose -f "$COMPOSE_FILE" down -v >/dev/null 2>&1 || true
+  docker network rm duckling-peerdb-network >/dev/null 2>&1 || true
 }
 
 trap cleanup EXIT
@@ -28,14 +29,29 @@ trap cleanup EXIT
 log "Resetting PeerDB stack"
 cleanup
 
+log "Preparing Docker network"
+docker network create \
+  --label com.docker.compose.network=peerdb-network \
+  --label com.docker.compose.project=duckling \
+  duckling-peerdb-network >/dev/null 2>&1 || true
+
 log "Starting PeerDB stack"
-MYSQL_CONNECTION_STRING="${MYSQL_CONN}" \
-ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
-SESSION_SECRET="${SESSION_SECRET}" \
-DUCKLING_API_KEY="${API_KEY}" \
-docker compose -f "$COMPOSE_FILE" up -d --build \
-  clickhouse rustfs catalog temporal temporal-ui temporal-admin-tools \
-  flow-api flow-snapshot-worker flow-worker peerdb peerdb-ui clickhouse-server
+stack_ok=0
+for _ in $(seq 1 3); do
+  if MYSQL_CONNECTION_STRING="${MYSQL_CONN}" \
+    ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
+    SESSION_SECRET="${SESSION_SECRET}" \
+    DUCKLING_API_KEY="${API_KEY}" \
+    docker compose -f "$COMPOSE_FILE" up -d --build \
+      clickhouse rustfs catalog temporal temporal-ui temporal-admin-tools \
+      flow-api flow-snapshot-worker flow-worker peerdb peerdb-ui clickhouse-server; then
+    stack_ok=1
+    break
+  fi
+  sleep 3
+done
+
+[[ "$stack_ok" == "1" ]] || fail "PeerDB stack failed to start"
 
 log "Creating RustFS staging bucket"
 docker run --rm --network duckling-peerdb-network --entrypoint /bin/sh \
@@ -43,6 +59,8 @@ docker run --rm --network duckling-peerdb-network --entrypoint /bin/sh \
   -lc "mc alias set rustfs http://duckling-rustfs:9000 peerdb peerdbsecret >/dev/null && mc mb --ignore-existing rustfs/peerdb-stage >/dev/null"
 
 log "Resetting PeerDB catalog and ClickHouse target state"
+docker exec duckling-temporal-admin-tools sh -lc "temporal workflow terminate --namespace default --workflow-id duckling_default_users-peerflow --reason reset" >/dev/null 2>&1 || true
+docker exec duckling-temporal-admin-tools sh -lc "temporal workflow terminate --namespace default --workflow-id mysql_to_ch_users-peerflow --reason reset" >/dev/null 2>&1 || true
 docker exec duckling-peerdb-catalog sh -lc "PGPASSWORD=peerdb psql -h duckling-peerdb-server -p 9900 -U peerdb -d peerdb -c \"DROP MIRROR IF EXISTS duckling_default_users; DROP MIRROR IF EXISTS mysql_to_ch_users;\"" >/dev/null 2>&1 || true
 docker exec duckling-peerdb-catalog psql -U postgres -d postgres -c "DELETE FROM flows WHERE name IN ('duckling_default_users','mysql_to_ch_users'); DELETE FROM peers WHERE name IN ('mysql_default','clickhouse_default');" >/dev/null
 docker exec duckling-peerdb-clickhouse clickhouse-client --query "DROP TABLE IF EXISTS default.users; DROP TABLE IF EXISTS default._peerdb_raw_duckling_default_users; DROP TABLE IF EXISTS default._peerdb_raw_mysql_to_ch_users; DROP TABLE IF EXISTS default.users__raw;" >/dev/null 2>&1 || true
@@ -65,18 +83,22 @@ docker run -d \
   --enforce-gtid-consistency=ON >/dev/null
 
 log "Waiting for MySQL source"
+mysql_ready=0
 for _ in $(seq 1 60); do
-  if docker exec "${MYSQL_CONTAINER}" mysqladmin -uroot "-p${MYSQL_ROOT_PASSWORD}" ping >/dev/null 2>&1; then
+  if docker exec "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 -uroot "-p${MYSQL_ROOT_PASSWORD}" -e "SELECT 1" >/dev/null 2>&1; then
+    mysql_ready=1
     break
   fi
   sleep 2
 done
 
-docker exec "${MYSQL_CONTAINER}" mysql -uroot "-p${MYSQL_ROOT_PASSWORD}" -e \
+[[ "$mysql_ready" == "1" ]] || fail "MySQL source did not become ready"
+
+docker exec "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 -uroot "-p${MYSQL_ROOT_PASSWORD}" -e \
   "GRANT REPLICATION SLAVE, REPLICATION CLIENT, SELECT, SHOW VIEW, EVENT, TRIGGER ON *.* TO '${MYSQL_USER}'@'%'; FLUSH PRIVILEGES;"
 
 log "Seeding MySQL source"
-docker exec "${MYSQL_CONTAINER}" mysql -uroot "-p${MYSQL_ROOT_PASSWORD}" -D "${MYSQL_DB}" -e "
+docker exec "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 -uroot "-p${MYSQL_ROOT_PASSWORD}" -D "${MYSQL_DB}" -e "
 CREATE TABLE users (
   id INT PRIMARY KEY,
   name VARCHAR(255),
@@ -89,16 +111,20 @@ REPLACE INTO users (id, name, metadata) VALUES
 "
 
 log "Waiting for Duckling runtime API"
+runtime_ready=0
 for _ in $(seq 1 60); do
   if docker exec duckling-peerdb-runtime node -e "
 fetch('http://127.0.0.1:3000/sync/status?db=default', {
   headers: { Authorization: 'Bearer ${API_KEY}' }
 }).then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1));
 " >/dev/null 2>&1; then
+    runtime_ready=1
     break
   fi
   sleep 2
 done
+
+[[ "$runtime_ready" == "1" ]] || fail "Duckling runtime API did not become ready"
 
 log "Triggering PeerDB-backed full sync"
 sync_ok=0
@@ -141,7 +167,7 @@ initial_rows="$(docker exec duckling-peerdb-clickhouse clickhouse-client --query
 [[ "$initial_rows" == $'1\tAlice\n2\tBob' ]] || fail "Unexpected initial ClickHouse rows: ${initial_rows}"
 
 log "Applying MySQL CDC changes"
-docker exec "${MYSQL_CONTAINER}" mysql -uroot "-p${MYSQL_ROOT_PASSWORD}" -D "${MYSQL_DB}" -e "
+docker exec "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 -uroot "-p${MYSQL_ROOT_PASSWORD}" -D "${MYSQL_DB}" -e "
 INSERT INTO users (id, name, metadata) VALUES (3, 'Cara', JSON_OBJECT('role','editor'));
 UPDATE users SET name='Bobby', metadata=JSON_OBJECT('role','power-user') WHERE id=2;
 DELETE FROM users WHERE id=1;
