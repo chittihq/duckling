@@ -140,7 +140,7 @@ SESSION_SECRET="${SESSION_SECRET}" \
 DUCKLING_API_KEY="${API_KEY}" \
 docker compose -f "$COMPOSE_FILE" up -d --build \
   clickhouse rustfs catalog temporal temporal-ui temporal-admin-tools \
-  flow-api flow-snapshot-worker flow-worker peerdb peerdb-ui clickhouse-server
+  flow-api flow-snapshot-worker flow-worker peerdb peerdb-ui
 
 log "Creating RustFS staging bucket"
 docker run --rm --network duckling-peerdb-network --entrypoint /bin/sh \
@@ -191,21 +191,6 @@ done
 log "Applying type coverage schema + seed"
 docker exec -i "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 --default-character-set=utf8mb4 -uroot "-p${MYSQL_ROOT_PASSWORD}" "${MYSQL_DB}" < "$SEED_FILE"
 
-log "Waiting for Duckling runtime API"
-runtime_ready=0
-for _ in $(seq 1 60); do
-  if docker exec duckling-peerdb-runtime node -e "
-fetch('http://127.0.0.1:3000/sync/status?db=default', {
-  headers: { Authorization: 'Bearer ${API_KEY}' }
-}).then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1));
-" >/dev/null 2>&1; then
-    runtime_ready=1
-    break
-  fi
-  sleep 2
-done
-[[ "$runtime_ready" == "1" ]] || fail "Duckling runtime API did not become ready"
-
 log "Creating PeerDB peers"
 docker exec duckling-peerdb-catalog sh -lc "PGPASSWORD=peerdb psql -v ON_ERROR_STOP=1 -h duckling-peerdb-server -p 9900 -U peerdb -d peerdb <<'SQL'
 CREATE PEER mysql_default FROM MYSQL WITH (
@@ -239,80 +224,67 @@ create_mirror() {
   local flow_job_name="$1"
   local source_table="$2"
   local destination_table="$3"
-  docker exec duckling-peerdb-runtime node -e "
-const body = {
-  connectionConfigs: {
-    flowJobName: '${flow_job_name}',
-    tableMappings: [{
-      sourceTableIdentifier: '${source_table}',
-      destinationTableIdentifier: '${destination_table}',
-      partitionKey: '',
-      exclude: [],
-      columns: [{
-        sourceName: 'col_date_zero',
-        destinationName: '',
-        destinationType: 'String',
-        ordering: 0,
-        partitioning: 0,
-        nullableEnabled: true,
-      }],
-      engine: 'CH_ENGINE_REPLACING_MERGE_TREE',
-      shardingKey: '',
-      policyName: '',
-      partitionByExpr: '',
-    }],
-    maxBatchSize: 5000,
-    idleTimeoutSeconds: 10,
-    cdcStagingPath: '',
-    publicationName: '',
-    replicationSlotName: '',
-    doInitialSnapshot: true,
-    snapshotNumRowsPerPartition: 5000,
-    snapshotNumPartitionsOverride: 0,
-    snapshotStagingPath: '',
-    snapshotMaxParallelWorkers: 4,
-    snapshotNumTablesInParallel: 1,
-    resync: false,
-    initialSnapshotOnly: false,
-    softDeleteColName: '_peerdb_is_deleted',
-    syncedAtColName: '_peerdb_synced_at',
-    script: '',
-    system: 'Q',
-    sourceName: 'mysql_default',
-    destinationName: 'clickhouse_default',
-    env: { PEERDB_NULLABLE: 'true' },
-    version: 0,
-    flags: [],
-  },
-};
-fetch('http://flow-api:8113/v1/flows/cdc/create', {
-  method: 'POST',
-  headers: { 'content-type': 'application/json' },
-  body: JSON.stringify(body),
-}).then(async (r) => {
-  const text = await r.text();
-  if (!r.ok) throw new Error(text);
-  console.log(text);
-}).catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
-"
+  cat <<JSON | docker run --rm -i --network duckling-peerdb-network curlimages/curl:8.13.0 \
+    -fsS -X POST -H 'content-type: application/json' --data-binary @- http://flow-api:8113/v1/flows/cdc/create
+{
+  "connectionConfigs": {
+    "flowJobName": "${flow_job_name}",
+    "tableMappings": [
+      {
+        "sourceTableIdentifier": "${source_table}",
+        "destinationTableIdentifier": "${destination_table}",
+        "partitionKey": "",
+        "exclude": [],
+        "columns": [
+          {
+            "sourceName": "col_date_zero",
+            "destinationName": "",
+            "destinationType": "String",
+            "ordering": 0,
+            "partitioning": 0,
+            "nullableEnabled": true
+          }
+        ],
+        "engine": "CH_ENGINE_REPLACING_MERGE_TREE",
+        "shardingKey": "",
+        "policyName": "",
+        "partitionByExpr": ""
+      }
+    ],
+    "maxBatchSize": 5000,
+    "idleTimeoutSeconds": 10,
+    "cdcStagingPath": "",
+    "publicationName": "",
+    "replicationSlotName": "",
+    "doInitialSnapshot": true,
+    "snapshotNumRowsPerPartition": 5000,
+    "snapshotNumPartitionsOverride": 0,
+    "snapshotStagingPath": "",
+    "snapshotMaxParallelWorkers": 4,
+    "snapshotNumTablesInParallel": 1,
+    "resync": false,
+    "initialSnapshotOnly": false,
+    "softDeleteColName": "_peerdb_is_deleted",
+    "syncedAtColName": "_peerdb_synced_at",
+    "script": "",
+    "system": "Q",
+    "sourceName": "mysql_default",
+    "destinationName": "clickhouse_default",
+    "env": {
+      "PEERDB_NULLABLE": "true"
+    },
+    "version": 0,
+    "flags": []
+  }
+}
+JSON
 }
 create_mirror "duckling_default_type_coverage" "peerdbtest.type_coverage" "type_coverage"
 create_mirror "duckling_default_type_coverage_cdc" "peerdbtest.type_coverage_cdc" "type_coverage_cdc"
 
 log "Waiting for mirrors to become visible"
 for _ in $(seq 1 45); do
-  status_json="$(docker exec duckling-peerdb-runtime node -e "
-fetch('http://peerdb-ui:3000/api/v1/mirrors/list').then(async (r) => {
-  if (!r.ok) throw new Error(await r.text());
-  console.log(await r.text());
-}).catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
-")"
+  status_json="$(docker run --rm --network duckling-peerdb-network curlimages/curl:8.13.0 -fsS http://peerdb-ui:3000/api/v1/mirrors/list)"
   if echo "$status_json" | rg '"duckling_default_type_coverage"' >/dev/null 2>&1 &&
      echo "$status_json" | rg '"duckling_default_type_coverage_cdc"' >/dev/null 2>&1; then
     break
