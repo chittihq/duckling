@@ -9,6 +9,7 @@ SEED_FILE="${ROOT_DIR}/tests/peerdb/mysql-seed-type-coverage.sql"
 API_KEY="${PEERDB_SMOKE_API_KEY:-peerdb-key}"
 ADMIN_PASSWORD="${PEERDB_SMOKE_ADMIN_PASSWORD:-admin}"
 SESSION_SECRET="${PEERDB_SMOKE_SESSION_SECRET:-peerdb-session}"
+KEEP_STACK="${PEERDB_KEEP_STACK:-false}"
 MYSQL_CONTAINER="duckling-peerdb-mysql"
 MYSQL_DB="peerdbtest"
 MYSQL_ROOT_PASSWORD="cipass"
@@ -27,6 +28,9 @@ record_failure() {
 }
 
 cleanup() {
+  if [[ "$KEEP_STACK" == "true" ]]; then
+    return
+  fi
   docker rm -f "${MYSQL_CONTAINER}" >/dev/null 2>&1 || true
   docker compose -f "$COMPOSE_FILE" down -v >/dev/null 2>&1 || true
   docker network rm duckling-peerdb-network >/dev/null 2>&1 || true
@@ -296,7 +300,8 @@ create_mirror "duckling_default_type_coverage_cdc" "peerdbtest.type_coverage_cdc
 log "Waiting for mirrors to become visible"
 for _ in $(seq 1 45); do
   status_json="$(docker run --rm --network duckling-peerdb-network curlimages/curl:8.13.0 -fsS http://peerdb-ui:3000/api/v1/mirrors/list)"
-  if echo "$status_json" | rg '"mirrored":2' >/dev/null 2>&1; then
+  if echo "$status_json" | rg '"duckling_default_type_coverage"' >/dev/null 2>&1 &&
+     echo "$status_json" | rg '"duckling_default_type_coverage_cdc"' >/dev/null 2>&1; then
     break
   fi
   sleep 2
