@@ -101,6 +101,7 @@ class PeerDBOrchestratorService {
     const uri = new URL(this.dbConfig.mysqlConnectionString);
     const mysqlFlavor = this.getMySQLFlavor();
     const replicationMechanism = this.getReplicationMechanism();
+    const setup = this.getMySQLSetupStatements();
     const sql = [
       `CREATE PEER ${this.q(this.getSourcePeerName())} FROM MYSQL WITH (`,
       `host='${this.escape(uri.hostname)}',`,
@@ -108,6 +109,7 @@ class PeerDBOrchestratorService {
       `user='${this.escape(decodeURIComponent(uri.username))}',`,
       `password='${this.escape(decodeURIComponent(uri.password))}',`,
       `database='${this.escape(uri.pathname.replace(/^\//, ''))}',`,
+      ...(setup.length > 0 ? [`setup='${this.escape(setup.join(';'))}',`] : []),
       `disable_tls=${this.getMySQLDisableTls() ? 'true' : 'false'},`,
       `flavor='${mysqlFlavor}',`,
       `replication_mechanism='${replicationMechanism}'`,
@@ -169,7 +171,9 @@ class PeerDBOrchestratorService {
         system: 'Q',
         sourceName: this.getSourcePeerName(),
         destinationName: this.getTargetPeerName(),
-        env: {},
+        env: {
+          PEERDB_NULLABLE: 'true',
+        },
         version: 0,
         flags: [],
       },
@@ -249,6 +253,17 @@ class PeerDBOrchestratorService {
 
   private getMySQLDisableTls(): boolean {
     return this.dbConfig.peerdb?.mysqlDisableTls ?? config.peerdb.mysqlDisableTls;
+  }
+
+  private getMySQLSetupStatements(): string[] {
+    const configured = this.dbConfig.peerdb?.mysqlSetup;
+    if (configured && configured.length > 0) {
+      return configured;
+    }
+    return config.peerdb.mysqlSetup
+      .split(';')
+      .map((stmt) => stmt.trim())
+      .filter(Boolean);
   }
 
   private getReplicationMechanism(): 'auto' | 'gtid' | 'filepos' {

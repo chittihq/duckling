@@ -33,6 +33,7 @@ export interface DatabaseConfig {
     mysqlDisableTls?: boolean;
     mysqlFlavor?: 'mysql' | 'mariadb';
     replicationMechanism?: 'auto' | 'gtid' | 'filepos';
+    mysqlSetup?: string[];
     mirrors?: Array<{
       table: string;
       mirrorName: string;

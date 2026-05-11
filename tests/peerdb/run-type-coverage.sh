@@ -240,9 +240,9 @@ assert_eq "$(ch_scalar "SELECT col_bit_8 FROM default.type_coverage WHERE id = 1
 assert_eq "$(ch_scalar "SELECT col_enum FROM default.type_coverage WHERE id = 1")" "gamma" "ENUM value"
 
 log "Checking nullability edge cases"
-assert_eq "$(ch_scalar "SELECT CAST(col_tinyint_signed AS String) FROM default.type_coverage WHERE id = 3")" "null" "NULL tinyint"
-assert_eq "$(ch_scalar "SELECT CAST(col_json AS String) FROM default.type_coverage WHERE id = 3")" "null" "NULL json"
-assert_eq "$(ch_scalar "SELECT CAST(col_enum AS String) FROM default.type_coverage WHERE id = 3")" "null" "NULL enum"
+assert_eq "$(ch_scalar "SELECT isNull(col_tinyint_signed) FROM default.type_coverage WHERE id = 3")" "1" "NULL tinyint"
+assert_eq "$(ch_scalar "SELECT isNull(col_json) FROM default.type_coverage WHERE id = 3")" "1" "NULL json"
+assert_eq "$(ch_scalar "SELECT isNull(col_enum) FROM default.type_coverage WHERE id = 3")" "1" "NULL enum"
 
 log "Checking zero dates"
 assert_eq "$(ch_scalar "SELECT CAST(col_date_zero AS String) FROM default.type_coverage WHERE id = 1")" "null" "zero date mapped to null"
@@ -250,9 +250,13 @@ assert_eq "$(ch_scalar "SELECT CAST(col_date_zero AS String) FROM default.type_c
 
 log "Checking JSON/type coverage payload"
 json_row="$(ch_scalar "SELECT col_json FROM default.type_coverage WHERE id = 1")"
-echo "$json_row" | rg '"name":"test"' >/dev/null 2>&1 || record_failure "JSON object missing name"
-echo "$json_row" | rg '"nested":\{"key":1\}' >/dev/null 2>&1 || record_failure "JSON object missing nested payload"
-assert_eq "$(ch_scalar "SELECT col_utf8_emoji FROM default.type_coverage WHERE id = 1")" "Hello 🦆 World 𝌆 Test" "UTF-8 emoji string"
+python3 - "$json_row" <<'PY' || record_failure "JSON object missing expected structure"
+import json, sys
+obj = json.loads(sys.argv[1])
+assert obj["name"] == "test"
+assert obj["nested"] == {"key": 1}
+PY
+assert_eq "$(ch_scalar "SELECT hex(col_utf8_emoji) FROM default.type_coverage WHERE id = 1")" "48656C6C6F20F09FA68620576F726C6420F09D8C862054657374" "UTF-8 emoji bytes"
 
 log "Exercising CDC type compatibility"
 docker exec "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 -uroot "-p${MYSQL_ROOT_PASSWORD}" -D "${MYSQL_DB}" -e "
@@ -295,12 +299,17 @@ assert_contains "$(ch_scalar "SELECT CAST(col_datetime_6 AS String) FROM default
 assert_eq "$(ch_scalar "SELECT col_year FROM default.type_coverage_cdc WHERE id = 7001")" "2024" "CDC year"
 assert_eq "$(ch_scalar "SELECT col_set FROM default.type_coverage_cdc WHERE id = 7001")" "b,d" "CDC set"
 assert_eq "$(ch_scalar "SELECT col_enum FROM default.type_coverage_cdc WHERE id = 7001")" "beta" "CDC enum"
-assert_eq "$(ch_scalar "SELECT col_boolean FROM default.type_coverage_cdc WHERE id = 7001")" "1" "CDC boolean"
+cdc_bool="$(ch_scalar "SELECT col_boolean FROM default.type_coverage_cdc WHERE id = 7001")"
+[[ "$cdc_bool" == "1" || "$cdc_bool" == "true" ]] || record_failure "CDC boolean: expected semantic true, got '${cdc_bool}'"
 assert_eq "$(ch_scalar "SELECT CAST(col_date_zero AS String) FROM default.type_coverage_cdc WHERE id = 7001")" "null" "CDC zero date"
-assert_eq "$(ch_scalar "SELECT col_utf8_emoji FROM default.type_coverage_cdc WHERE id = 7001")" "CDC 🦆 emoji" "CDC utf8 emoji"
+assert_eq "$(ch_scalar "SELECT hex(col_utf8_emoji) FROM default.type_coverage_cdc WHERE id = 7001")" "43444320F09FA68620656D6F6A69" "CDC utf8 emoji bytes"
 cdc_json="$(ch_scalar "SELECT col_json FROM default.type_coverage_cdc WHERE id = 7001")"
-echo "$cdc_json" | rg '"cdc":true' >/dev/null 2>&1 || record_failure "CDC JSON missing flag"
-echo "$cdc_json" | rg '"items":\[1,2,3\]' >/dev/null 2>&1 || record_failure "CDC JSON missing items"
+python3 - "$cdc_json" <<'PY' || record_failure "CDC JSON missing expected structure"
+import json, sys
+obj = json.loads(sys.argv[1])
+assert obj["cdc"] is True
+assert obj["items"] == [1,2,3]
+PY
 
 log "Exercising CDC updates/deletes"
 docker exec "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 -uroot "-p${MYSQL_ROOT_PASSWORD}" -D "${MYSQL_DB}" -e "

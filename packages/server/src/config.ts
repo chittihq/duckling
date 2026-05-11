@@ -69,6 +69,7 @@ export const config = {
     mysqlDisableTls: process.env.PEERDB_MYSQL_DISABLE_TLS !== 'false',
     mysqlFlavor: process.env.PEERDB_MYSQL_FLAVOR || 'mysql',
     mysqlReplicationMechanism: process.env.PEERDB_MYSQL_REPLICATION_MECHANISM || 'auto',
+    mysqlSetup: process.env.PEERDB_MYSQL_SETUP || 'set names utf8mb4',
   },
 
   rustfs: {
