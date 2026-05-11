@@ -231,7 +231,7 @@ CREATE PEER clickhouse_default FROM CLICKHOUSE WITH (
 SQL"
 
 log "Creating PeerDB mirrors with zero-date string override"
-docker exec -i duckling-peerdb-runtime node - <<'NODE'
+docker exec duckling-peerdb-runtime node -e "
 const base = {
   maxBatchSize: 5000,
   idleTimeoutSeconds: 10,
@@ -256,7 +256,6 @@ const base = {
   version: 0,
   flags: [],
 };
-
 async function createMirror(flowJobName, sourceTable, destTable) {
   const body = {
     connectionConfigs: {
@@ -273,37 +272,29 @@ async function createMirror(flowJobName, sourceTable, destTable) {
           destinationType: 'String',
           ordering: 0,
           partitioning: 0,
-          nullableEnabled: true,
+          nullableEnabled: true
         }],
         engine: 'CH_ENGINE_REPLACING_MERGE_TREE',
         shardingKey: '',
         policyName: '',
-        partitionByExpr: '',
-      }],
-    },
+        partitionByExpr: ''
+      }]
+    }
   };
   const r = await fetch('http://flow-api:8113/v1/flows/cdc/create', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body)
   });
   const text = await r.text();
-  if (!r.ok) {
-    throw new Error(text);
-  }
+  if (!r.ok) throw new Error(text);
   console.log(text);
 }
-
-(async () => {
-  await Promise.all([
-    createMirror('duckling_default_type_coverage', 'peerdbtest.type_coverage', 'type_coverage'),
-    createMirror('duckling_default_type_coverage_cdc', 'peerdbtest.type_coverage_cdc', 'type_coverage_cdc'),
-  ]);
-})().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
-NODE
+Promise.all([
+  createMirror('duckling_default_type_coverage', 'peerdbtest.type_coverage', 'type_coverage'),
+  createMirror('duckling_default_type_coverage_cdc', 'peerdbtest.type_coverage_cdc', 'type_coverage_cdc')
+]).catch((err) => { console.error(err); process.exit(1); });
+"
 
 log "Waiting for mirrors to become visible"
 for _ in $(seq 1 45); do
