@@ -231,84 +231,78 @@ CREATE PEER clickhouse_default FROM CLICKHOUSE WITH (
 SQL"
 
 log "Creating PeerDB mirrors with zero-date string override"
-docker exec duckling-peerdb-runtime node -e "
-const base = {
-  maxBatchSize: 5000,
-  idleTimeoutSeconds: 10,
-  cdcStagingPath: '',
-  publicationName: '',
-  replicationSlotName: '',
-  doInitialSnapshot: true,
-  snapshotNumRowsPerPartition: 5000,
-  snapshotNumPartitionsOverride: 0,
-  snapshotStagingPath: '',
-  snapshotMaxParallelWorkers: 4,
-  snapshotNumTablesInParallel: 1,
-  resync: false,
-  initialSnapshotOnly: false,
-  softDeleteColName: '_peerdb_is_deleted',
-  syncedAtColName: '_peerdb_synced_at',
-  script: '',
-  system: 'Q',
-  sourceName: 'mysql_default',
-  destinationName: 'clickhouse_default',
-  env: { PEERDB_NULLABLE: 'true' },
-  version: 0,
-  flags: [],
-};
-async function createMirror(flowJobName, sourceTable, destTable) {
-  const body = {
-    connectionConfigs: {
-      ...base,
-      flowJobName,
-      tableMappings: [{
-        sourceTableIdentifier: sourceTable,
-        destinationTableIdentifier: destTable,
-        partitionKey: '',
-        exclude: [],
-        columns: [{
-          sourceName: 'col_date_zero',
-          destinationName: '',
-          destinationType: 'String',
-          ordering: 0,
-          partitioning: 0,
-          nullableEnabled: true
-        }],
-        engine: 'CH_ENGINE_REPLACING_MERGE_TREE',
-        shardingKey: '',
-        policyName: '',
-        partitionByExpr: ''
-      }]
-    }
-  };
-  const r = await fetch('http://flow-api:8113/v1/flows/cdc/create', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  const text = await r.text();
-  if (!r.ok) throw new Error(text);
-  console.log(text);
+create_mirror() {
+  local flow_job_name="$1"
+  local source_table="$2"
+  local destination_table="$3"
+  cat <<JSON | docker run --rm -i --network duckling-peerdb-network curlimages/curl:8.13.0 \
+    -fsS -X POST -H 'content-type: application/json' --data-binary @- http://flow-api:8113/v1/flows/cdc/create
+{
+  "connectionConfigs": {
+    "flowJobName": "${flow_job_name}",
+    "tableMappings": [
+      {
+        "sourceTableIdentifier": "${source_table}",
+        "destinationTableIdentifier": "${destination_table}",
+        "partitionKey": "",
+        "exclude": [],
+        "columns": [
+          {
+            "sourceName": "col_date_zero",
+            "destinationName": "",
+            "destinationType": "String",
+            "ordering": 0,
+            "partitioning": 0,
+            "nullableEnabled": true
+          }
+        ],
+        "engine": "CH_ENGINE_REPLACING_MERGE_TREE",
+        "shardingKey": "",
+        "policyName": "",
+        "partitionByExpr": ""
+      }
+    ],
+    "maxBatchSize": 5000,
+    "idleTimeoutSeconds": 10,
+    "cdcStagingPath": "",
+    "publicationName": "",
+    "replicationSlotName": "",
+    "doInitialSnapshot": true,
+    "snapshotNumRowsPerPartition": 5000,
+    "snapshotNumPartitionsOverride": 0,
+    "snapshotStagingPath": "",
+    "snapshotMaxParallelWorkers": 4,
+    "snapshotNumTablesInParallel": 1,
+    "resync": false,
+    "initialSnapshotOnly": false,
+    "softDeleteColName": "_peerdb_is_deleted",
+    "syncedAtColName": "_peerdb_synced_at",
+    "script": "",
+    "system": "Q",
+    "sourceName": "mysql_default",
+    "destinationName": "clickhouse_default",
+    "env": {
+      "PEERDB_NULLABLE": "true"
+    },
+    "version": 0,
+    "flags": []
+  }
 }
-Promise.all([
-  createMirror('duckling_default_type_coverage', 'peerdbtest.type_coverage', 'type_coverage'),
-  createMirror('duckling_default_type_coverage_cdc', 'peerdbtest.type_coverage_cdc', 'type_coverage_cdc')
-]).catch((err) => { console.error(err); process.exit(1); });
-"
+JSON
+}
+create_mirror "duckling_default_type_coverage" "peerdbtest.type_coverage" "type_coverage"
+create_mirror "duckling_default_type_coverage_cdc" "peerdbtest.type_coverage_cdc" "type_coverage_cdc"
 
 log "Waiting for mirrors to become visible"
 for _ in $(seq 1 45); do
-  status_json="$(docker exec duckling-peerdb-runtime node -e "
-fetch('http://127.0.0.1:3000/sync/status?db=default', {
-  headers: { Authorization: 'Bearer ${API_KEY}' }
-}).then(async (r) => console.log(await r.text())).catch((err) => { console.error(err); process.exit(1); });
-")"
+  status_json="$(docker run --rm --network duckling-peerdb-network curlimages/curl:8.13.0 -fsS http://peerdb-ui:3000/api/v1/mirrors/list)"
   if echo "$status_json" | rg '"mirrored":2' >/dev/null 2>&1; then
     break
   fi
   sleep 2
 done
-echo "$status_json" | rg '"mirrored":2' >/dev/null 2>&1 || fail "Type coverage mirrors were not reported as active"
+echo "$status_json" | rg '"duckling_default_type_coverage"' >/dev/null 2>&1 || fail "type_coverage mirror was not reported"
+echo "$status_json" | rg '"duckling_default_type_coverage_cdc"' >/dev/null 2>&1 || fail "type_coverage_cdc mirror was not reported"
 
 log "Waiting for initial snapshot"
 wait_for_exact "SELECT COUNT(*) FROM default.type_coverage FINAL" "3" 60 || fail "type_coverage row count mismatch"
