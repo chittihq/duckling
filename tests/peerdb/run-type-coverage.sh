@@ -202,17 +202,108 @@ fetch('http://127.0.0.1:3000/sync/status?db=default', {
 done
 [[ "$runtime_ready" == "1" ]] || fail "Duckling runtime API did not become ready"
 
-log "Triggering PeerDB-backed full sync"
-docker exec duckling-peerdb-runtime node -e "
-fetch('http://127.0.0.1:3000/sync/full?db=default', {
-  method: 'POST',
-  headers: { Authorization: 'Bearer ${API_KEY}' }
-}).then(async (r) => {
+log "Creating PeerDB peers"
+docker exec duckling-peerdb-catalog sh -lc "PGPASSWORD=peerdb psql -v ON_ERROR_STOP=1 -h duckling-peerdb-server -p 9900 -U peerdb -d peerdb <<'SQL'
+CREATE PEER mysql_default FROM MYSQL WITH (
+  host='duckling-peerdb-mysql',
+  port=3306,
+  user='peerdb',
+  password='peerdb',
+  database='peerdbtest',
+  setup='set names utf8mb4',
+  disable_tls=true,
+  flavor='mysql',
+  replication_mechanism='auto'
+);
+CREATE PEER clickhouse_default FROM CLICKHOUSE WITH (
+  host='clickhouse',
+  port=9000,
+  user='default',
+  password='',
+  database='default',
+  disable_tls=true,
+  s3_path='s3://peerdb-stage/default',
+  access_key_id='peerdb',
+  secret_access_key='peerdbsecret',
+  region='us-east-1',
+  endpoint='http://rustfs:9000'
+);
+SQL"
+
+log "Creating PeerDB mirrors with zero-date string override"
+docker exec -i duckling-peerdb-runtime node - <<'NODE'
+const base = {
+  maxBatchSize: 5000,
+  idleTimeoutSeconds: 10,
+  cdcStagingPath: '',
+  publicationName: '',
+  replicationSlotName: '',
+  doInitialSnapshot: true,
+  snapshotNumRowsPerPartition: 5000,
+  snapshotNumPartitionsOverride: 0,
+  snapshotStagingPath: '',
+  snapshotMaxParallelWorkers: 4,
+  snapshotNumTablesInParallel: 1,
+  resync: false,
+  initialSnapshotOnly: false,
+  softDeleteColName: '_peerdb_is_deleted',
+  syncedAtColName: '_peerdb_synced_at',
+  script: '',
+  system: 'Q',
+  sourceName: 'mysql_default',
+  destinationName: 'clickhouse_default',
+  env: { PEERDB_NULLABLE: 'true' },
+  version: 0,
+  flags: [],
+};
+
+async function createMirror(flowJobName, sourceTable, destTable) {
+  const body = {
+    connectionConfigs: {
+      ...base,
+      flowJobName,
+      tableMappings: [{
+        sourceTableIdentifier: sourceTable,
+        destinationTableIdentifier: destTable,
+        partitionKey: '',
+        exclude: [],
+        columns: [{
+          sourceName: 'col_date_zero',
+          destinationName: '',
+          destinationType: 'String',
+          ordering: 0,
+          partitioning: 0,
+          nullableEnabled: true,
+        }],
+        engine: 'CH_ENGINE_REPLACING_MERGE_TREE',
+        shardingKey: '',
+        policyName: '',
+        partitionByExpr: '',
+      }],
+    },
+  };
+  const r = await fetch('http://flow-api:8113/v1/flows/cdc/create', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
   const text = await r.text();
-  if (!r.ok) throw new Error(text);
+  if (!r.ok) {
+    throw new Error(text);
+  }
   console.log(text);
-}).catch((err) => { console.error(err); process.exit(1); });
-"
+}
+
+(async () => {
+  await Promise.all([
+    createMirror('duckling_default_type_coverage', 'peerdbtest.type_coverage', 'type_coverage'),
+    createMirror('duckling_default_type_coverage_cdc', 'peerdbtest.type_coverage_cdc', 'type_coverage_cdc'),
+  ]);
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+NODE
 
 log "Waiting for mirrors to become visible"
 for _ in $(seq 1 45); do
@@ -269,8 +360,8 @@ assert_eq "$(ch_scalar "SELECT isNull(col_json) FROM default.type_coverage WHERE
 assert_eq "$(ch_scalar "SELECT isNull(col_enum) FROM default.type_coverage WHERE id = 3")" "1" "NULL enum"
 
 log "Checking zero dates"
-assert_eq "$(ch_scalar "SELECT CAST(col_date_zero AS String) FROM default.type_coverage WHERE id = 1")" "null" "zero date mapped to null"
-assert_eq "$(ch_scalar "SELECT CAST(col_date_zero AS String) FROM default.type_coverage WHERE id = 2")" "1000-01-01" "minimum valid date preserved"
+assert_eq "$(ch_scalar "SELECT col_date_zero FROM default.type_coverage WHERE id = 1")" "0000-00-00" "zero date preserved"
+assert_eq "$(ch_scalar "SELECT col_date_zero FROM default.type_coverage WHERE id = 2")" "1000-01-01" "minimum valid date preserved"
 
 log "Checking JSON/type coverage payload"
 json_row="$(ch_scalar "SELECT col_json FROM default.type_coverage WHERE id = 1")"
@@ -325,7 +416,7 @@ assert_eq "$(ch_scalar "SELECT col_set FROM default.type_coverage_cdc WHERE id =
 assert_eq "$(ch_scalar "SELECT col_enum FROM default.type_coverage_cdc WHERE id = 7001")" "beta" "CDC enum"
 cdc_bool="$(ch_scalar "SELECT col_boolean FROM default.type_coverage_cdc WHERE id = 7001")"
 [[ "$cdc_bool" == "1" || "$cdc_bool" == "true" ]] || record_failure "CDC boolean: expected semantic true, got '${cdc_bool}'"
-assert_eq "$(ch_scalar "SELECT CAST(col_date_zero AS String) FROM default.type_coverage_cdc WHERE id = 7001")" "null" "CDC zero date"
+assert_eq "$(ch_scalar "SELECT col_date_zero FROM default.type_coverage_cdc WHERE id = 7001")" "0000-00-00" "CDC zero date"
 assert_eq "$(ch_scalar "SELECT hex(col_utf8_emoji) FROM default.type_coverage_cdc WHERE id = 7001")" "43444320F09FA68620656D6F6A69" "CDC utf8 emoji bytes"
 cdc_json="$(ch_scalar "SELECT col_json FROM default.type_coverage_cdc WHERE id = 7001")"
 python3 - "$cdc_json" <<'PY' || record_failure "CDC JSON missing expected structure"
