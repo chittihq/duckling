@@ -36,7 +36,31 @@ trap cleanup EXIT
 
 ch_scalar() {
   local sql="$1"
-  docker exec duckling-peerdb-clickhouse clickhouse-client --query "$sql FORMAT TSVRaw"
+  docker_exec_retry duckling-peerdb-clickhouse clickhouse-client --query "$sql FORMAT TSVRaw"
+}
+
+docker_exec_retry() {
+  local container="$1"
+  shift
+  local out=""
+  local rc=0
+  for _ in $(seq 1 5); do
+    set +e
+    out="$(docker exec "$container" "$@" 2>&1)"
+    rc=$?
+    set -e
+    if [[ $rc -eq 0 ]]; then
+      printf "%s" "$out"
+      return 0
+    fi
+    if [[ "$out" != *"No such container"* && "$out" != *"unable to upgrade to tcp"* ]]; then
+      printf "%s" "$out" >&2
+      return $rc
+    fi
+    sleep 2
+  done
+  printf "%s" "$out" >&2
+  return $rc
 }
 
 wait_for_exact() {
@@ -161,7 +185,7 @@ done
 [[ "$mysql_ready" == "1" ]] || fail "MySQL source did not become ready"
 
 log "Applying type coverage schema + seed"
-docker exec -i "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 -uroot "-p${MYSQL_ROOT_PASSWORD}" "${MYSQL_DB}" < "$SEED_FILE"
+docker exec -i "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 --default-character-set=utf8mb4 -uroot "-p${MYSQL_ROOT_PASSWORD}" "${MYSQL_DB}" < "$SEED_FILE"
 
 log "Waiting for Duckling runtime API"
 runtime_ready=0
@@ -259,7 +283,7 @@ PY
 assert_eq "$(ch_scalar "SELECT hex(col_utf8_emoji) FROM default.type_coverage WHERE id = 1")" "48656C6C6F20F09FA68620576F726C6420F09D8C862054657374" "UTF-8 emoji bytes"
 
 log "Exercising CDC type compatibility"
-docker exec "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 -uroot "-p${MYSQL_ROOT_PASSWORD}" -D "${MYSQL_DB}" -e "
+docker exec "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 --default-character-set=utf8mb4 -uroot "-p${MYSQL_ROOT_PASSWORD}" -D "${MYSQL_DB}" -e "
 SET SESSION sql_mode = REPLACE(@@sql_mode, 'NO_ZERO_DATE', '');
 INSERT INTO type_coverage_cdc (
   id, col_tinyint_signed, col_smallint, col_mediumint,
@@ -312,7 +336,7 @@ assert obj["items"] == [1,2,3]
 PY
 
 log "Exercising CDC updates/deletes"
-docker exec "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 -uroot "-p${MYSQL_ROOT_PASSWORD}" -D "${MYSQL_DB}" -e "
+docker exec "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 --default-character-set=utf8mb4 -uroot "-p${MYSQL_ROOT_PASSWORD}" -D "${MYSQL_DB}" -e "
 UPDATE type_coverage_cdc
 SET col_smallint = 2000,
     col_char_10 = 'CDC-UPDATE',

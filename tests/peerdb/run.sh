@@ -98,7 +98,7 @@ docker exec "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 -uroot "-p${MYSQL_ROOT_PASSW
   "GRANT REPLICATION SLAVE, REPLICATION CLIENT, SELECT, SHOW VIEW, EVENT, TRIGGER ON *.* TO '${MYSQL_USER}'@'%'; FLUSH PRIVILEGES;"
 
 log "Seeding MySQL source"
-docker exec "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 -uroot "-p${MYSQL_ROOT_PASSWORD}" -D "${MYSQL_DB}" -e "
+docker exec "${MYSQL_CONTAINER}" mysql -h 127.0.0.1 --default-character-set=utf8mb4 -uroot "-p${MYSQL_ROOT_PASSWORD}" -D "${MYSQL_DB}" -e "
 CREATE TABLE users (
   id INT PRIMARY KEY,
   name VARCHAR(255),
