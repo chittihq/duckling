@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PATCH_FILE="${ROOT_DIR}/docs/peerdb-upstream-zero-date-poc.patch"
+PATCH_FILE="${PEERDB_PATCH_FILE:-${ROOT_DIR}/docs/peerdb-upstream-zero-date-poc-v2.patch}"
 WORK_DIR="${PEERDB_SRC_DIR:-${ROOT_DIR}/.tmp/peerdb-src}"
 REPO_URL="${PEERDB_REPO_URL:-https://github.com/PeerDB-io/peerdb.git}"
 REPO_REF="${PEERDB_REPO_REF:-main}"
@@ -30,7 +30,7 @@ else
   git -C "${WORK_DIR}" clean -fd
 fi
 
-log "Applying zero-date proof-of-concept patch"
+log "Applying zero-date proof-of-concept patch: ${PATCH_FILE}"
 git -C "${WORK_DIR}" apply --reject --whitespace=fix "${PATCH_FILE}"
 
 log "Generating PeerDB protobuf outputs"

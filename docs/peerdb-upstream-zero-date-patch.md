@@ -85,6 +85,11 @@ Repo-local proof-of-concept patch:
 - [peerdb-upstream-zero-date-poc-v2.patch](/Users/jMac/Projects/LMES/duckling/docs/peerdb-upstream-zero-date-poc-v2.patch)
 - [build-peerdb-zero-date-poc.sh](/Users/jMac/Projects/LMES/duckling/scripts/build-peerdb-zero-date-poc.sh)
 
+Current helper default:
+
+- `build-peerdb-zero-date-poc.sh` now defaults to the stronger `poc-v2` patch
+- override with `PEERDB_PATCH_FILE=/abs/path/to/patch` if needed
+
 The first patch takes the initial step by making MySQL source schema generation
 honor `DestinationType == "String"` for date/time-like columns.
 
