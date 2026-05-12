@@ -302,6 +302,30 @@ Current docs are inconsistent for MySQL peers vs mirrors, so repo/tests matter m
 
 If RustFS is unreachable from ClickHouse, replication will fail regardless of PeerDB health.
 
+### Current type-compatibility blocker
+
+The repo-local PeerDB type-coverage gate currently narrows the remaining compatibility risk to
+zero-date handling on the MySQL -> PeerDB -> ClickHouse path.
+
+Observed behavior:
+
+- `0000-00-00` is materialized as `1970-01-01`
+- `1000-01-01` / partial-zero date variants do not round-trip as originally expected
+
+Tried workaround:
+
+- create mirrors with a per-column destination override such as
+  `col_date_zero -> String`
+
+Current result:
+
+- PeerDB still emits Avro logical `date` for that source column during snapshot
+- ClickHouse then rejects loading into `String` on the current snapshot path
+
+Practical implication:
+
+- the remaining blocker appears to be upstream PeerDB date handling rather than only Duckling-side orchestration
+
 ## Rollback plan
 
 Keep the current Duckling replication path behind a feature flag during migration.
