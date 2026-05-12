@@ -329,6 +329,28 @@ Practical implication:
 
 - the remaining blocker appears to be upstream PeerDB date handling rather than only Duckling-side orchestration
 
+Likely upstream patch seam:
+
+- `flow/connectors/clickhouse/avro_sync.go`
+  - `getAvroSchema(...)`
+- `flow/model/conversion_avro.go`
+  - `GetAvroSchemaDefinition(...)`
+- `flow/model/qvalue/avro_converter.go`
+  - `GetAvroSchemaFromQValueKind(...)`
+
+Current issue:
+
+- custom destination types such as `ColumnSetting.DestinationType = "String"` are honored on the
+  ClickHouse destination/normalize side
+- but the snapshot Avro schema for MySQL `DATE` still gets emitted as Avro logical `date`
+  (`{"type":"int","logicalType":"date"}`)
+
+What an upstream fix likely needs:
+
+- allow ClickHouse snapshot Avro schema generation to see per-column destination overrides
+- when a source `DATE` / `TIMESTAMP`-family column is overridden to `String`,
+  emit Avro `string` instead of Avro logical `date` / `timestamp-*`
+
 ## Rollback plan
 
 Keep the current Duckling replication path behind a feature flag during migration.
