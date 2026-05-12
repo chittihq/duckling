@@ -33,6 +33,29 @@ fi
 log "Applying zero-date proof-of-concept patch"
 git -C "${WORK_DIR}" apply --reject --whitespace=fix "${PATCH_FILE}"
 
+log "Generating PeerDB protobuf outputs"
+if command -v buf >/dev/null 2>&1; then
+  (
+    cd "${WORK_DIR}" && buf generate --template buf.gen.yaml protos
+  )
+else
+  if [[ "${DOCKER_HOST:-}" == ssh://* ]]; then
+    cat <<EOF >&2
+buf is not installed locally, and DOCKER_HOST points at a remote daemon.
+The dockerized buf fallback cannot mount the local checkout into a remote container.
+
+Install buf locally and rerun:
+  https://buf.build/docs/installation
+EOF
+    exit 1
+  fi
+  docker run --rm \
+    -v "${WORK_DIR}:/workspace" \
+    -w /workspace \
+    bufbuild/buf:1.58.0 \
+    generate --template buf.gen.yaml protos
+fi
+
 log "Building patched flow-api image: ${FLOW_API_IMAGE}"
 docker build \
   -f "${WORK_DIR}/stacks/flow.Dockerfile" \
