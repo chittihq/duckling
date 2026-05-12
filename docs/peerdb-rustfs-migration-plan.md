@@ -321,6 +321,9 @@ Current result:
 
 - PeerDB still emits Avro logical `date` for that source column during snapshot
 - ClickHouse then rejects loading into `String` on the current snapshot path
+- concrete failure seen in the local PeerDB type gate:
+  - `Type String is not compatible with Avro int`
+  - payload schema carries Avro `{"type":"int","logicalType":"date"}`
 
 Practical implication:
 

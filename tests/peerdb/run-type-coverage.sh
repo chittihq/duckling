@@ -27,6 +27,12 @@ record_failure() {
   FAILURES+=("$message")
 }
 
+record_known_blocker() {
+  local message="$1"
+  echo "KNOWN BLOCKER: ${message}" >&2
+  FAILURES+=("KNOWN BLOCKER: ${message}")
+}
+
 cleanup() {
   if [[ "$KEEP_STACK" == "true" ]]; then
     return
@@ -348,8 +354,14 @@ assert_eq "$(ch_scalar "SELECT isNull(col_json) FROM default.type_coverage WHERE
 assert_eq "$(ch_scalar "SELECT isNull(col_enum) FROM default.type_coverage WHERE id = 3")" "1" "NULL enum"
 
 log "Checking zero dates"
-assert_eq "$(ch_scalar "SELECT col_date_zero FROM default.type_coverage WHERE id = 1")" "0000-00-00" "zero date preserved"
-assert_eq "$(ch_scalar "SELECT col_date_zero FROM default.type_coverage WHERE id = 2")" "1000-01-01" "minimum valid date preserved"
+actual_zero_date="$(ch_scalar "SELECT col_date_zero FROM default.type_coverage WHERE id = 1")"
+if [[ "$actual_zero_date" != "0000-00-00" ]]; then
+  record_known_blocker "zero date full-sync mismatch: expected 0000-00-00, got ${actual_zero_date}"
+fi
+actual_min_date="$(ch_scalar "SELECT col_date_zero FROM default.type_coverage WHERE id = 2")"
+if [[ "$actual_min_date" != "1000-01-01" ]]; then
+  record_known_blocker "minimum valid date full-sync mismatch: expected 1000-01-01, got ${actual_min_date}"
+fi
 
 log "Checking JSON/type coverage payload"
 json_row="$(ch_scalar "SELECT col_json FROM default.type_coverage WHERE id = 1")"
@@ -404,7 +416,10 @@ assert_eq "$(ch_scalar "SELECT col_set FROM default.type_coverage_cdc WHERE id =
 assert_eq "$(ch_scalar "SELECT col_enum FROM default.type_coverage_cdc WHERE id = 7001")" "beta" "CDC enum"
 cdc_bool="$(ch_scalar "SELECT col_boolean FROM default.type_coverage_cdc WHERE id = 7001")"
 [[ "$cdc_bool" == "1" || "$cdc_bool" == "true" ]] || record_failure "CDC boolean: expected semantic true, got '${cdc_bool}'"
-assert_eq "$(ch_scalar "SELECT col_date_zero FROM default.type_coverage_cdc WHERE id = 7001")" "0000-00-00" "CDC zero date"
+actual_cdc_zero_date="$(ch_scalar "SELECT col_date_zero FROM default.type_coverage_cdc WHERE id = 7001")"
+if [[ "$actual_cdc_zero_date" != "0000-00-00" ]]; then
+  record_known_blocker "zero date CDC mismatch: expected 0000-00-00, got ${actual_cdc_zero_date}"
+fi
 assert_eq "$(ch_scalar "SELECT hex(col_utf8_emoji) FROM default.type_coverage_cdc WHERE id = 7001")" "43444320F09FA68620656D6F6A69" "CDC utf8 emoji bytes"
 cdc_json="$(ch_scalar "SELECT col_json FROM default.type_coverage_cdc WHERE id = 7001")"
 python3 - "$cdc_json" <<'PY' || record_failure "CDC JSON missing expected structure"
