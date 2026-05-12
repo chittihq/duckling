@@ -1,0 +1,89 @@
+diff --git a/flow/connectors/mysql/cdc.go b/flow/connectors/mysql/cdc.go
+index 88ec920..bdb4e8d 100644
+--- a/flow/connectors/mysql/cdc.go
++++ b/flow/connectors/mysql/cdc.go
+@@ -123,6 +123,7 @@ func (c *MySqlConnector) getTableSchemaForTable(
+ 		if err != nil {
+ 			return nil, err
+ 		}
++		qkind = applyMySQLDestinationTypeOverride(tm, columnName, qkind)
+ 
+ 		column := &protos.FieldDescription{
+ 			Name:         columnName,
+@@ -163,6 +164,31 @@ func (c *MySqlConnector) getTableSchemaForTable(
+ 	}, nil
+ }
+ 
++func applyMySQLDestinationTypeOverride(tm *protos.TableMapping, columnName string, qkind types.QValueKind) types.QValueKind {
++	if tm == nil {
++		return qkind
++	}
++
++	for _, col := range tm.Columns {
++		if col == nil || col.SourceName != columnName {
++			continue
++		}
++
++		if col.DestinationType == "String" {
++			switch qkind {
++			case types.QValueKindDate,
++				types.QValueKindTimestamp,
++				types.QValueKindTimestampTZ,
++				types.QValueKindTime,
++				types.QValueKindTimeTZ:
++				return types.QValueKindString
++			}
++		}
++	}
++
++	return qkind
++}
++
+ func (c *MySqlConnector) EnsurePullability(
+ 	ctx context.Context, req *protos.EnsurePullabilityBatchInput,
+ ) (*protos.EnsurePullabilityBatchOutput, error) {
+diff --git a/flow/shared/types/type_converter.go b/flow/shared/types/type_converter.go
+index 5d1ef03..2c31b5f 100644
+--- a/flow/shared/types/type_converter.go
++++ b/flow/shared/types/type_converter.go
+@@ -1,6 +1,10 @@
+ package types
+ 
++import (
++	"time"
++)
++
+ //nolint:iface
+ type TypeConversion interface {
+ 	SchemaConversion(QField) QField
+@@ -64,3 +68,13 @@ func NumericToUInt256SchemaConversion(val QField) QField {
+ func NumericToUInt256ValueConversion(val QValueNumeric) QValueUInt256 {
+ 	return QValueUInt256{Val: val.Val.BigInt()}
+ }
++
++func DateToStringSchemaConversion(val QField) QField {
++	val.Type = QValueKindString
++	return val
++}
++
++func DateToStringValueConversion(val QValueDate) QValueString {
++	if val.Val.Equal(time.Unix(0, 0)) {
++		return QValueString{Val: "0000-00-00"}
++	}
++	return QValueString{Val: val.Val.UTC().Format("2006-01-02")}
++}
+diff --git a/flow/connectors/clickhouse/type_conversion.go b/flow/connectors/clickhouse/type_conversion.go
+index 40f845f..f3d3950 100644
+--- a/flow/connectors/clickhouse/type_conversion.go
++++ b/flow/connectors/clickhouse/type_conversion.go
+@@ -27,6 +27,10 @@ var SupportedDestinationTypes = map[string][]types.TypeConversion{
+ 		types.NewTypeConversion(
+ 			types.NumericToStringSchemaConversion,
+ 			types.NumericToStringValueConversion,
++		),
++		types.NewTypeConversion(
++			types.DateToStringSchemaConversion,
++			types.DateToStringValueConversion,
+ 		),
+ 	},
+ 	"Int256": {
