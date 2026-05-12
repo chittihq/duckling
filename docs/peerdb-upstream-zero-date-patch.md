@@ -1,0 +1,85 @@
+# PeerDB Upstream Patch Note: Zero-Date Handling
+
+## Problem
+
+Duckling's PeerDB type-coverage gate narrowed the remaining incompatibility to
+MySQL zero-date handling on the ClickHouse path.
+
+Observed behavior:
+
+- full sync:
+  - `0000-00-00` becomes `1970-01-01`
+  - `1000-01-01` / partial-zero variants do not round-trip as expected
+- CDC:
+  - `0000-00-00` becomes `1970-01-01`
+
+Tried workaround:
+
+- override `col_date_zero -> String` in PeerDB mirror `ColumnSetting`
+
+Result:
+
+- mirror creation succeeds
+- snapshot fails because the staged Avro schema still carries Avro logical `date`
+  for the source column, while ClickHouse destination now expects `String`
+
+Representative error:
+
+```text
+Type String is not compatible with Avro int:
+{"type":"int","logicalType":"date"}
+```
+
+## Root cause
+
+PeerDB's ClickHouse custom destination-type conversion path currently only
+supports numerics.
+
+Relevant file:
+
+- `/tmp/peerdb-src/flow/connectors/clickhouse/type_conversion.go`
+
+Current state:
+
+- `SupportedDestinationTypes["String"]` only maps numeric kinds via:
+  - `NumericToStringSchemaConversion`
+  - `NumericToStringValueConversion`
+- `findTypeConversions(...)` therefore never matches `QValueKindDate`,
+  `QValueKindTimestamp`, or `QValueKindTime`
+
+Related snapshot Avro path:
+
+- `flow/connectors/clickhouse/avro_sync.go`
+  - `getAvroSchema(...)`
+- `flow/model/conversion_avro.go`
+  - `GetAvroSchemaDefinition(...)`
+- `flow/model/qvalue/avro_converter.go`
+  - `GetAvroSchemaFromQValueKind(...)`
+
+## Likely upstream fix
+
+Add ClickHouse destination-type conversions for date-like source kinds when
+`DestinationType == "String"`.
+
+At minimum:
+
+- `QValueKindDate -> String`
+- likely also:
+  - `QValueKindTimestamp -> String`
+  - `QValueKindTimestampTZ -> String`
+  - `QValueKindTime -> String`
+  - `QValueKindTimeTZ -> String`
+
+That requires:
+
+1. add new `TypeConversion` implementations in PeerDB shared type-conversion code
+   so both schema and value are converted before Avro staging
+2. register those conversions in
+   `flow/connectors/clickhouse/type_conversion.go`
+3. rerun the ClickHouse snapshot path so Avro emits `string` instead of logical
+   `date` / `timestamp-*` for overridden columns
+
+## Why this matters
+
+Without this upstream patch, Duckling cannot truthfully claim complete MySQL
+type compatibility on the PeerDB -> ClickHouse path for zero/partial-zero dates.

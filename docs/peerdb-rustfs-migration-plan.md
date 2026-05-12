@@ -351,6 +351,10 @@ What an upstream fix likely needs:
 - when a source `DATE` / `TIMESTAMP`-family column is overridden to `String`,
   emit Avro `string` instead of Avro logical `date` / `timestamp-*`
 
+Related note:
+
+- [peerdb-upstream-zero-date-patch.md](/Users/jMac/Projects/LMES/duckling/docs/peerdb-upstream-zero-date-patch.md)
+
 ## Rollback plan
 
 Keep the current Duckling replication path behind a feature flag during migration.
