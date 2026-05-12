@@ -82,6 +82,7 @@ That requires:
 Repo-local proof-of-concept patch:
 
 - [peerdb-upstream-zero-date-poc.patch](/Users/jMac/Projects/LMES/duckling/docs/peerdb-upstream-zero-date-poc.patch)
+- [build-peerdb-zero-date-poc.sh](/Users/jMac/Projects/LMES/duckling/scripts/build-peerdb-zero-date-poc.sh)
 
 That patch takes the first practical step by making MySQL source schema generation
 honor `DestinationType == "String"` for date/time-like columns. It is likely
