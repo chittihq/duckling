@@ -1,3 +1,18 @@
+diff --git a/flow/connectors/clickhouse/type_conversion.go b/flow/connectors/clickhouse/type_conversion.go
+index 2f45491..f615a85 100644
+--- a/flow/connectors/clickhouse/type_conversion.go
++++ b/flow/connectors/clickhouse/type_conversion.go
+@@ -28,6 +28,10 @@ var SupportedDestinationTypes = map[string][]types.TypeConversion{
+ 			types.NumericToStringSchemaConversion,
+ 			types.NumericToStringValueConversion,
+ 		),
++		types.NewTypeConversion(
++			types.DateToStringSchemaConversion,
++			types.DateToStringValueConversion,
++		),
+ 	},
+ 	"Int256": {
+ 		types.NewTypeConversion(
 diff --git a/flow/connectors/mysql/cdc.go b/flow/connectors/mysql/cdc.go
 index 88ec920..bdb4e8d 100644
 --- a/flow/connectors/mysql/cdc.go
@@ -43,20 +58,18 @@ index 88ec920..bdb4e8d 100644
  	ctx context.Context, req *protos.EnsurePullabilityBatchInput,
  ) (*protos.EnsurePullabilityBatchOutput, error) {
 diff --git a/flow/shared/types/type_converter.go b/flow/shared/types/type_converter.go
-index 5d1ef03..2c31b5f 100644
+index 56bbd93..07dc8eb 100644
 --- a/flow/shared/types/type_converter.go
 +++ b/flow/shared/types/type_converter.go
-@@ -1,6 +1,10 @@
+@@ -1,5 +1,7 @@
  package types
  
-+import (
-+	"time"
-+)
++import "time"
 +
  //nolint:iface
  type TypeConversion interface {
  	SchemaConversion(QField) QField
-@@ -64,3 +68,13 @@ func NumericToUInt256SchemaConversion(val QField) QField {
+@@ -65,3 +67,15 @@ func NumericToUInt256SchemaConversion(val QField) QField {
  func NumericToUInt256ValueConversion(val QValueNumeric) QValueUInt256 {
  	return QValueUInt256{Val: val.Val.BigInt()}
  }
@@ -72,18 +85,3 @@ index 5d1ef03..2c31b5f 100644
 +	}
 +	return QValueString{Val: val.Val.UTC().Format("2006-01-02")}
 +}
-diff --git a/flow/connectors/clickhouse/type_conversion.go b/flow/connectors/clickhouse/type_conversion.go
-index 40f845f..f3d3950 100644
---- a/flow/connectors/clickhouse/type_conversion.go
-+++ b/flow/connectors/clickhouse/type_conversion.go
-@@ -27,6 +27,10 @@ var SupportedDestinationTypes = map[string][]types.TypeConversion{
- 		types.NewTypeConversion(
- 			types.NumericToStringSchemaConversion,
- 			types.NumericToStringValueConversion,
-+		),
-+		types.NewTypeConversion(
-+			types.DateToStringSchemaConversion,
-+			types.DateToStringValueConversion,
- 		),
- 	},
- 	"Int256": {
