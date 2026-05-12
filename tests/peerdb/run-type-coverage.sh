@@ -224,67 +224,80 @@ create_mirror() {
   local flow_job_name="$1"
   local source_table="$2"
   local destination_table="$3"
-  cat <<JSON | docker run --rm -i --network duckling-peerdb-network curlimages/curl:8.13.0 \
-    -fsS -X POST -H 'content-type: application/json' --data-binary @- http://flow-api:8113/v1/flows/cdc/create
-{
-  "connectionConfigs": {
-    "flowJobName": "${flow_job_name}",
-    "tableMappings": [
-      {
-        "sourceTableIdentifier": "${source_table}",
-        "destinationTableIdentifier": "${destination_table}",
-        "partitionKey": "",
-        "exclude": [],
-        "columns": [
-          {
-            "sourceName": "col_date_zero",
-            "destinationName": "",
-            "destinationType": "String",
-            "ordering": 0,
-            "partitioning": 0,
-            "nullableEnabled": true
-          }
-        ],
-        "engine": "CH_ENGINE_REPLACING_MERGE_TREE",
-        "shardingKey": "",
-        "policyName": "",
-        "partitionByExpr": ""
-      }
-    ],
-    "maxBatchSize": 5000,
-    "idleTimeoutSeconds": 10,
-    "cdcStagingPath": "",
-    "publicationName": "",
-    "replicationSlotName": "",
-    "doInitialSnapshot": true,
-    "snapshotNumRowsPerPartition": 5000,
-    "snapshotNumPartitionsOverride": 0,
-    "snapshotStagingPath": "",
-    "snapshotMaxParallelWorkers": 4,
-    "snapshotNumTablesInParallel": 1,
-    "resync": false,
-    "initialSnapshotOnly": false,
-    "softDeleteColName": "_peerdb_is_deleted",
-    "syncedAtColName": "_peerdb_synced_at",
-    "script": "",
-    "system": "Q",
-    "sourceName": "mysql_default",
-    "destinationName": "clickhouse_default",
-    "env": {
-      "PEERDB_NULLABLE": "true"
-    },
-    "version": 0,
-    "flags": []
+  docker exec duckling-peerdb-ui node -e "
+const body = {
+  connectionConfigs: {
+    flowJobName: '${flow_job_name}',
+    tableMappings: [{
+      sourceTableIdentifier: '${source_table}',
+      destinationTableIdentifier: '${destination_table}',
+      partitionKey: '',
+      exclude: [],
+      columns: [{
+        sourceName: 'col_date_zero',
+        destinationName: '',
+        destinationType: 'String',
+        ordering: 0,
+        partitioning: 0,
+        nullableEnabled: true
+      }],
+      engine: 'CH_ENGINE_REPLACING_MERGE_TREE',
+      shardingKey: '',
+      policyName: '',
+      partitionByExpr: ''
+    }],
+    maxBatchSize: 5000,
+    idleTimeoutSeconds: 10,
+    cdcStagingPath: '',
+    publicationName: '',
+    replicationSlotName: '',
+    doInitialSnapshot: true,
+    snapshotNumRowsPerPartition: 5000,
+    snapshotNumPartitionsOverride: 0,
+    snapshotStagingPath: '',
+    snapshotMaxParallelWorkers: 4,
+    snapshotNumTablesInParallel: 1,
+    resync: false,
+    initialSnapshotOnly: false,
+    softDeleteColName: '_peerdb_is_deleted',
+    syncedAtColName: '_peerdb_synced_at',
+    script: '',
+    system: 'Q',
+    sourceName: 'mysql_default',
+    destinationName: 'clickhouse_default',
+    env: { PEERDB_NULLABLE: 'true' },
+    version: 0,
+    flags: []
   }
-}
-JSON
+};
+fetch('http://flow-api:8113/v1/flows/cdc/create', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body)
+}).then(async (r) => {
+  const text = await r.text();
+  if (!r.ok) throw new Error(text);
+  console.log(text);
+}).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+"
 }
 create_mirror "duckling_default_type_coverage" "peerdbtest.type_coverage" "type_coverage"
 create_mirror "duckling_default_type_coverage_cdc" "peerdbtest.type_coverage_cdc" "type_coverage_cdc"
 
 log "Waiting for mirrors to become visible"
 for _ in $(seq 1 45); do
-  status_json="$(docker run --rm --network duckling-peerdb-network curlimages/curl:8.13.0 -fsS http://peerdb-ui:3000/api/v1/mirrors/list)"
+  status_json="$(docker exec duckling-peerdb-ui node -e "
+fetch('http://peerdb-ui:3000/api/v1/mirrors/list').then(async (r) => {
+  if (!r.ok) throw new Error(await r.text());
+  console.log(await r.text());
+}).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+")"
   if echo "$status_json" | rg '"duckling_default_type_coverage"' >/dev/null 2>&1 &&
      echo "$status_json" | rg '"duckling_default_type_coverage_cdc"' >/dev/null 2>&1; then
     break
