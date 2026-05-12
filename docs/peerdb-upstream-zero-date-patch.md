@@ -79,6 +79,15 @@ That requires:
 3. rerun the ClickHouse snapshot path so Avro emits `string` instead of logical
    `date` / `timestamp-*` for overridden columns
 
+Repo-local proof-of-concept patch:
+
+- [peerdb-upstream-zero-date-poc.patch](/Users/jMac/Projects/LMES/duckling/docs/peerdb-upstream-zero-date-poc.patch)
+
+That patch takes the first practical step by making MySQL source schema generation
+honor `DestinationType == "String"` for date/time-like columns. It is likely
+necessary but may not be sufficient on its own; snapshot Avro generation and
+downstream ClickHouse loading still need full verification after rebuilding PeerDB.
+
 ## Why this matters
 
 Without this upstream patch, Duckling cannot truthfully claim complete MySQL
