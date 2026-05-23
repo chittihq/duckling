@@ -154,11 +154,16 @@ Existing databases (predating the bootstrap field) are migrated on load: `bootst
 
 ### Replication backends
 
-`REPLICATION_BACKEND` is the global default for Phase 2 (`duckling` for in-repo polling, `peerdb` for PeerDB CDC). Per-database overrides via `dbConfig.replicationMode` win. Phase 1 (bootstrap) is always handled by duckling regardless of backend.
+`REPLICATION_BACKEND` is the global default for new databases (`duckling` = polling fallback, `peerdb` = PeerDB CDC). It defaults to `duckling` for dev convenience — bringing up the PeerDB stack (Temporal + flow workers + RustFS + catalog Postgres) on every local boot is heavy. The integration tests bring PeerDB up by default and exercise `zsuite-peerdb-flow.test.ts` against it. Per-database `dbConfig.replicationMode` wins over the env-default; operators flip to PeerDB per database via `POST /api/databases/:id/replication-mode { mode: 'peerdb' }`.
 
-#### Phase 1 — Bootstrap dump+ingest (always)
+Phase 1 (initial data load) ownership depends on the per-database `replicationMode`. See `docs/replication-strategy.md` "Backend ownership of Phase 1":
 
-`ClickHouseSyncService.fullSync` (today) / `DumpService` (planned) opens a consistent-snapshot transaction on MySQL, records `(binlog file, position)` or GTID, then streams every table via keyset-paginated batches into ClickHouse MergeTree raw tables. The recorded binlog position is persisted in `dbConfig.bootstrap.binlogPosition` and later handed to PeerDB so Phase 2A can resume without re-snapshotting.
+- `peerdb` → PeerDB owns Phase 1 (`doInitialSnapshot: true`). Duckling-led handoff is plumbed in code but blocked on upstream PeerDB v0.36 destination validation.
+- `polling` / `none` → duckling's `BootstrapService` owns Phase 1.
+
+#### Phase 1 — Bootstrap dump+ingest (polling/none modes only)
+
+`BootstrapService` captures the source binlog position (informational + reused on resume), then iterates tables sequentially via `syncService.forceFullSyncTable`, which streams MySQL via keyset-paginated batches into `<table>__raw` MergeTree + builds the `<table>` projection view per table. Persists per-table `recordsProcessed` + `status` to `databases.json` after each table.
 
 Watermark detection priority used during incremental syncs (and re-sync) is:
 

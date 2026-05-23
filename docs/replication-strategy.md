@@ -1,6 +1,12 @@
 # Replication strategy
 
-This document describes how duckling replicates MySQL → ClickHouse. The original intent was **three-phase**: an initial dump+ingest that we own, followed by either PeerDB CDC (when the source supports binlog CDC) or in-repo polling. What actually ships today differs for `peerdb` mode because PeerDB v0.36's destination connector rejects pre-populated tables — PeerDB owns both the snapshot and CDC in that mode. The duckling-led dump → PeerDB-attach handoff is plumbed in code but blocked on an upstream change. See "Backend ownership of Phase 1" below for the truthful current behavior.
+This document describes how duckling replicates MySQL → ClickHouse.
+
+**What actually ships today:**
+- `replicationMode = polling` (and `none`): duckling owns the initial dump (`BootstrapService`); polling keeps it live afterwards.
+- `replicationMode = peerdb`: PeerDB owns BOTH the initial snapshot AND the CDC stream (`doInitialSnapshot: true`). Duckling does not load the data in this mode.
+
+**What we wanted, but doesn't ship today:** the original design was "duckling dumps in all modes, then PeerDB attaches with `doInitialSnapshot: false` from a recorded binlog position." That code path is implemented (`BootstrapService.bootstrapTableForPeerDB`, `PeerDBOrchestratorService.createMirror({ doInitialSnapshot: false, startPosition })`) but is dormant because PeerDB v0.36's ClickHouse destination connector rejects pre-populated tables with `"not all PeerDB columns found"`, regardless of which metadata-column variant we try. Unblocking it requires upstream PeerDB to support attach-to-existing-table OR per-mirror `cdcStartingFromPosition`. See "Backend ownership of Phase 1" below for full details.
 
 ## TL;DR (what actually runs today)
 

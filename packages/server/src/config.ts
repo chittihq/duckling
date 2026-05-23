@@ -46,6 +46,16 @@ export const config = {
   },
 
   replication: {
+    // Process-wide default for new databases when `replicationMode` isn't pinned
+    // in `databases.json`. Per-database settings always win.
+    //
+    // Default: 'duckling' (polling backend). PeerDB is heavy — Temporal +
+    // catalog Postgres + flow-api + flow-worker + flow-snapshot-worker + RustFS,
+    // ~6 containers — and forcing it on every local boot is hostile for
+    // dev/onboarding. Operators who want PeerDB by default set
+    // `REPLICATION_BACKEND=peerdb` AND bring up the PeerDB stack with
+    // `docker-compose -f docker-compose.peerdb.yml up -d`. The integration
+    // suite always brings PeerDB up and exercises both modes.
     backend: process.env.REPLICATION_BACKEND === 'peerdb' ? 'peerdb' : 'duckling',
   },
 

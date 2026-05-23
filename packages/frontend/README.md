@@ -1,16 +1,15 @@
 # @chittihq/duckling-frontend
 
-Modern web dashboard for Duckling DuckDB Server built with Nuxt 4, Tailwind CSS, and shadcn-vue.
+Web dashboard for the Duckling ClickHouse-backed MySQL replica server. Nuxt 4 + Tailwind + shadcn-vue.
 
 ## Features
 
-- Real-time server monitoring
-- Table browser and query interface
-- Sync status and logs viewer
-- Built with Nuxt 4 for optimal performance
-- shadcn-vue components for beautiful UI
-- Tailwind CSS for styling
-- TypeScript support
+- Database selector (multi-database per server)
+- Tables browser, schema view, query interface
+- `/replication` page: capability probe, bootstrap status + actions, mode picker (peerdb / polling / none / auto), known-blocker surfacing
+- `/backups` page: S3 backup config + test connection, take-backup-now, backup history, restore + delete
+- Sync status, logs, query observability
+- Real-time updates via the shared SDK over WebSocket
 
 ## Development
 

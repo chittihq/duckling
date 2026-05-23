@@ -213,6 +213,17 @@ class PeerDBOrchestratorService {
       try {
         return await this.requestToFlowApi('/v1/flows/cdc/create', payload);
       } catch (error) {
+        // Idempotency: a concurrent caller (auto-bootstrap firing alongside
+        // an explicit `POST /api/databases/:id/bootstrap`) may have created
+        // the same mirror first. PeerDB returns 409 "flow already exists"
+        // — treat that as success since the desired end state is reached.
+        if (this.isMirrorAlreadyExistsError(error)) {
+          logger.info(`PeerDB mirror for ${tableName} already exists; treating as success`, {
+            databaseId: this.databaseId,
+            mirrorName: this.getMirrorName(tableName),
+          });
+          return { alreadyExisted: true };
+        }
         if (!this.isPeerAvailabilityError(error) || attempt === attempts) {
           throw error;
         }
@@ -232,6 +243,17 @@ class PeerDBOrchestratorService {
         await this.sleep(3000);
       }
     }
+  }
+
+  /**
+   * PeerDB's flow-api returns HTTP 409 with `"flow already exists: <name>"`
+   * when a mirror with the same name already exists. Treated as success by
+   * `createMirror` for idempotency.
+   */
+  private isMirrorAlreadyExistsError(error: unknown): boolean {
+    const status = this.getErrorStatus(error);
+    const message = error instanceof Error ? error.message : String(error);
+    return status === 409 || /flow already exists/i.test(message);
   }
 
   async resyncMirror(tableName: string): Promise<unknown> {
@@ -354,13 +376,20 @@ class PeerDBOrchestratorService {
     const data = text ? this.tryParseJson(text) : null;
 
     if (!response.ok) {
-      logger.error(`PeerDB flow-api request failed for ${this.databaseId}: POST ${url}`, {
+      const message = typeof data === 'object' && data && 'message' in (data as Record<string, unknown>)
+        ? String((data as Record<string, unknown>).message)
+        : `PeerDB flow-api request failed (${response.status})`;
+      // Downgrade noise from idempotency-friendly responses. 409 "flow already
+      // exists" is caught by createMirror and treated as success — logging it
+      // at error level made operators chase a non-issue. Keep info-level
+      // breadcrumbs so the request is still traceable.
+      const expected409 = response.status === 409 && /flow already exists/i.test(message);
+      const logFn = expected409 ? logger.info : logger.error;
+      logFn(`PeerDB flow-api request returned ${response.status} for ${this.databaseId}: POST ${url}`, {
         status: response.status,
         body: data || text,
       });
-      const error = new Error(typeof data === 'object' && data && 'message' in (data as Record<string, unknown>)
-        ? String((data as Record<string, unknown>).message)
-        : `PeerDB flow-api request failed (${response.status})`) as Error & { status?: number };
+      const error = new Error(message) as Error & { status?: number };
       error.status = response.status;
       throw error;
     }

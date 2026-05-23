@@ -1,5 +1,9 @@
 # Deployment Guide
 
+> ⚠️ **Legacy doc (DuckDB era).** Duckling is ClickHouse-backed now. The Dockerfile, compose layout, and image strategy have all changed. Current production deployment guidance lives in `README.md` ("Quick start" + "Development" sections) and `CLAUDE.md` ("Docker Development" section). The current Dockerfile is `docker/server.Dockerfile`. The PeerDB stack is in `docker-compose.peerdb.yml`.
+
+---
+
 This guide covers deployment options for Duckling DuckDB Server.
 
 ## Docker Deployment

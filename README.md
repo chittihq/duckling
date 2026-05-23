@@ -2,14 +2,20 @@
 
 # Duckling
 
-ClickHouse-backed analytical replica for MySQL. Three-phase replication: duckling dumps the initial state into ClickHouse, then either **PeerDB** (real binlog CDC) or the **in-repo polling fallback** keeps it live.
+ClickHouse-backed analytical replica for MySQL. Replication is per-database, picked from a capability probe (or pinned by the operator), with two backends today:
+
+- **`peerdb`** — PeerDB does both the initial snapshot AND ongoing binlog CDC. Requires PeerDB stack (Temporal, flow workers, RustFS, catalog Postgres).
+- **`polling`** — duckling dumps the source, then a 1-second row-count + change-token poller keeps it live. No PeerDB dependency. The fallback when binlog CDC isn't available on the source.
+
+A duckling-led dump-then-PeerDB-attach handoff (so duckling owns Phase 1 even in peerdb mode) is implemented in code but currently blocked upstream — PeerDB v0.36 rejects pre-populated destination tables. See `docs/replication-strategy.md`.
 
 ## Why
 
 - **Fast analytics** — ClickHouse MergeTree on top of OLTP data; columnar storage means group-bys and aggregates run 100–10,000× faster than the source MySQL.
-- **Three-phase strategy** — duckling owns the consistent-snapshot dump and captures the source binlog position; Phase 2 picks up from there. No "PeerDB couldn't snapshot this giant table" outages.
-- **CDC by default, polling when binlog isn't available** — the capability probe picks the right backend automatically per database. Sources without `REPLICATION SLAVE` (managed DBs, weird read replicas) still get replication via polling.
+- **Mode picked per database** — the capability probe checks the source's binlog setup and grants and recommends `peerdb` or `polling`. Operators can pin via `POST /api/databases/:id/replication-mode`.
+- **Bootstrap state is uniform across modes** — `bootstrap.status` on `databases.json` reflects "data is loaded" regardless of whether PeerDB or duckling did the loading. The replication coordinator is the single orchestration point.
 - **MySQL wire-protocol compatible** — BI tools, dashboards, and `mysql`-shell users talk to the replica with their existing drivers; queries run on ClickHouse under the hood.
+- **S3 backups** — ClickHouse-native `BACKUP TO S3(...)` / `RESTORE` against AWS S3 or any S3-compatible store (MinIO, R2, B2, RustFS, DigitalOcean Spaces). Scheduled or manual.
 
 ## Quick start
 

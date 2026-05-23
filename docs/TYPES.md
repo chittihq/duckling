@@ -1,5 +1,9 @@
 # MySQL 8 Type Mapping & Fidelity
 
+> ⚠️ **Legacy doc (DuckDB era).** Duckling is ClickHouse-backed now. The mapping table below is from the DuckDB days and has not been retranscribed for the ClickHouse path. The authoritative current mapping lives in code: `packages/server/src/services/clickhouseSyncService.ts` (`mapMySQLTypeToClickHouse`). Type fidelity is exercised in `tests/integration/src/suite7-type-fidelity.test.ts`. PeerDB-mode-specific caveats (notably MySQL zero-date corruption) are in `docs/peerdb-upstream-zero-date-patch.md`. See `CLAUDE.md` and `docs/replication-strategy.md` for the current architecture.
+
+---
+
 This document covers Duckling's comprehensive MySQL 8 data type support, how each type maps to DuckDB, and what the integration test suite validates.
 
 ## Type Mapping Reference

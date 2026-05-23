@@ -1,5 +1,9 @@
 # Duckling API Reference
 
+> ⚠️ **Legacy doc (DuckDB era).** Duckling is ClickHouse-backed now and the API surface has changed substantially since this doc was written — replication-strategy endpoints (`/api/databases/:id/bootstrap`, `/replication-mode`), S3 backup endpoints (`/api/databases/:id/s3-backup`, `/backups`), the coordinator-routed `/cdc/start` and `/cdc/stop`, and the removal of `/api/backups*` from the DuckDB era are all not reflected below. The authoritative current API list lives in `CLAUDE.md` and `README.md`; route definitions are at `packages/server/src/server.ts:264-300` (and surrounding lines).
+
+---
+
 Complete API documentation for the Duckling DuckDB Server.
 
 ## Authentication

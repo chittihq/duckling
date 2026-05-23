@@ -1,5 +1,9 @@
 # CLI Commands
 
+> ⚠️ **Legacy doc (DuckDB era).** Some pnpm scripts referenced below have changed or been removed (e.g. there is no `pnpm run health` script anymore — `curl /health?db=<id>` works instead). The active CLI is `node packages/server/dist/cli.js <command>`, documented under "CLI Operations (Server)" in `CLAUDE.md`. Treat the table below as historical.
+
+---
+
 ## Basic Operations
 ```bash
 # Health check with architecture info
