@@ -273,6 +273,15 @@ class ClickHouseServer {
     this.app.get('/api/databases/:id/bootstrap/status', this.getBootstrapStatus.bind(this));
     this.app.get('/api/databases/:id/replication-mode', this.getReplicationMode.bind(this));
     this.app.post('/api/databases/:id/replication-mode', this.setReplicationMode.bind(this));
+    // S3 backup endpoints (ClickHouse-native BACKUP/RESTORE)
+    this.app.get('/api/databases/:id/s3-backup', this.getS3BackupConfig.bind(this));
+    this.app.put('/api/databases/:id/s3-backup', this.setS3BackupConfig.bind(this));
+    this.app.delete('/api/databases/:id/s3-backup', this.deleteS3BackupConfig.bind(this));
+    this.app.post('/api/databases/:id/s3-backup/test', this.testS3BackupConfig.bind(this));
+    this.app.get('/api/databases/:id/backups', this.listS3Backups.bind(this));
+    this.app.post('/api/databases/:id/backups', this.takeS3Backup.bind(this));
+    this.app.post('/api/databases/:id/backups/restore', this.restoreS3Backup.bind(this));
+    this.app.delete('/api/databases/:id/backups', this.deleteS3Backup.bind(this));
 
     // Serve static files from Nuxt build output (production)
     const publicPath = path.join(__dirname, '..', 'public');
@@ -1397,10 +1406,19 @@ class ClickHouseServer {
   }
 
   /**
-   * Helper function to sanitize database config by removing sensitive fields
+   * Helper function to sanitize database config by removing sensitive fields.
+   * Strips the MySQL connection string (contains password) and masks S3
+   * credentials to "***" when present.
    */
   private sanitizeDatabaseConfig(dbConfig: any): any {
-    const { mysqlConnectionString, s3, ...sanitized } = dbConfig;
+    const { mysqlConnectionString, s3, s3Backup, ...sanitized } = dbConfig;
+    if (s3Backup) {
+      sanitized.s3Backup = {
+        ...s3Backup,
+        accessKeyId: s3Backup.accessKeyId ? '***' : undefined,
+        secretAccessKey: s3Backup.secretAccessKey ? '***' : undefined,
+      };
+    }
     return sanitized;
   }
 
@@ -1678,6 +1696,228 @@ class ClickHouseServer {
       });
     } catch (error) {
       logger.error('Set replication mode failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  // ---------- S3 backup handlers ----------
+
+  private async getS3BackupConfig(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(id);
+      if (!dbConfig) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+      const sanitized = this.sanitizeDatabaseConfig(dbConfig);
+      res.json({ success: true, databaseId: id, s3Backup: sanitized.s3Backup ?? null });
+    } catch (error) {
+      logger.error('Get S3 backup config failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  /**
+   * Save (or update) per-database S3 backup configuration. Accepts the full
+   * `S3BackupConfig` shape. If `accessKeyId` or `secretAccessKey` is `***`
+   * (the masked value returned by GET), the existing stored value is kept.
+   */
+  private async setS3BackupConfig(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const body = (req.body ?? {}) as Record<string, any>;
+      if (typeof body.bucket !== 'string' || typeof body.region !== 'string') {
+        res.status(400).json({ success: false, error: 'bucket and region are required strings' });
+        return;
+      }
+
+      const dbManager = DatabaseConfigManager.getInstance();
+      const existing = dbManager.getDatabase(id);
+      if (!existing) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+      const prior = existing.s3Backup;
+
+      const accessKeyId = body.accessKeyId === '***' && prior ? prior.accessKeyId : String(body.accessKeyId ?? '');
+      const secretAccessKey = body.secretAccessKey === '***' && prior ? prior.secretAccessKey : String(body.secretAccessKey ?? '');
+
+      if (!accessKeyId || !secretAccessKey) {
+        res.status(400).json({ success: false, error: 'accessKeyId and secretAccessKey are required' });
+        return;
+      }
+
+      const updated = dbManager.patchDatabase(id, (current) => {
+        current.s3Backup = {
+          enabled: Boolean(body.enabled),
+          bucket: String(body.bucket),
+          region: String(body.region),
+          accessKeyId,
+          secretAccessKey,
+          endpoint: body.endpoint ? String(body.endpoint) : undefined,
+          pathPrefix: body.pathPrefix ? String(body.pathPrefix) : undefined,
+          intervalHours: body.intervalHours !== undefined ? Math.max(0, Number(body.intervalHours)) : undefined,
+          retentionDays: body.retentionDays !== undefined ? Math.max(0, Number(body.retentionDays)) : undefined,
+        };
+        return current;
+      });
+      if (!updated) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+      res.json({ success: true, databaseId: id, s3Backup: this.sanitizeDatabaseConfig(updated).s3Backup });
+    } catch (error) {
+      logger.error('Set S3 backup config failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async deleteS3BackupConfig(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const updated = DatabaseConfigManager.getInstance().patchDatabase(id, (current) => {
+        delete current.s3Backup;
+        return current;
+      });
+      if (!updated) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+      res.json({ success: true, databaseId: id, s3Backup: null });
+    } catch (error) {
+      logger.error('Delete S3 backup config failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async testS3BackupConfig(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(id);
+      if (!dbConfig) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+      const body = (req.body ?? {}) as Record<string, any>;
+      const prior = dbConfig.s3Backup;
+      const probe = {
+        enabled: true,
+        bucket: String(body.bucket ?? prior?.bucket ?? ''),
+        region: String(body.region ?? prior?.region ?? ''),
+        accessKeyId: body.accessKeyId === '***' && prior ? prior.accessKeyId : String(body.accessKeyId ?? prior?.accessKeyId ?? ''),
+        secretAccessKey: body.secretAccessKey === '***' && prior ? prior.secretAccessKey : String(body.secretAccessKey ?? prior?.secretAccessKey ?? ''),
+        endpoint: body.endpoint !== undefined ? (body.endpoint ? String(body.endpoint) : undefined) : prior?.endpoint,
+      };
+      if (!probe.bucket || !probe.region || !probe.accessKeyId || !probe.secretAccessKey) {
+        res.status(400).json({ success: false, error: 'bucket, region, accessKeyId, secretAccessKey are all required' });
+        return;
+      }
+      const S3BackupService = (await import('./services/s3BackupService')).default;
+      const clickhouse = ClickHouseConnection.getInstance(id, dbConfig.clickhouseDatabase || id);
+      const svc = S3BackupService.getInstance(id, clickhouse);
+      const result = await svc.testConnection(probe as any);
+      res.json({ success: result.ok, ...(result.error ? { error: result.error } : {}) });
+    } catch (error) {
+      logger.error('Test S3 backup config failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async listS3Backups(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(id);
+      if (!dbConfig) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+      if (!dbConfig.s3Backup) {
+        res.json({ success: true, databaseId: id, backups: [] });
+        return;
+      }
+      const clickhouse = ClickHouseConnection.getInstance(id, dbConfig.clickhouseDatabase || id);
+      const S3BackupService = (await import('./services/s3BackupService')).default;
+      const svc = S3BackupService.getInstance(id, clickhouse);
+      const backups = await svc.listBackups();
+      res.json({ success: true, databaseId: id, backups });
+    } catch (error) {
+      logger.error('List S3 backups failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async takeS3Backup(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(id);
+      if (!dbConfig) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+      const clickhouse = ClickHouseConnection.getInstance(id, dbConfig.clickhouseDatabase || id);
+      await clickhouse.initializeDatabase();
+      const S3BackupService = (await import('./services/s3BackupService')).default;
+      const svc = S3BackupService.getInstance(id, clickhouse);
+      const result = await svc.runBackup();
+      // Best-effort prune after a successful backup.
+      try {
+        const pruned = await svc.pruneOldBackups();
+        res.json({ success: true, databaseId: id, backup: result, pruned: pruned.deletedBackups });
+      } catch (pruneError) {
+        logger.warn('Prune after backup failed (backup itself succeeded):', pruneError);
+        res.json({ success: true, databaseId: id, backup: result, pruned: [] });
+      }
+    } catch (error) {
+      logger.error('Take S3 backup failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async restoreS3Backup(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const key = req.body?.key;
+      if (!key || typeof key !== 'string') {
+        res.status(400).json({ success: false, error: 'body.key (S3 backup key) is required' });
+        return;
+      }
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(id);
+      if (!dbConfig) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+      const clickhouse = ClickHouseConnection.getInstance(id, dbConfig.clickhouseDatabase || id);
+      const S3BackupService = (await import('./services/s3BackupService')).default;
+      const svc = S3BackupService.getInstance(id, clickhouse);
+      const result = await svc.restoreBackup(key);
+      res.json({ success: true, databaseId: id, restore: result });
+    } catch (error) {
+      logger.error('Restore S3 backup failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async deleteS3Backup(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const key = (req.query?.key as string | undefined) ?? req.body?.key;
+      if (!key || typeof key !== 'string') {
+        res.status(400).json({ success: false, error: 'query/body.key (S3 backup key) is required' });
+        return;
+      }
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(id);
+      if (!dbConfig) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+      const clickhouse = ClickHouseConnection.getInstance(id, dbConfig.clickhouseDatabase || id);
+      const S3BackupService = (await import('./services/s3BackupService')).default;
+      const svc = S3BackupService.getInstance(id, clickhouse);
+      const result = await svc.deleteBackup(key);
+      res.json({ success: true, databaseId: id, ...result });
+    } catch (error) {
+      logger.error('Delete S3 backup failed:', error);
       res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
     }
   }

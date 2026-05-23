@@ -106,6 +106,21 @@
         </NuxtLink>
 
         <NuxtLink
+          to="/backups"
+          class="flex items-center justify-center h-12 hover:bg-accent transition-colors group relative"
+          :class="{ 'bg-accent': $route.path === '/backups' }"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <ellipse cx="12" cy="5" rx="9" ry="3"/>
+            <path d="M3 5v6c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/>
+            <path d="M3 11v6c0 1.66 4.03 3 9 3s9-1.34 9-3v-6"/>
+          </svg>
+          <span class="absolute left-full ml-2 px-2 py-1 bg-popover text-popover-foreground text-sm rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
+            Backups
+          </span>
+        </NuxtLink>
+
+        <NuxtLink
           to="/settings"
           class="flex items-center justify-center h-12 hover:bg-accent transition-colors group relative"
           :class="{ 'bg-accent': $route.path === '/settings' }"

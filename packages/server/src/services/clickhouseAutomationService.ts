@@ -20,6 +20,7 @@ class ClickHouseAutomationService {
   private syncInterval?: NodeJS.Timeout;
   private healthCheckInterval?: NodeJS.Timeout;
   private cleanupInterval?: NodeJS.Timeout;
+  private backupInterval?: NodeJS.Timeout;
   private isRunning = false;
   private isSyncInProgress = false;
   private restartAttempts = 0;
@@ -86,7 +87,64 @@ class ClickHouseAutomationService {
         await this.runHealthCheck();
       }, config.monitoring.healthCheckInterval);
     }
+
+    // Per-database S3 backup scheduler. Reads the latest `databases.json` on
+    // every tick (operators can toggle `s3Backup.enabled` or change the
+    // interval without restarting the server). No-op when not enabled.
+    this.scheduleBackupCheck();
   }
+
+  /**
+   * Fire-and-forget: schedules the next backup tick. Each tick checks the
+   * current S3 backup config, runs a backup if the interval has elapsed since
+   * the last completed one, then schedules the next check.
+   */
+  private scheduleBackupCheck(): void {
+    // Cheap 60s polling tick — the actual backup only runs when
+    // intervalHours has elapsed since the last completion timestamp recorded
+    // on disk by S3BackupService. Keeps this code unaware of clock skew on
+    // restarts.
+    this.backupInterval = setInterval(async () => {
+      await this.maybeRunScheduledBackup().catch((error) => {
+        logger.warn(`[s3-backup] scheduled run failed for ${this.databaseId}`, { error });
+      });
+    }, 60_000);
+  }
+
+  private async maybeRunScheduledBackup(): Promise<void> {
+    const { DatabaseConfigManager } = await import('../database/databaseConfig');
+    const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
+    const s3 = dbConfig?.s3Backup;
+    if (!dbConfig || !s3 || !s3.enabled) return;
+
+    const intervalHours = Number(s3.intervalHours ?? 0);
+    if (intervalHours <= 0) return;
+    const intervalMs = intervalHours * 60 * 60 * 1000;
+
+    // Use the on-disk `updatedAt` as a coarse "last touched" marker for the
+    // config; combine with a per-instance `lastBackupAt` so multiple service
+    // instances on the same db don't double-fire.
+    const now = Date.now();
+    const lastBackupAt = this.lastScheduledBackupAt ?? 0;
+    if (now - lastBackupAt < intervalMs) return;
+
+    this.lastScheduledBackupAt = now;
+    logger.info(`[s3-backup] scheduled backup firing for ${this.databaseId}`);
+    const S3BackupService = (await import('./s3BackupService')).default;
+    const svc = S3BackupService.getInstance(this.databaseId, this.clickhouse);
+    try {
+      await svc.runBackup();
+      await svc.pruneOldBackups().catch((error) => {
+        logger.warn(`[s3-backup] post-backup prune failed for ${this.databaseId}`, { error });
+      });
+    } catch (error) {
+      // Reset so we retry on the next tick rather than waiting another full interval.
+      this.lastScheduledBackupAt = lastBackupAt;
+      throw error;
+    }
+  }
+
+  private lastScheduledBackupAt: number | null = null;
 
   private async runHealthCheck(): Promise<void> {
     const [clickhouseHealthy, mysqlHealthy] = await Promise.all([
@@ -147,9 +205,11 @@ class ClickHouseAutomationService {
     if (this.syncInterval) clearInterval(this.syncInterval);
     if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
     if (this.cleanupInterval) clearInterval(this.cleanupInterval);
+    if (this.backupInterval) clearInterval(this.backupInterval);
     this.syncInterval = undefined;
     this.healthCheckInterval = undefined;
     this.cleanupInterval = undefined;
+    this.backupInterval = undefined;
     this.isRunning = false;
   }
 
@@ -248,6 +308,27 @@ class ClickHouseAutomationService {
   }
 
   getStatus(): any {
+    // Best-effort read of the live S3 backup config for surfacing in /automation/status.
+    let s3BackupStatus: any = { enabled: false };
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { DatabaseConfigManager } = require('../database/databaseConfig');
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(this.databaseId);
+      const s3 = dbConfig?.s3Backup;
+      if (s3) {
+        s3BackupStatus = {
+          enabled: Boolean(s3.enabled),
+          intervalHours: s3.intervalHours ?? 0,
+          retentionDays: s3.retentionDays ?? 0,
+          bucket: s3.bucket,
+          lastBackupAt: this.lastScheduledBackupAt
+            ? new Date(this.lastScheduledBackupAt).toISOString()
+            : null,
+        };
+      }
+    } catch {
+      // ignore — status endpoint must not throw
+    }
     return {
       isRunning: this.isRunning,
       autoCleanup: {
@@ -265,6 +346,7 @@ class ClickHouseAutomationService {
         enabled: config.automation.autoStartSync,
         intervalMinutes: config.sync.intervalMinutes,
       },
+      s3Backup: s3BackupStatus,
       architecture: 'clickhouse',
     };
   }

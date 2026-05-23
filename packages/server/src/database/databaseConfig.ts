@@ -46,6 +46,31 @@ export interface BootstrapState {
  */
 export type ReplicationMode = 'peerdb' | 'polling' | 'none';
 
+/**
+ * Per-database S3 backup configuration. When `enabled`, the automation
+ * service issues `BACKUP DATABASE ... TO S3(...)` against ClickHouse on a
+ * schedule and prunes backups older than `retentionDays`. Restores happen
+ * via `POST /api/databases/:id/backups/restore` with a specific S3 key.
+ *
+ * Compatible with AWS S3 and S3-API providers (MinIO, R2, B2, RustFS,
+ * DigitalOcean Spaces) via the optional `endpoint`.
+ */
+export interface S3BackupConfig {
+  enabled: boolean;
+  bucket: string;
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  /** Custom endpoint for S3-compatible providers. Empty for AWS S3. */
+  endpoint?: string;
+  /** Prefix inside the bucket; defaults to `<databaseId>/` when absent. */
+  pathPrefix?: string;
+  /** When > 0, automation runs BACKUP every N hours. 0 / unset = manual only. */
+  intervalHours?: number;
+  /** When > 0, prune backups older than N days after each backup. */
+  retentionDays?: number;
+}
+
 export interface DatabaseConfig {
   id: string;
   name: string;
@@ -71,6 +96,8 @@ export interface DatabaseConfig {
    * and picks the best supported mode automatically. Set explicitly to pin.
    */
   replicationMode?: ReplicationMode;
+  /** Optional ClickHouse-native BACKUP TO S3 config; see S3BackupConfig. */
+  s3Backup?: S3BackupConfig;
   createdAt: string;
   updatedAt: string;
 }
