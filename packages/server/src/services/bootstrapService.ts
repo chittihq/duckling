@@ -35,20 +35,32 @@ export type BootstrapOptions = {
   /**
    * Which destination schema to produce:
    *  - 'polling' (default) — `<table>__raw` MergeTree + `<table>` projection
-   *    view, optimized for the in-repo polling sync path.
+   *    view; consumed by `CdcCompatibilityService` and `/api/query`.
    *  - 'peerdb' — single `<table>` ReplacingMergeTree(_peerdb_synced_at) with
-   *    `_peerdb_is_deleted` + `_peerdb_synced_at` columns so PeerDB can take
-   *    over CDC into the same table without touching the schema.
+   *    the full `_peerdb_*` metadata column set. **Dormant today.** The
+   *    coordinator never selects this branch because PeerDB v0.36's
+   *    destination connector rejects pre-populated tables (validates the
+   *    `_peerdb_*` columns and errors with "not all PeerDB columns found").
+   *    Kept implemented so the day PeerDB upstream supports
+   *    attach-to-existing or a per-mirror `cdcStartingFromPosition` field,
+   *    flipping the coordinator to use it is a one-line change. See
+   *    docs/replication-strategy.md "Implementation status" Phase C.
    */
   targetMode?: 'polling' | 'peerdb';
 };
 
 /**
- * Owns Phase 1 of the three-phase replication strategy (see
- * docs/replication-strategy.md): capture a MySQL binlog position, dump every
- * source table, ingest into ClickHouse, and record per-table progress so the
- * coordinator can hand off to PeerDB CDC (with `doInitialSnapshot: false`) or
- * to the polling fallback.
+ * Owns Phase 1 of the replication strategy for **polling** and **none** modes
+ * (see docs/replication-strategy.md). For `peerdb` mode the coordinator
+ * delegates the initial snapshot to PeerDB itself, so this service is not
+ * invoked there — see the note on `targetMode: 'peerdb'` above for why.
+ *
+ * Responsibilities for polling/none:
+ *   1. Capture the source MySQL binlog position (informational; reused on
+ *      `resume` and kept for diagnostics).
+ *   2. Dump every source table into ClickHouse via
+ *      `syncService.forceFullSyncTable`.
+ *   3. Persist per-table progress + final bootstrap state to `databases.json`.
  */
 class BootstrapService {
   private static instances: Map<string, BootstrapService> = new Map();

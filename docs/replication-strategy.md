@@ -1,47 +1,46 @@
 # Replication strategy
 
-This document describes how duckling replicates MySQL → ClickHouse. The strategy is **three-phase**: an initial dump+ingest that we own, followed by either PeerDB CDC (when the MySQL source supports binlog CDC) or in-repo polling (when it doesn't).
+This document describes how duckling replicates MySQL → ClickHouse. The original intent was **three-phase**: an initial dump+ingest that we own, followed by either PeerDB CDC (when the source supports binlog CDC) or in-repo polling. What actually ships today differs for `peerdb` mode because PeerDB v0.36's destination connector rejects pre-populated tables — PeerDB owns both the snapshot and CDC in that mode. The duckling-led dump → PeerDB-attach handoff is plumbed in code but blocked on an upstream change. See "Backend ownership of Phase 1" below for the truthful current behavior.
 
-## TL;DR
+## TL;DR (what actually runs today)
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│ Phase 1 — BOOTSTRAP (always)                                    │
-│   Duckling dumps MySQL → ingests into ClickHouse                │
-│   Records binlog position at the start of the dump              │
-│   Owner: duckling (DumpService)                                 │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ Capability probe — can the MySQL source do binlog CDC?          │
-│   log_bin = ON                                                  │
-│   binlog_format = ROW                                           │
-│   binlog_row_image = FULL                                       │
-│   binlog_row_metadata = FULL                                    │
-│   user has REPLICATION SLAVE + REPLICATION CLIENT               │
-└─────────────────────────────────────────────────────────────────┘
-                  │                              │
-            CDC capable                    CDC not capable
-                  │                              │
-                  ▼                              ▼
-┌──────────────────────────────┐   ┌──────────────────────────────┐
-│ Phase 2A — PeerDB CDC        │   │ Phase 2B — Polling fallback  │
-│   doInitialSnapshot: false   │   │   CdcCompatibilityService    │
-│   resume from binlog pos     │   │   1s row-count + change      │
-│   recorded in Phase 1        │   │     token poll               │
-│   Owner: PeerDB              │   │   Owner: duckling            │
-└──────────────────────────────┘   └──────────────────────────────┘
+                                 ┌─ replicationMode ─┐
+                                 │  pinned / probed  │
+                                 └─────────┬─────────┘
+                                           │
+              ┌────────────────────────────┼───────────────────────────┐
+              ▼                            ▼                           ▼
+        peerdb mode                  polling mode                  none mode
+              │                            │                           │
+              ▼                            ▼                           ▼
+┌──────────────────────────┐   ┌──────────────────────────┐   ┌─────────────────────┐
+│ PeerDB createMirror      │   │ duckling BootstrapService│   │ duckling Bootstrap- │
+│   doInitialSnapshot:true │   │   - captureBinlogPosition│   │   Service (same as  │
+│ PeerDB performs both     │   │   - per-table dump into  │   │   polling)          │
+│ snapshot AND CDC.        │   │     <table>__raw + view  │   │                     │
+│ Coordinator drops any    │   │ Then CdcCompatibility-   │   │ No Phase 2.         │
+│ polling-path leftovers   │   │ Service polls MySQL row  │   │                     │
+│ first. Bootstrap state   │   │ counts + change tokens   │   │                     │
+│ is marked completed for  │   │ every 1s.                │   │                     │
+│ uniform UI; the captured │   │                          │   │                     │
+│ binlog position is       │   │                          │   │                     │
+│ informational only.      │   │                          │   │                     │
+└──────────────────────────┘   └──────────────────────────┘   └─────────────────────┘
 ```
 
-## Why three phases (not just "use PeerDB end-to-end")
+`replicationMode` is auto-detected from the capability probe (`log_bin`, `binlog_format`, `binlog_row_image`, `binlog_row_metadata`, `REPLICATION SLAVE + CLIENT` grants) unless an operator pins it via `POST /api/databases/:id/replication-mode`.
 
-PeerDB's mirror creation already includes an initial snapshot, so in principle it could do everything. We choose to own the dump for these reasons:
+## Why we wanted duckling to own Phase 1 in all modes (original design)
+
+These reasons remain valid; today they only apply to `polling` and `none` modes:
 
 1. **Decoupling.** Dump+ingest must work even if PeerDB isn't deployed — e.g. on a customer's air-gapped environment, on the first day before PeerDB is brought up, or when PeerDB is intentionally disabled.
 2. **CDC fallback.** Many MySQL sources (managed databases without binlog access, read-replicas with row image MINIMAL, sources where the user can't grant REPLICATION SLAVE) can't be replicated by PeerDB at all. For those, we still need a working bootstrap.
 3. **Operational visibility.** We control retries, batching, and per-table progress reporting during the bootstrap. Sync logs, watermarks, and dashboards all keep working uniformly.
 4. **Clean replacement story.** PeerDB is one option for Phase 2; if it gets replaced (different CDC tool, different MQ), the bootstrap path doesn't change.
+
+For `peerdb` mode, reason (1) is moot (PeerDB must be deployed by definition), (2) doesn't apply (the probe diverts non-binlog sources to polling), (3) is partially satisfied by PeerDB's own progress surfaces, and (4) is what makes the unshipped handoff path worth keeping plumbed.
 
 ## Backend ownership of Phase 1
 
@@ -53,30 +52,30 @@ PeerDB's mirror creation already includes an initial snapshot, so in principle i
 
 In `polling` and `none` modes, duckling captures the source binlog position before any read so a future switchover to PeerDB has the position recorded. In `peerdb` mode the coordinator captures the position as informational — PeerDB tracks its own internal progress in its catalog regardless.
 
-## Phase 1 — Bootstrap (DumpService) — polling / none modes
+## Phase 1 — Bootstrap (BootstrapService) — polling / none modes
 
-**Owner:** duckling. New service: `packages/server/src/services/dumpService.ts`.
+**Owner:** duckling. Service: `packages/server/src/services/bootstrapService.ts`.
 
-**Algorithm:**
+**Algorithm (as shipped):**
 
-1. Open a long-running MySQL connection.
-2. `SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ`.
-3. `START TRANSACTION WITH CONSISTENT SNAPSHOT` — this gives a snapshot at a single binlog position for all subsequent reads in the transaction.
-4. `SHOW MASTER STATUS` (or `SELECT @@gtid_executed` when GTID is on) — record `(file, position)` and/or GTID set. Persist into `databases.json` under `bootstrap.binlogPosition`.
-5. For each MySQL table in parallel (concurrency = `BOOTSTRAP_PARALLEL_TABLES`, default 4):
-   - Stream via keyset pagination, batches of `FULL_SYNC_BATCH_SIZE` (default 1000).
-   - Write into `<clickhouseDatabase>.<table>__raw` (MergeTree).
-   - Per-table progress recorded in `databases.json` under `bootstrap.tableProgress[<table>]`.
-6. After all tables complete, build/refresh the projection views (`<table>` over `<table>__raw`).
-7. `COMMIT` the MySQL transaction.
-8. Mark `bootstrap.status = 'completed'`, set `bootstrap.completedAt`.
+1. Capture the source binlog position via `mysql.captureBinlogPosition()` — prefers `@@global.gtid_executed` when GTID is on, otherwise `SHOW BINARY LOG STATUS` (MySQL 8.4+) / `SHOW MASTER STATUS` (older). Persist as `bootstrap.binlogPosition` on `databases.json`.
+2. List MySQL tables via `mysql.getTables()`.
+3. Mark `bootstrap.status = 'in_progress'` with per-table `pending` entries.
+4. For each table **sequentially** (no shared transaction across tables yet — see Limitations):
+   - Call `syncService.forceFullSyncTable(tableName)` which drops + recreates `<table>__raw` (MergeTree), streams MySQL via keyset pagination in `FULL_SYNC_BATCH_SIZE`-row batches, and rebuilds the projection view `<table>` over the raw table.
+   - Persist the table's `recordsProcessed` + `status` to `databases.json` after each table completes.
+5. Mark `bootstrap.status = 'completed'` (or `failed` if any table failed).
 
 **Failure handling:**
 
-- On error in any table: `bootstrap.status = 'failed'`, error message persisted. Operator triggers `/api/databases/:id/bootstrap?resume=true` to retry.
-- Resume reuses the recorded `binlogPosition` (still consistent — MySQL retains binlogs for the retention period) and skips tables already marked `completed`.
+- On error in any table: `bootstrap.status = 'failed'`, error message persisted. Operator triggers `POST /api/databases/:id/bootstrap` with `{ resume: true }` to retry.
+- Resume reuses the recorded `binlogPosition` and skips tables already marked `completed`.
 
-**Why a transaction with a consistent snapshot:** InnoDB's MVCC means the dump reads see the same committed state across all tables, even if writers are active. Without this, an `events` row inserted after we'd already dumped its table could be missed during bootstrap and then double-counted by CDC.
+**Limitations as shipped:**
+
+- **No cross-table consistency.** Each table is read in its own connection without a wrapping `START TRANSACTION WITH CONSISTENT SNAPSHOT`. Under active writes, two tables read seconds apart see different states. Mitigation today: incremental sync after bootstrap picks up rows that landed mid-dump, and the projection view's `_sync_*` dedup tolerates re-applied rows. Closing this gap properly is in Phase G of the implementation status.
+- **Sequential, not parallel.** Each table runs after the previous one finishes; no `BOOTSTRAP_PARALLEL_TABLES` knob.
+- **Schema-drift unaware.** ALTERs on the source mid-dump aren't detected; the snapshot for the affected table will be inconsistent. Closing this gap is also Phase G.
 
 ## Phase 2A — PeerDB CDC (when capable)
 
@@ -205,13 +204,16 @@ Existing databases (created before this change) are migrated on first load: `boo
 ## Migration path
 
 1. **First server boot after this change**:
-   - For every existing database in `databases.json`, inject `bootstrap.status = 'completed'`, `replicationMode = 'polling'` (current default). No data movement.
+   - For every existing database in `databases.json`, the loader injects `bootstrap.status = 'completed'` and `replicationMode = 'polling'`. No data movement.
 2. **New databases (default)**:
-   - Created with `bootstrap.status = 'pending'`. The first `/sync/full` call (or auto-bootstrap on add) runs Phase 1.
-3. **Switching an existing database to PeerDB CDC**:
-   - `POST /api/databases/:id/bootstrap?force=true` — re-dumps, captures binlog position.
-   - `POST /api/databases/:id/replication-mode` with `{ mode: 'peerdb' }` (or `auto`).
-   - `POST /cdc/start?db=:id` — orchestrator creates the source/target peers + mirrors with `doInitialSnapshot: false`.
+   - `POST /api/databases` creates with `bootstrap.status = 'pending'` and auto-bootstraps in the background unless `autoBootstrap: false`. New rows for which the probe says CDC is supported AND no `replicationMode` was pinned default to `peerdb`; otherwise `polling`.
+3. **Switching an existing polling database to PeerDB**:
+   - `POST /api/databases/:id/replication-mode` with `{ mode: 'peerdb' }` to pin the mode.
+   - `POST /cdc/start?db=:id` — coordinator drops the existing `<table>__raw` + projection-view layout for every MySQL table and creates PeerDB mirrors with `doInitialSnapshot: true`. **PeerDB does the data load**; duckling's prior bootstrap state is informational only after the switch.
+   - The previously recorded `bootstrap.binlogPosition` is kept on the config as a diagnostic but is not handed to PeerDB (see Phase C in the implementation status — that handoff is blocked upstream).
+4. **Switching an existing PeerDB database to polling**:
+   - `POST /api/databases/:id/replication-mode` with `{ mode: 'polling' }`.
+   - `POST /api/databases/:id/bootstrap?force=true` — duckling re-dumps into the polling layout (`<table>__raw` + projection view) and starts the polling service. PeerDB mirrors are not torn down by this — the operator should `PAUSE MIRROR` or drop them via the PeerDB UI.
 
 ## Implementation status
 
@@ -267,10 +269,10 @@ What landed (this branch):
 
 ## Open questions
 
-1. **Mid-dump writes.** During Phase 1, MySQL is still accepting writes. The `START TRANSACTION WITH CONSISTENT SNAPSHOT` gives us a fixed snapshot, and PeerDB picks up everything after the recorded binlog position. But if Phase 1 is very long (e.g. 200 GB on a busy database), the binlog accumulates a lot of catch-up events. PeerDB will replay them all when CDC starts — fine in theory, but expect a delay before "live" status. Document this expectation; possibly emit a metric.
-2. **Schema drift mid-dump.** If a table is `ALTER`ed during Phase 1, the snapshot is invalidated for that table. MVCC will give us a consistent read of the original schema, but PeerDB's CDC will see the ALTER event. Strategy: detect schema changes via `information_schema.tables.update_time` polling during Phase 1 and abort with a clear error if any source schema changed.
-3. **Re-bootstrap UX.** A re-bootstrap drops the existing ClickHouse tables and re-creates them, which interrupts queries. Mitigation: dump into shadow tables (`<table>__raw_new`), then atomic `RENAME TABLE` swap, then drop old. Add this as Phase G if/when needed.
-4. **MySQL GTID gaps after restart.** If MySQL is restarted between Phase 1 dump and PeerDB taking over, GTIDs may have been purged. Capability probe should also surface `binlog_expire_logs_seconds` and warn if it's smaller than the expected dump duration.
+1. **Mid-dump cross-table consistency.** The shipped `BootstrapService` reads each table independently (no shared `START TRANSACTION WITH CONSISTENT SNAPSHOT`), so two tables read seconds apart can reflect different points in MySQL's history. For `polling` mode the next incremental cycle picks up rows that landed mid-dump, so this is rarely user-visible. For a future duckling→PeerDB handoff (Phase C below) the catch-up window between snapshot end and CDC attach could miss writes; fixing this needs both a wrapping transaction here AND PeerDB-side honoring of our recorded binlog position.
+2. **Schema drift mid-dump.** If a table is `ALTER`ed during Phase 1, the snapshot is inconsistent for that table. We don't detect this today. Planned mitigation: poll `information_schema.tables.update_time` during the dump and abort with a clear error if any source schema changed. Phase G.
+3. **Re-bootstrap UX.** A re-bootstrap drops the existing ClickHouse tables and re-creates them, briefly interrupting queries. Mitigation: dump into shadow tables (`<table>__raw_new`), then atomic `RENAME TABLE` swap, then drop old. Phase G.
+4. **MySQL GTID gaps if peerdb handoff is ever wired.** If the source MySQL is restarted between Phase 1 and PeerDB attach, GTIDs may have been purged. Capability probe should surface `binlog_expire_logs_seconds` and warn if it's smaller than the expected dump duration. Only relevant once the duckling→PeerDB handoff is unblocked upstream.
 
 ## Component status snapshot
 

@@ -164,10 +164,14 @@ export class DatabaseConfigManager {
    * to `'polling'` for them so the coordinator doesn't suddenly try to attach
    * PeerDB to that schema (PeerDB rejects views as destinations).
    *
-   * An operator who wants to migrate an existing database to PeerDB can:
+   * To migrate an existing polling database to PeerDB:
    *   POST /api/databases/:id/replication-mode { mode: 'peerdb' }
-   *   POST /api/databases/:id/bootstrap        { force: true }
-   * — which re-dumps the data into the PeerDB-compatible schema.
+   *   POST /cdc/start?db=:id
+   * — the coordinator drops the polling-layout artifacts (`<table>` view +
+   * `<table>__raw` raw table) and lets PeerDB create its own tables via
+   * `doInitialSnapshot: true`. **The data is re-snapshotted by PeerDB**, not
+   * handed off from duckling's prior bootstrap — see Phase C in
+   * docs/replication-strategy.md for why that handoff is upstream-blocked.
    */
   private applyMigrations(dbConfig: DatabaseConfig): DatabaseConfig {
     if (!dbConfig.bootstrap) {
