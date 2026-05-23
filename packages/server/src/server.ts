@@ -268,6 +268,11 @@ class ClickHouseServer {
     this.app.post('/api/databases/:id/test', this.testDatabaseConnection.bind(this));
     this.app.post('/api/databases/:id/diagnose', this.diagnoseDatabaseConnection.bind(this));
     this.app.get('/api/databases/:id/diagnose/stream', this.diagnoseDatabaseConnectionStream.bind(this));
+    // Replication-strategy endpoints (Phase 1 bootstrap + Phase 2 selection)
+    this.app.post('/api/databases/:id/bootstrap', this.triggerBootstrap.bind(this));
+    this.app.get('/api/databases/:id/bootstrap/status', this.getBootstrapStatus.bind(this));
+    this.app.get('/api/databases/:id/replication-mode', this.getReplicationMode.bind(this));
+    this.app.post('/api/databases/:id/replication-mode', this.setReplicationMode.bind(this));
 
     // Serve static files from Nuxt build output (production)
     const publicPath = path.join(__dirname, '..', 'public');
@@ -1238,36 +1243,18 @@ class ClickHouseServer {
   private async startCdc(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
-      if (this.usesPeerDB(databaseId)) {
-        const orchestrator = this.getPeerDBOrchestrator(databaseId);
-        const tables = await mysql.getTables();
-        for (const tableName of tables) {
-          const existing = await orchestrator.getMirrorStatus(tableName);
-          if (existing) {
-            await orchestrator.resumeMirror(tableName);
-          } else {
-            await orchestrator.createMirror(tableName);
-          }
-        }
-        const mirrors = await orchestrator.listMirrors();
-        res.json({
-          success: true,
-          message: 'PeerDB CDC started successfully',
-          status: {
-            backend: 'peerdb',
-            isRunning: true,
-            mirrors,
-          },
-        });
-        return;
-      }
       const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
-      const cdcService = CdcCompatibilityService.getInstance(databaseId, syncService, clickhouse, mysql);
-      const status = await cdcService.start();
+      const ReplicationCoordinator = (await import('./services/replicationCoordinator')).default;
+      const coordinator = new ReplicationCoordinator(databaseId, mysql, clickhouse, syncService);
+
+      // Route through the coordinator so peerdb/polling/none all surface the
+      // same start semantics. `bootstrapAndStart` is idempotent — when
+      // bootstrap is already completed it just (re)starts Phase 2.
+      const result = await coordinator.bootstrapAndStart();
       res.json({
         success: true,
-        message: 'CDC compatibility service started successfully',
-        status,
+        message: `Replication started (mode=${result.effectiveMode})`,
+        status: result,
       });
     } catch (error) {
       logger.error('Start CDC failed:', error);
@@ -1281,32 +1268,19 @@ class ClickHouseServer {
   private async stopCdc(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
-      if (this.usesPeerDB(databaseId)) {
-        const orchestrator = this.getPeerDBOrchestrator(databaseId);
-        const tables = await mysql.getTables();
-        for (const tableName of tables) {
-          const existing = await orchestrator.getMirrorStatus(tableName);
-          if (existing) {
-            await orchestrator.pauseMirror(tableName);
-          }
-        }
-        res.json({
-          success: true,
-          message: 'PeerDB CDC stopped successfully',
-          status: {
-            backend: 'peerdb',
-            isRunning: false,
-          },
-        });
-        return;
-      }
       const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
-      const cdcService = CdcCompatibilityService.getInstance(databaseId, syncService, clickhouse, mysql);
-      const status = cdcService.stop();
+      const ReplicationCoordinator = (await import('./services/replicationCoordinator')).default;
+      const coordinator = new ReplicationCoordinator(databaseId, mysql, clickhouse, syncService);
+
+      await coordinator.stopPhase2();
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(databaseId);
       res.json({
         success: true,
-        message: 'CDC compatibility service stopped successfully',
-        status,
+        message: `Replication stopped (mode=${dbConfig?.replicationMode ?? 'polling'})`,
+        status: {
+          backend: dbConfig?.replicationMode ?? 'polling',
+          isRunning: false,
+        },
       });
     } catch (error) {
       logger.error('Stop CDC failed:', error);
@@ -1427,13 +1401,6 @@ class ClickHouseServer {
    */
   private sanitizeDatabaseConfig(dbConfig: any): any {
     const { mysqlConnectionString, s3, ...sanitized } = dbConfig;
-    if (s3) {
-      sanitized.s3 = {
-        ...s3,
-        secretAccessKey: s3.secretAccessKey ? '***' : undefined,
-        encryptionKey: s3.encryptionKey ? '***' : undefined,
-      };
-    }
     return sanitized;
   }
 
@@ -1456,7 +1423,7 @@ class ClickHouseServer {
 
   private async addDatabase(req: express.Request, res: express.Response): Promise<void> {
     try {
-      const { name, mysqlConnectionString } = req.body;
+      const { name, mysqlConnectionString, peerdb, clickhouseDatabase, replicationMode } = req.body;
       if (!name || !mysqlConnectionString) {
         res.status(400).json({
           success: false,
@@ -1466,10 +1433,45 @@ class ClickHouseServer {
       }
 
       const dbManager = DatabaseConfigManager.getInstance();
-      const newDb = dbManager.addDatabase({ name, mysqlConnectionString });
+      const payload: Parameters<typeof dbManager.addDatabase>[0] = {
+        name,
+        mysqlConnectionString,
+      };
+      if (clickhouseDatabase) {
+        payload.clickhouseDatabase = clickhouseDatabase;
+      }
+      if (peerdb && typeof peerdb === 'object') {
+        payload.peerdb = {
+          enabled: Boolean(peerdb.enabled),
+          ...(peerdb.sourcePeerName ? { sourcePeerName: peerdb.sourcePeerName } : {}),
+          ...(peerdb.targetPeerName ? { targetPeerName: peerdb.targetPeerName } : {}),
+          ...(peerdb.mirrorPrefix ? { mirrorPrefix: peerdb.mirrorPrefix } : {}),
+          ...(peerdb.mysqlDisableTls !== undefined ? { mysqlDisableTls: Boolean(peerdb.mysqlDisableTls) } : {}),
+          ...(peerdb.mysqlFlavor ? { mysqlFlavor: peerdb.mysqlFlavor } : {}),
+          ...(peerdb.replicationMechanism ? { replicationMechanism: peerdb.replicationMechanism } : {}),
+          ...(Array.isArray(peerdb.mysqlSetup) ? { mysqlSetup: peerdb.mysqlSetup } : {}),
+        };
+      }
+      if (replicationMode && ['peerdb', 'polling', 'none'].includes(replicationMode)) {
+        payload.replicationMode = replicationMode;
+      }
+      const newDb = dbManager.addDatabase(payload);
 
-      // Remove MySQL connection string from response (security)
-      res.json({ success: true, database: this.sanitizeDatabaseConfig(newDb) });
+      // Auto-bootstrap unless the caller opts out. Runs in the background so
+      // the API responds quickly; the operator can poll
+      // /api/databases/:id/bootstrap/status for progress.
+      const autoBootstrap = req.body?.autoBootstrap !== false;
+      if (autoBootstrap) {
+        void this.runAutoBootstrap(newDb.id).catch((error) => {
+          logger.error(`Auto-bootstrap failed for ${newDb.id}:`, error);
+        });
+      }
+
+      res.json({
+        success: true,
+        database: this.sanitizeDatabaseConfig(newDb),
+        autoBootstrapStarted: autoBootstrap,
+      });
     } catch (error) {
       logger.error('Add database failed:', error);
       res.status(500).json({
@@ -1477,6 +1479,25 @@ class ClickHouseServer {
         error: error instanceof Error ? error.message : 'Unknown error'
       });
     }
+  }
+
+  /**
+   * Kick off Phase 1 (and Phase 2) for a freshly-created database. Runs in
+   * the background — the database row exists immediately; bootstrap progress
+   * is observable via /api/databases/:id/bootstrap/status.
+   */
+  private async runAutoBootstrap(databaseId: string): Promise<void> {
+    const dbManager = DatabaseConfigManager.getInstance();
+    const dbConfig = dbManager.getDatabase(databaseId);
+    if (!dbConfig) return;
+
+    const mysql = MySQLConnection.getInstance(databaseId, dbConfig.mysqlConnectionString);
+    const clickhouse = ClickHouseConnection.getInstance(databaseId, dbConfig.clickhouseDatabase || databaseId);
+    await clickhouse.initializeDatabase();
+    const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
+    const ReplicationCoordinator = (await import('./services/replicationCoordinator')).default;
+    const coordinator = new ReplicationCoordinator(databaseId, mysql, clickhouse, syncService);
+    await coordinator.bootstrapAndStart();
   }
 
   private async updateDatabase(req: express.Request, res: express.Response): Promise<void> {
@@ -1539,6 +1560,125 @@ class ClickHouseServer {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'
       });
+    }
+  }
+
+  private async triggerBootstrap(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const dbManager = DatabaseConfigManager.getInstance();
+      const dbConfig = dbManager.getDatabase(id);
+      if (!dbConfig) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+
+      const force = req.body?.force === true;
+      const resume = req.body?.resume === true;
+      const startPhase2 = req.body?.startPhase2 !== false;
+
+      const mysql = MySQLConnection.getInstance(id, dbConfig.mysqlConnectionString);
+      const clickhouse = ClickHouseConnection.getInstance(id, dbConfig.clickhouseDatabase || id);
+      await clickhouse.initializeDatabase();
+      const syncService = ClickHouseSyncService.getInstance(id, mysql, clickhouse);
+      const ReplicationCoordinator = (await import('./services/replicationCoordinator')).default;
+      const coordinator = new ReplicationCoordinator(id, mysql, clickhouse, syncService);
+
+      if (startPhase2) {
+        const result = await coordinator.bootstrapAndStart({ force, resume });
+        res.json({ success: true, ...result });
+      } else {
+        const bootstrap = await coordinator.runBootstrap({ force, resume });
+        res.json({ success: true, bootstrap });
+      }
+    } catch (error) {
+      logger.error('Bootstrap trigger failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async getBootstrapStatus(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(id);
+      if (!dbConfig) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+      res.json({
+        success: true,
+        databaseId: id,
+        bootstrap: dbConfig.bootstrap ?? { status: 'pending', tableProgress: {} },
+      });
+    } catch (error) {
+      logger.error('Get bootstrap status failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async getReplicationMode(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const dbConfig = DatabaseConfigManager.getInstance().getDatabase(id);
+      if (!dbConfig) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+
+      const mysql = MySQLConnection.getInstance(id, dbConfig.mysqlConnectionString);
+      const clickhouse = ClickHouseConnection.getInstance(id, dbConfig.clickhouseDatabase || id);
+      const syncService = ClickHouseSyncService.getInstance(id, mysql, clickhouse);
+      const ReplicationCoordinator = (await import('./services/replicationCoordinator')).default;
+      const coordinator = new ReplicationCoordinator(id, mysql, clickhouse, syncService);
+
+      const { capability, effectiveMode } = await coordinator.detectMode();
+      res.json({
+        success: true,
+        databaseId: id,
+        pinnedMode: dbConfig.replicationMode ?? null,
+        effectiveMode,
+        capability,
+      });
+    } catch (error) {
+      logger.error('Get replication mode failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async setReplicationMode(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const requested = req.body?.mode;
+      const allowed = ['peerdb', 'polling', 'none', 'auto'];
+      if (!allowed.includes(requested)) {
+        res.status(400).json({
+          success: false,
+          error: `mode must be one of ${allowed.join(', ')}`,
+        });
+        return;
+      }
+
+      const dbManager = DatabaseConfigManager.getInstance();
+      const updated = dbManager.patchDatabase(id, (current) => {
+        if (requested === 'auto') {
+          delete current.replicationMode;
+        } else {
+          current.replicationMode = requested;
+        }
+        return current;
+      });
+      if (!updated) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+      res.json({
+        success: true,
+        databaseId: id,
+        replicationMode: updated.replicationMode ?? 'auto',
+      });
+    } catch (error) {
+      logger.error('Set replication mode failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
     }
   }
 
@@ -2011,8 +2151,8 @@ class ClickHouseServer {
       this.server.listen(config.port, () => {
         console.log(`ClickHouse Server running on port ${config.port}`);
         console.log(`WebSocket available at ws://localhost:${config.port}/ws`);
-        console.log('Architecture: Sequential Appender with ACID transactions');
-        console.log('Features: Atomic sync, watermark-based incremental, streaming batches, WebSocket, multi-database');
+        console.log(`Architecture: ClickHouse MergeTree (${config.replication.backend === 'peerdb' ? 'PeerDB CDC' : 'in-repo polling sync'})`);
+        console.log('Features: Watermark-based incremental, streaming batches, WebSocket, multi-database');
         console.log(`Databases initialized: ${allDatabases.length}`);
         console.log('Ready for manual operations via UI/API');
       });

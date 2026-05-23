@@ -233,22 +233,22 @@ describe('mysqlQueryRouter', () => {
   describe('DESCRIBE / SHOW COLUMNS', () => {
     test('DESCRIBE users', () => {
       const r = expectForward(route('DESCRIBE users'));
-      expect(r.sql).toContain("table_name = 'users'");
+      expect(r.sql).toContain("table = 'users'");
     });
 
     test('DESC users', () => {
       const r = expectForward(route('DESC users'));
-      expect(r.sql).toContain("table_name = 'users'");
+      expect(r.sql).toContain("table = 'users'");
     });
 
     test('SHOW COLUMNS FROM users', () => {
       const r = expectForward(route('SHOW COLUMNS FROM users'));
-      expect(r.sql).toContain("table_name = 'users'");
+      expect(r.sql).toContain("table = 'users'");
     });
 
     test('SHOW FIELDS FROM users', () => {
       const r = expectForward(route('SHOW FIELDS FROM users'));
-      expect(r.sql).toContain("table_name = 'users'");
+      expect(r.sql).toContain("table = 'users'");
     });
 
     test('invalid table name returns error', () => {
@@ -490,7 +490,7 @@ describe('mysqlQueryRouter', () => {
   describe('SHOW CREATE TABLE', () => {
     test('forwards column info query', () => {
       const r = expectForward(route('SHOW CREATE TABLE users'));
-      expect(r.sql).toContain("table_name = 'users'");
+      expect(r.sql).toContain("table = 'users'");
     });
   });
 

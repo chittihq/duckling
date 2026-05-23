@@ -7,9 +7,7 @@ services:
       CLICKHOUSE_USER: default
       CLICKHOUSE_PASSWORD: ""
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-    ports:
-      - "8124:8123"
-      - "9001:9000"
+    # No host port exposure — tests reach ClickHouse only via the duckling-server API.
     networks:
       - integration-net
 
@@ -29,17 +27,222 @@ services:
       - --log-bin=mysql-bin
       - --binlog-format=ROW
       - --binlog-row-image=FULL
+      # PeerDB requires FULL metadata to extract column names from binlog events.
+      - --binlog-row-metadata=FULL
       - --server-id=1
     volumes:
       - ./mysql-init:/docker-entrypoint-initdb.d
       - mysql-data:/var/lib/mysql
     ports:
-      - "3308:3306"
+      - "${DUCKLING_TEST_MYSQL_HOST_PORT:-13308}:3306"
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpass"]
       interval: 5s
       timeout: 5s
       retries: 30
+    networks:
+      - integration-net
+
+  # ----- PeerDB stack (opt-in via DUCKLING_TEST_WITH_PEERDB=1) -----
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: integration-rustfs
+    profiles: ["peerdb"]
+    environment:
+      RUSTFS_ACCESS_KEY: peerdb
+      RUSTFS_SECRET_KEY: peerdbsecret
+      RUSTFS_REGION: us-east-1
+    networks:
+      - integration-net
+
+  peerdb-catalog:
+    image: postgres:18-alpine
+    container_name: integration-peerdb-catalog
+    profiles: ["peerdb"]
+    environment:
+      PGUSER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_INITDB_ARGS: --locale=C.UTF-8
+    healthcheck:
+      test: ["CMD", "pg_isready", "-d", "postgres", "-U", "postgres"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+    networks:
+      - integration-net
+
+  temporal:
+    image: temporalio/auto-setup:1.25.1
+    container_name: integration-temporal
+    profiles: ["peerdb"]
+    depends_on:
+      peerdb-catalog:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: postgres
+      POSTGRES_SEEDS: peerdb-catalog
+      DYNAMIC_CONFIG_FILE_PATH: /tmp/development-sql.yaml
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        cat > /tmp/development-sql.yaml <<'EOF'
+        limit.maxIDLength:
+          - value: 255
+            constraints: {}
+        system.forceSearchAttributesCacheRefreshOnRead:
+          - value: true
+            constraints: {}
+        frontend.enableUpdateWorkflowExecution:
+          - value: true
+            constraints: {}
+        EOF
+        exec /etc/temporal/entrypoint.sh autosetup
+    networks:
+      - integration-net
+
+  temporal-admin-tools:
+    image: temporalio/admin-tools:1.25.2-tctl-1.18.1-cli-1.1.1
+    container_name: integration-temporal-admin
+    profiles: ["peerdb"]
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CLI_ADDRESS: temporal:7233
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        # Wait for Temporal, register MirrorName search attribute, then idle.
+        for i in $$(seq 1 60); do
+          if temporal operator namespace describe default >/dev/null 2>&1; then
+            break
+          fi
+          sleep 2
+        done
+        if ! temporal operator search-attribute list --namespace default 2>/dev/null | grep -w MirrorName >/dev/null 2>&1; then
+          temporal operator search-attribute create --name MirrorName --type Text --namespace default || true
+        fi
+        exec tail -f /dev/null
+    networks:
+      - integration-net
+
+  flow-api:
+    image: ghcr.io/peerdb-io/flow-api:stable-v0.36.19
+    container_name: integration-flow-api
+    profiles: ["peerdb"]
+    # Self-recover while Temporal's gRPC listener finishes coming up — flow-api panics
+    # on first connection refused, so restart-on-failure is how we wait for Temporal.
+    restart: on-failure
+    depends_on:
+      peerdb-catalog:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    environment:
+      PEERDB_CATALOG_HOST: peerdb-catalog
+      PEERDB_CATALOG_PORT: 5432
+      PEERDB_CATALOG_USER: postgres
+      PEERDB_CATALOG_PASSWORD: postgres
+      PEERDB_CATALOG_DATABASE: postgres
+      TEMPORAL_HOST_PORT: temporal:7233
+      PEERDB_TEMPORAL_NAMESPACE: default
+      AWS_ACCESS_KEY_ID: peerdb
+      AWS_SECRET_ACCESS_KEY: peerdbsecret
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT: http://rustfs:9000
+      PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ACCESS_KEY_ID: peerdb
+      PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_SECRET_ACCESS_KEY: peerdbsecret
+      PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_REGION: us-east-1
+      PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ENDPOINT_URL_S3: http://rustfs:9000
+      PEERDB_CLICKHOUSE_AWS_S3_BUCKET_NAME: peerdb-stage
+      PEERDB_ALLOWED_TARGETS: ""
+    networks:
+      - integration-net
+
+  flow-worker:
+    image: ghcr.io/peerdb-io/flow-worker:stable-v0.36.19
+    container_name: integration-flow-worker
+    profiles: ["peerdb"]
+    restart: on-failure
+    depends_on:
+      peerdb-catalog:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    environment:
+      PEERDB_CATALOG_HOST: peerdb-catalog
+      PEERDB_CATALOG_PORT: 5432
+      PEERDB_CATALOG_USER: postgres
+      PEERDB_CATALOG_PASSWORD: postgres
+      PEERDB_CATALOG_DATABASE: postgres
+      TEMPORAL_HOST_PORT: temporal:7233
+      PEERDB_TEMPORAL_NAMESPACE: default
+      AWS_ACCESS_KEY_ID: peerdb
+      AWS_SECRET_ACCESS_KEY: peerdbsecret
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT: http://rustfs:9000
+      PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ACCESS_KEY_ID: peerdb
+      PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_SECRET_ACCESS_KEY: peerdbsecret
+      PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_REGION: us-east-1
+      PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ENDPOINT_URL_S3: http://rustfs:9000
+      PEERDB_CLICKHOUSE_AWS_S3_BUCKET_NAME: peerdb-stage
+    networks:
+      - integration-net
+
+  flow-snapshot-worker:
+    image: ghcr.io/peerdb-io/flow-snapshot-worker:stable-v0.36.19
+    container_name: integration-flow-snapshot-worker
+    profiles: ["peerdb"]
+    restart: on-failure
+    depends_on:
+      peerdb-catalog:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    environment:
+      PEERDB_CATALOG_HOST: peerdb-catalog
+      PEERDB_CATALOG_PORT: 5432
+      PEERDB_CATALOG_USER: postgres
+      PEERDB_CATALOG_PASSWORD: postgres
+      PEERDB_CATALOG_DATABASE: postgres
+      TEMPORAL_HOST_PORT: temporal:7233
+      PEERDB_TEMPORAL_NAMESPACE: default
+      AWS_ACCESS_KEY_ID: peerdb
+      AWS_SECRET_ACCESS_KEY: peerdbsecret
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT: http://rustfs:9000
+      PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ACCESS_KEY_ID: peerdb
+      PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_SECRET_ACCESS_KEY: peerdbsecret
+      PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_REGION: us-east-1
+      PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ENDPOINT_URL_S3: http://rustfs:9000
+      PEERDB_CLICKHOUSE_AWS_S3_BUCKET_NAME: peerdb-stage
+    networks:
+      - integration-net
+
+  peerdb-server:
+    image: ghcr.io/peerdb-io/peerdb-server:stable-v0.36.19
+    container_name: integration-peerdb-server
+    profiles: ["peerdb"]
+    restart: on-failure
+    depends_on:
+      peerdb-catalog:
+        condition: service_healthy
+    environment:
+      PEERDB_CATALOG_HOST: peerdb-catalog
+      PEERDB_CATALOG_PORT: 5432
+      PEERDB_CATALOG_USER: postgres
+      PEERDB_CATALOG_PASSWORD: postgres
+      PEERDB_CATALOG_DATABASE: postgres
+      PEERDB_PASSWORD: peerdb
+      PEERDB_FLOW_SERVER_ADDRESS: grpc://flow-api:8112
+      RUST_LOG: info
     networks:
       - integration-net
 
@@ -49,8 +252,8 @@ services:
       context: ../..
       dockerfile: docker/server.Dockerfile
     ports:
-      - "3002:3000"
-      - "3309:3307"
+      - "${DUCKLING_TEST_HTTP_HOST_PORT:-3002}:3000"
+      - "${DUCKLING_TEST_MYSQL_PROTOCOL_HOST_PORT:-13309}:3307"
     environment:
       - NODE_ENV=production
       - PORT=3000
@@ -74,6 +277,24 @@ services:
       - AUTO_RESTART=false
       - ENABLE_CORS=true
       - RATE_LIMIT_ENABLED=false
+      # PeerDB wiring — active only when the test database's peerdb.enabled is set.
+      - PEERDB_API_URL=http://flow-api:8113
+      - PEERDB_SQL_HOST=peerdb-server
+      - PEERDB_SQL_PORT=9900
+      - PEERDB_SQL_USER=peerdb
+      - PEERDB_SQL_PASSWORD=peerdb
+      - PEERDB_SQL_DATABASE=peerdb
+      - PEERDB_CLICKHOUSE_HOST=clickhouse
+      - PEERDB_CLICKHOUSE_PORT=9000
+      - PEERDB_MYSQL_DISABLE_TLS=true
+      - PEERDB_MYSQL_FLAVOR=mysql
+      - PEERDB_MIRROR_PREFIX=duckling_test
+      - RUSTFS_ENDPOINT=http://rustfs:9000
+      - RUSTFS_ACCESS_KEY=peerdb
+      - RUSTFS_SECRET_KEY=peerdbsecret
+      - RUSTFS_REGION=us-east-1
+      - RUSTFS_BUCKET=peerdb-stage
+      - RUSTFS_USE_PATH_STYLE=true
     depends_on:
       mysql:
         condition: service_healthy

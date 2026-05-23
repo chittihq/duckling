@@ -122,6 +122,100 @@ class ClickHouseSyncService extends EventEmitter {
     }
   }
 
+  /**
+   * Bootstrap a single table into a PeerDB-compatible destination schema.
+   * Creates a `ReplacingMergeTree(_peerdb_synced_at)` table with the user
+   * columns plus `_peerdb_is_deleted` and `_peerdb_synced_at` so that PeerDB
+   * can later take over the same table for CDC without touching the schema.
+   * Rows are inserted with `_peerdb_is_deleted = 0` and `_peerdb_synced_at = now64()`.
+   *
+   * Returns the number of rows ingested. Throws on schema or insert failure.
+   */
+  async bootstrapTableForPeerDB(tableName: string): Promise<{ recordsProcessed: number }> {
+    if (!this.tryAcquireTableLock(tableName)) {
+      throw new SyncAlreadyInProgressError();
+    }
+
+    try {
+      const schema = await this.mysql.getTableSchema(tableName);
+      const primaryKeyColumns = await this.mysql.getPrimaryKeyColumns(tableName);
+
+      // Drop any leftover artifacts from a previous polling-path bootstrap so
+      // PeerDB sees a clean table when it later takes over.
+      await this.clickhouse.dropView(tableName).catch(() => {});
+      await this.clickhouse.dropTable(tableName).catch(() => {});
+      await this.clickhouse.dropTable(`${tableName}__raw`).catch(() => {});
+
+      const userColumns = schema.map((column) => {
+        const columnName = String(column.Field);
+        const columnType = this.mapMySQLTypeToClickHouse(String(column.Type));
+        return `${this.q(columnName)} ${columnType}`;
+      });
+      // PeerDB's ClickHouse destination connector validates that every column
+      // it expects exists on the destination table. The required set as of
+      // stable-v0.36.x is:
+      //   _peerdb_uid          String        — per-event unique id
+      //   _peerdb_timestamp    DateTime64(9) — source-side event timestamp
+      //   _peerdb_record_type  Int16         — 0=insert, 1=update, 2=delete
+      //   _peerdb_is_deleted   Int8          — soft-delete tombstone marker
+      //   _peerdb_synced_at    DateTime64(9) — destination-side synced-at watermark
+      // We seed all of them with safe defaults so the duckling bootstrap rows
+      // can sit alongside PeerDB CDC rows in the same ReplacingMergeTree.
+      const peerdbColumns = [
+        `_peerdb_uid String DEFAULT ''`,
+        `_peerdb_timestamp DateTime64(9) DEFAULT now64()`,
+        `_peerdb_record_type Int16 DEFAULT 0`,
+        `_peerdb_is_deleted Int8 DEFAULT 0`,
+        `_peerdb_synced_at DateTime64(9) DEFAULT now64()`,
+      ];
+
+      const orderByClause = primaryKeyColumns.length > 0
+        ? `(${primaryKeyColumns.map((column) => this.q(column)).join(', ')})`
+        : 'tuple()';
+
+      // ReplacingMergeTree(_peerdb_synced_at) gives engine-level dedup keyed on
+      // primary key; PeerDB's CDC updates simply re-insert with a later
+      // _peerdb_synced_at and the engine collapses old versions on merge.
+      await this.clickhouse.run(`
+        CREATE TABLE ${this.q(tableName)} (
+          ${[...userColumns, ...peerdbColumns].join(',\n          ')}
+        )
+        ENGINE = ReplacingMergeTree(_peerdb_synced_at)
+        ORDER BY ${orderByClause}
+        SETTINGS allow_nullable_key = 1
+      `);
+
+      let recordsProcessed = 0;
+      const nowIso = new Date().toISOString().replace('T', ' ').replace('Z', '');
+      for await (const batch of this.mysql.streamTableData(tableName, config.sync.fullSyncBatchSize)) {
+        if (batch.length === 0) continue;
+
+        const rows = batch.map((row) => {
+          const serialized: Record<string, unknown> = {};
+          for (const column of schema) {
+            const field = String(column.Field);
+            serialized[field] = this.normalizeValue(row[field], String(column.Type));
+          }
+          // Set the full PeerDB metadata set so the destination validator
+          // sees a table that matches what PeerDB itself would create.
+          serialized._peerdb_uid = '';
+          serialized._peerdb_timestamp = nowIso;
+          serialized._peerdb_record_type = 0;
+          serialized._peerdb_is_deleted = 0;
+          serialized._peerdb_synced_at = nowIso;
+          return serialized;
+        });
+
+        await this.clickhouse.insert(tableName, rows);
+        recordsProcessed += rows.length;
+      }
+
+      return { recordsProcessed };
+    } finally {
+      this.releaseTableLock(tableName);
+    }
+  }
+
   async forceFullSyncTable(tableName: string): Promise<SyncResult> {
     if (!this.tryAcquireTableLock(tableName)) {
       throw new SyncAlreadyInProgressError();
@@ -332,6 +426,7 @@ class ClickHouseSyncService extends EventEmitter {
     primaryKeyColumns: string[];
     timestampColumn: string | null;
   }> {
+    const startedAt = Date.now();
     const primaryKeyColumns = await this.mysql.getPrimaryKeyColumns(tableName);
     const timestampColumn = this.detectTimestampColumn(schema);
     const rawTableName = this.getRawTableName(tableName);
@@ -363,7 +458,7 @@ class ClickHouseSyncService extends EventEmitter {
       primaryKeyColumn: primaryKeyColumns[0] || null,
       timestampColumn,
     });
-    await this.writeSyncLog(tableName, 'full', recordsProcessed, 'success', null);
+    await this.writeSyncLog(tableName, 'full', recordsProcessed, 'success', null, Date.now() - startedAt);
 
     return {
       recordsProcessed,
@@ -381,6 +476,7 @@ class ClickHouseSyncService extends EventEmitter {
     primaryKeyColumns: string[];
     timestampColumn: string | null;
   }> {
+    const startedAt = Date.now();
     const primaryKeyColumns = await this.mysql.getPrimaryKeyColumns(tableName);
     const timestampColumn = this.detectTimestampColumn(schema);
 
@@ -436,7 +532,7 @@ class ClickHouseSyncService extends EventEmitter {
       primaryKeyColumn: primaryKeyColumns[0] || null,
       timestampColumn,
     });
-    await this.writeSyncLog(tableName, 'incremental', recordsProcessed, 'success', null);
+    await this.writeSyncLog(tableName, 'incremental', recordsProcessed, 'success', null, Date.now() - startedAt);
 
     return {
       recordsProcessed,
@@ -655,6 +751,7 @@ class ClickHouseSyncService extends EventEmitter {
     recordsProcessed: number,
     status: 'success' | 'error',
     errorMessage: string | null,
+    durationMs: number = 0,
   ): Promise<void> {
     this.syncLogId += 1;
     const now = new Date();
@@ -663,7 +760,7 @@ class ClickHouseSyncService extends EventEmitter {
       table_name: tableName,
       sync_type: syncType,
       records_processed: recordsProcessed,
-      duration_ms: 0,
+      duration_ms: Math.max(0, Math.floor(durationMs)),
       status,
       error_message: errorMessage,
       watermark_before: null,

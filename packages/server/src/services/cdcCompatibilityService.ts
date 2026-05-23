@@ -92,12 +92,18 @@ class CdcCompatibilityService {
     return this.getStatus();
   }
 
-  stop(): CdcStatus {
+  async stop(): Promise<CdcStatus> {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
     this.status.isRunning = false;
+    // Wait for any in-flight cycle to finish before returning so callers reading
+    // checkpoint state immediately after stop() see the final committed position.
+    const stopDeadline = Date.now() + 10_000;
+    while (this.cycleInProgress && Date.now() < stopDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     return this.getStatus();
   }
 
@@ -155,50 +161,58 @@ class CdcCompatibilityService {
       let inserts = 0;
       let deletes = 0;
       let updates = 0;
+      const isFirstCycle = this.tableSnapshots.size === 0;
 
-      if (this.tableSnapshots.size === 0) {
-        await this.syncService.fullSync();
-      } else {
-        for (const tableName of mysqlTables) {
-          const previous = this.tableSnapshots.get(tableName);
-          const next = nextSnapshots.get(tableName)!;
+      for (const tableName of mysqlTables) {
+        const previous = this.tableSnapshots.get(tableName);
+        const next = nextSnapshots.get(tableName)!;
 
-          if (!previous) {
+        if (isFirstCycle) {
+          if (!visibleClickHouseTables.has(tableName)) {
             const result = await this.syncService.forceFullSyncTable(tableName);
             if (result.status !== 'success') {
               throw new Error(result.error || `Full sync failed for ${tableName}`);
             }
             inserts += next.count;
-            continue;
           }
+          continue;
+        }
 
-          if (previous.count > next.count) {
-            const result = await this.syncService.forceFullSyncTable(tableName);
-            if (result.status !== 'success') {
-              throw new Error(result.error || `Full sync failed for ${tableName}`);
-            }
-
-            deletes += previous.count - next.count;
-            continue;
-          }
-
-          const result = await this.syncService.syncSingleTable(tableName);
+        if (!previous) {
+          const result = await this.syncService.forceFullSyncTable(tableName);
           if (result.status !== 'success') {
-            throw new Error(result.error || `Incremental sync failed for ${tableName}`);
+            throw new Error(result.error || `Full sync failed for ${tableName}`);
+          }
+          inserts += next.count;
+          continue;
+        }
+
+        if (previous.count > next.count) {
+          const result = await this.syncService.forceFullSyncTable(tableName);
+          if (result.status !== 'success') {
+            throw new Error(result.error || `Full sync failed for ${tableName}`);
           }
 
-          const delta = next.count - previous.count;
-          if (delta > 0) {
-            inserts += delta;
-          } else if (
-            delta === 0 &&
-            previous.changeToken !== null &&
-            next.changeToken !== null &&
-            previous.changeToken !== next.changeToken &&
-            result.recordsProcessed > 0
-          ) {
-            updates += result.recordsProcessed;
-          }
+          deletes += previous.count - next.count;
+          continue;
+        }
+
+        const result = await this.syncService.syncSingleTable(tableName);
+        if (result.status !== 'success') {
+          throw new Error(result.error || `Incremental sync failed for ${tableName}`);
+        }
+
+        const delta = next.count - previous.count;
+        if (delta > 0) {
+          inserts += delta;
+        } else if (
+          delta === 0 &&
+          previous.changeToken !== null &&
+          next.changeToken !== null &&
+          previous.changeToken !== next.changeToken &&
+          result.recordsProcessed > 0
+        ) {
+          updates += result.recordsProcessed;
         }
       }
 

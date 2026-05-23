@@ -21,17 +21,28 @@ API_KEY="integration-test-key"
 DB_ID="${DUCKLING_TEST_DB_ID:-default}"
 MYSQL_CONNECTION_STRING="${DUCKLING_TEST_MYSQL_CONNECTION_STRING:-mysql://integration:integrationpass@mysql:3306/integration_db?charset=utf8mb4}"
 TIMEOUT_STARTUP="${DUCKLING_TEST_TIMEOUT_STARTUP:-180}"
+TIMEOUT_PEERDB_STARTUP="${DUCKLING_TEST_TIMEOUT_PEERDB_STARTUP:-300}"
 DUCKLING_TEST_VITEST_ARGS="${DUCKLING_TEST_VITEST_ARGS:-}"
 SKIP_DEFAULT_MYSQL_SEED="${DUCKLING_TEST_SKIP_DEFAULT_MYSQL_SEED:-false}"
 MYSQL_SEED_FILE="${DUCKLING_TEST_MYSQL_SEED_FILE:-}"
+# PeerDB stack is always brought up — suite16 exercises it as part of the default e2e run.
+WITH_PEERDB="1"
 
 DOCKER_REMOTE_ALIAS=""
 if [[ "${DOCKER_HOST:-}" == ssh://* ]]; then
   DOCKER_REMOTE_ALIAS="${DOCKER_HOST#ssh://}"
 fi
-API_URL="${DUCKLING_TEST_API_URL:-http://127.0.0.1:3002}"
+HTTP_HOST_PORT="${DUCKLING_TEST_HTTP_HOST_PORT:-3002}"
+MYSQL_HOST_PORT="${DUCKLING_TEST_MYSQL_HOST_PORT:-13308}"
+MYSQL_PROTOCOL_HOST_PORT="${DUCKLING_TEST_MYSQL_PROTOCOL_HOST_PORT:-13309}"
+API_URL="${DUCKLING_TEST_API_URL:-http://127.0.0.1:${HTTP_HOST_PORT}}"
 MYSQL_PROTOCOL_HOST="${DUCKLING_TEST_MYSQL_PROTOCOL_HOST:-127.0.0.1}"
 SSH_TUNNEL_PID=""
+export DUCKLING_TEST_HTTP_HOST_PORT="$HTTP_HOST_PORT"
+export DUCKLING_TEST_MYSQL_HOST_PORT="$MYSQL_HOST_PORT"
+export DUCKLING_TEST_MYSQL_PORT="$MYSQL_HOST_PORT"
+export DUCKLING_TEST_MYSQL_PROTOCOL_HOST_PORT="$MYSQL_PROTOCOL_HOST_PORT"
+export DUCKLING_TEST_MYSQL_PROTOCOL_PORT="$MYSQL_PROTOCOL_HOST_PORT"
 
 # --------------- Helpers ---------------
 log() { echo -e "\033[0;34m[$(date +%H:%M:%S)]\033[0m $*"; }
@@ -57,7 +68,7 @@ cleanup() {
     kill "$SSH_TUNNEL_PID" 2>/dev/null || true
     wait "$SSH_TUNNEL_PID" 2>/dev/null || true
   fi
-  docker compose down -v 2>/dev/null || true
+  docker compose --profile peerdb down -v 2>/dev/null || docker compose down -v 2>/dev/null || true
   log "Done."
   trap - EXIT
   exit "$exit_code"
@@ -84,7 +95,7 @@ pre_cleanup() {
   if [ -n "$DOCKER_REMOTE_ALIAS" ]; then
     pkill -f "ssh .*127.0.0.1:3002:127.0.0.1:3002.*${DOCKER_REMOTE_ALIAS}" 2>/dev/null || true
   fi
-  docker compose down -v 2>/dev/null || true
+  docker compose --profile peerdb down -v 2>/dev/null || docker compose down -v 2>/dev/null || true
 }
 
 start_ssh_tunnel() {
@@ -98,9 +109,9 @@ start_ssh_tunnel() {
     -o ServerAliveInterval=30 \
     -o ServerAliveCountMax=3 \
     -N \
-    -L 3308:127.0.0.1:3308 \
-    -L 3002:127.0.0.1:3002 \
-    -L 3309:127.0.0.1:3309 \
+    -L ${MYSQL_HOST_PORT}:127.0.0.1:${MYSQL_HOST_PORT} \
+    -L ${HTTP_HOST_PORT}:127.0.0.1:${HTTP_HOST_PORT} \
+    -L ${MYSQL_PROTOCOL_HOST_PORT}:127.0.0.1:${MYSQL_PROTOCOL_HOST_PORT} \
     "$DOCKER_REMOTE_ALIAS" &
   SSH_TUNNEL_PID=$!
   sleep 2
@@ -113,7 +124,7 @@ protocol_smoke() {
     -H "Authorization: ${API_KEY}" \
     -H "Content-Type: application/json" > /dev/null
 
-  MYSQL_PROTOCOL_PORT=3309 \
+  MYSQL_PROTOCOL_PORT="${MYSQL_PROTOCOL_HOST_PORT}" \
   MYSQL_PROTOCOL_PASSWORD="${API_KEY}" \
   node ./scripts/protocol-smoke.js
   ok "MySQL protocol smoke checks passed"
@@ -173,6 +184,7 @@ export DUCKLING_TEST_API_URL="${API_URL}"
 export DUCKLING_TEST_DB_ID="${DB_ID}"
 export DUCKLING_TEST_MYSQL_CONNECTION_STRING="${MYSQL_CONNECTION_STRING}"
 export DUCKLING_TEST_MYSQL_PROTOCOL_HOST="${MYSQL_PROTOCOL_HOST}"
+export DUCKLING_TEST_WITH_PEERDB="${WITH_PEERDB}"
 
 # ------- Step 1: Prepare environment -------
 log "[1/8] Preparing environment..."
@@ -205,6 +217,8 @@ if ! is_true "$SKIP_DEFAULT_MYSQL_SEED"; then
 
 -- Grant all privileges to the integration user
 GRANT ALL PRIVILEGES ON integration_db.* TO 'integration'@'%';
+-- PeerDB requires global REPLICATION SLAVE/CLIENT to read binlog events.
+GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'integration'@'%';
 FLUSH PRIVILEGES;
 
 -- Seed users_with_timestamps (5 rows, full type coverage)
@@ -333,6 +347,96 @@ if [ -n "$MYSQL_SEED_FILE" ]; then
   docker compose exec -T mysql mysql -h 127.0.0.1 -uroot -prootpass --default-character-set=utf8mb4 integration_db < "$MYSQL_SEED_FILE"
   ok "Custom seed file applied"
 fi
+
+# ------- Step 2b: PeerDB stack -------
+log "[2b/8] Bringing up PeerDB stack (catalog, temporal, flow workers, peerdb-server, rustfs)..."
+docker compose --profile peerdb up -d rustfs peerdb-catalog temporal temporal-admin-tools flow-api flow-worker flow-snapshot-worker peerdb-server
+
+# Wait for Temporal to be reachable before flow-api restart-loop converges.
+echo -n "  Waiting for Temporal frontend (:7233) to accept connections"
+temporal_wait=0
+until docker compose exec -T temporal-admin-tools sh -c "nc -z temporal 7233" >/dev/null 2>&1; do
+  echo -n "."
+  sleep 3
+  temporal_wait=$((temporal_wait + 3))
+  if [ "$temporal_wait" -ge "$TIMEOUT_PEERDB_STARTUP" ]; then
+    fail "Temporal frontend failed to start within ${TIMEOUT_PEERDB_STARTUP}s"
+    docker compose logs temporal | tail -100
+    exit 1
+  fi
+done
+echo ""
+ok "Temporal frontend is ready"
+
+# Wait for the 'default' namespace to be created by auto-setup (separate from frontend listener).
+echo -n "  Waiting for Temporal 'default' namespace"
+ns_wait=0
+until docker compose exec -T temporal-admin-tools temporal operator namespace describe default >/dev/null 2>&1; do
+  echo -n "."
+  sleep 3
+  ns_wait=$((ns_wait + 3))
+  if [ "$ns_wait" -ge "$TIMEOUT_PEERDB_STARTUP" ]; then
+    fail "Temporal 'default' namespace failed to register within ${TIMEOUT_PEERDB_STARTUP}s"
+    docker compose logs temporal | tail -100
+    exit 1
+  fi
+done
+echo ""
+ok "Temporal 'default' namespace is ready"
+
+# PeerDB tags every mirror workflow with a `MirrorName` search attribute. Temporal rejects
+# the workflow start until that attribute is registered against the namespace. The admin-tools
+# entrypoint attempts to do this on its own but swallows failures, so we register it here
+# explicitly and assert it shows up before allowing the rest of the run to proceed.
+log "  Registering 'MirrorName' Temporal search attribute..."
+sa_register_wait=0
+until docker compose exec -T temporal-admin-tools temporal operator search-attribute list --namespace default 2>/dev/null | grep -wq MirrorName; do
+  docker compose exec -T temporal-admin-tools temporal operator search-attribute create --name MirrorName --type Text --namespace default >/dev/null 2>&1 || true
+  sleep 2
+  sa_register_wait=$((sa_register_wait + 2))
+  if [ "$sa_register_wait" -ge 60 ]; then
+    fail "Failed to register 'MirrorName' search attribute within 60s"
+    docker compose exec -T temporal-admin-tools temporal operator search-attribute list --namespace default || true
+    exit 1
+  fi
+done
+ok "'MirrorName' search attribute registered"
+
+echo -n "  Waiting for PeerDB flow-api to accept connections"
+peerdb_wait=0
+# Probe from temporal-admin-tools (debian-based, has nc) over the docker network.
+# flow-api's image is minimal Go, no shell — can't probe from inside it.
+until docker compose exec -T temporal-admin-tools sh -c "nc -z flow-api 8112" >/dev/null 2>&1; do
+  echo -n "."
+  sleep 5
+  peerdb_wait=$((peerdb_wait + 5))
+  if [ "$peerdb_wait" -ge "$TIMEOUT_PEERDB_STARTUP" ]; then
+    fail "PeerDB flow-api failed to start within ${TIMEOUT_PEERDB_STARTUP}s"
+    docker compose logs flow-api | tail -100
+    exit 1
+  fi
+done
+echo ""
+ok "PeerDB flow-api is ready"
+
+echo -n "  Waiting for PeerDB SQL surface (peerdb-server :9900) to accept connections"
+peerdb_sql_wait=0
+until docker compose exec -T temporal-admin-tools sh -c "nc -z peerdb-server 9900" >/dev/null 2>&1; do
+  echo -n "."
+  sleep 5
+  peerdb_sql_wait=$((peerdb_sql_wait + 5))
+  if [ "$peerdb_sql_wait" -ge "$TIMEOUT_PEERDB_STARTUP" ]; then
+    fail "PeerDB SQL surface failed to start within ${TIMEOUT_PEERDB_STARTUP}s"
+    docker compose logs peerdb-server | tail -100
+    exit 1
+  fi
+done
+echo ""
+ok "PeerDB SQL surface is ready"
+
+# Ensure the RustFS staging bucket exists. flow-api creates it on first use, but
+# mirror creation is faster when the bucket is pre-created.
+docker compose exec -T rustfs sh -c "mkdir -p /data/peerdb-stage" >/dev/null 2>&1 || true
 
 # ------- Step 3: Start Duckling -------
 log "[3/8] Starting Duckling server..."

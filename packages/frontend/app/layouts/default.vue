@@ -90,6 +90,22 @@
         </NuxtLink>
 
         <NuxtLink
+          to="/replication"
+          class="flex items-center justify-center h-12 hover:bg-accent transition-colors group relative"
+          :class="{ 'bg-accent': $route.path === '/replication' }"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M17 1l4 4-4 4"/>
+            <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+            <path d="M7 23l-4-4 4-4"/>
+            <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+          </svg>
+          <span class="absolute left-full ml-2 px-2 py-1 bg-popover text-popover-foreground text-sm rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
+            Replication
+          </span>
+        </NuxtLink>
+
+        <NuxtLink
           to="/settings"
           class="flex items-center justify-center h-12 hover:bg-accent transition-colors group relative"
           :class="{ 'bg-accent': $route.path === '/settings' }"

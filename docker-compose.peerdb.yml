@@ -257,7 +257,8 @@ services:
       - PEERDB_CATALOG_PASSWORD=postgres
       - PEERDB_CATALOG_DATABASE=postgres
       - PEERDB_FLOW_SERVER_HTTP=http://flow-api:8113
-      - NEXTAUTH_SECRET=__changeme__
+      # WARNING: dev-only secret. Override NEXTAUTH_SECRET via .env or your secret manager before any non-local use.
+      - NEXTAUTH_SECRET=${PEERDB_NEXTAUTH_SECRET:-__changeme_dev_only__}
       - NEXTAUTH_URL=http://localhost:13003
       - PEERDB_ALLOWED_TARGETS=
       - PEERDB_CLICKHOUSE_ALLOWED_DOMAINS=

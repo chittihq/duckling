@@ -4,21 +4,35 @@ import logger from '../logger';
 
 class MySQLConnection {
   private pool: mysql.Pool;
+  private readonly connectionString: string;
   private static instances: Map<string, MySQLConnection> = new Map();
 
   constructor(connectionString: string) {
     if (!connectionString) {
       throw new Error('MySQL connection string is required');
     }
+    this.connectionString = connectionString;
+    this.pool = this.createPool();
+  }
 
-    this.pool = mysql.createPool({
-      uri: connectionString,
+  private createPool(): mysql.Pool {
+    return mysql.createPool({
+      uri: this.connectionString,
       connectionLimit: config.mysql.maxConnections,
       timezone: 'Z',
       multipleStatements: false,
       dateStrings: true,
       charset: 'UTF8MB4_GENERAL_CI'
     });
+  }
+
+  async reconnect(): Promise<void> {
+    try {
+      await this.pool.end();
+    } catch (error) {
+      logger.warn('MySQL reconnect: pool end failed (continuing):', error);
+    }
+    this.pool = this.createPool();
   }
 
   static getInstance(databaseId: string, connectionString: string): MySQLConnection {
@@ -57,6 +71,97 @@ class MySQLConnection {
     } catch (error) {
       logger.error('MySQL connection test failed:', error);
       return false;
+    }
+  }
+
+  /**
+   * Read a single MySQL server variable. Returns the string form of the value or null
+   * if the variable is unset. Uses `query()` (text protocol) instead of `execute()`
+   * because some MySQL versions reject SHOW commands sent via prepared statements.
+   * The variable name is whitelisted to identifier characters so it's safe to inline.
+   */
+  async getVariable(name: string): Promise<string | null> {
+    const safeName = String(name).replace(/[^A-Za-z0-9_]/g, '');
+    if (!safeName) return null;
+    try {
+      const [rows] = await this.pool.query(`SHOW VARIABLES LIKE '${safeName}'`);
+      const rowArr = rows as Array<{ Variable_name?: string; Value?: string; value?: string }>;
+      if (!Array.isArray(rowArr) || rowArr.length === 0) return null;
+      const value = rowArr[0].Value ?? rowArr[0].value;
+      return value === undefined || value === null ? null : String(value);
+    } catch (error) {
+      logger.warn(`MySQL getVariable failed for '${name}':`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Return the raw grant strings for the currently-authenticated user. PeerDB
+   * needs REPLICATION SLAVE + REPLICATION CLIENT to read the binlog.
+   */
+  async getCurrentUserGrants(): Promise<string[]> {
+    try {
+      // `query()` (text protocol) — SHOW GRANTS via prepared statement is
+      // unreliable across MySQL versions.
+      const [rows] = await this.pool.query('SHOW GRANTS FOR CURRENT_USER()');
+      const rowArr = rows as Array<Record<string, unknown>>;
+      if (!Array.isArray(rowArr)) return [];
+      return rowArr
+        .map((row) => {
+          const values = Object.values(row);
+          return values.length > 0 ? String(values[0]) : '';
+        })
+        .filter(Boolean);
+    } catch (error) {
+      logger.warn('MySQL getCurrentUserGrants failed:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Capture the current binlog write position. With GTID enabled we record
+   * the executed GTID set (preferred); otherwise we fall back to file+pos.
+   * Called by the bootstrap dump *before* any read so PeerDB can resume
+   * exactly where the snapshot ended.
+   */
+  async captureBinlogPosition(): Promise<{
+    mode: 'gtid' | 'filepos';
+    gtid?: string;
+    file?: string;
+    position?: number;
+  } | null> {
+    try {
+      const gtidVar = await this.getVariable('gtid_mode');
+      const gtidEnabled = gtidVar && /^ON/i.test(gtidVar);
+
+      if (gtidEnabled) {
+        const [rows] = await this.pool.query(`SELECT @@global.gtid_executed AS gtid`);
+        const rowArr = rows as Array<{ gtid?: string }>;
+        const gtid = Array.isArray(rowArr) && rowArr[0] ? String(rowArr[0].gtid || '') : '';
+        if (gtid) {
+          return { mode: 'gtid', gtid };
+        }
+      }
+
+      // Fall back to file+position. MySQL 8.4+ renamed SHOW MASTER STATUS to
+      // SHOW BINARY LOG STATUS; try the new form first, then the legacy form.
+      let rows: any;
+      try {
+        [rows] = await this.pool.query('SHOW BINARY LOG STATUS');
+      } catch {
+        [rows] = await this.pool.query('SHOW MASTER STATUS');
+      }
+      if (Array.isArray(rows) && rows[0]) {
+        const file = String((rows[0] as any).File || '');
+        const position = Number((rows[0] as any).Position || 0);
+        if (file) {
+          return { mode: 'filepos', file, position };
+        }
+      }
+      return null;
+    } catch (error) {
+      logger.warn('MySQL captureBinlogPosition failed:', error);
+      return null;
     }
   }
 

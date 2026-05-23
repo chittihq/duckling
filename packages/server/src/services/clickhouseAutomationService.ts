@@ -83,13 +83,63 @@ class ClickHouseAutomationService {
 
     if (config.automation.autoRestart) {
       this.healthCheckInterval = setInterval(async () => {
-        const clickhouseHealthy = await this.clickhouse.testConnection();
-        const mysqlHealthy = await this.mysql.testConnection();
-        if (!clickhouseHealthy || !mysqlHealthy) {
-          this.restartAttempts += 1;
-          logger.warn(`ClickHouse automation health check failed for ${this.databaseId}`);
-        }
+        await this.runHealthCheck();
       }, config.monitoring.healthCheckInterval);
+    }
+  }
+
+  private async runHealthCheck(): Promise<void> {
+    const [clickhouseHealthy, mysqlHealthy] = await Promise.all([
+      this.clickhouse.testConnection(),
+      this.mysql.testConnection(),
+    ]);
+
+    if (clickhouseHealthy && mysqlHealthy) {
+      if (this.restartAttempts > 0) {
+        logger.info(`ClickHouse automation recovered for ${this.databaseId} after ${this.restartAttempts} attempt(s)`);
+      }
+      this.restartAttempts = 0;
+      return;
+    }
+
+    if (this.restartAttempts >= config.automation.maxRestartAttempts) {
+      logger.error(
+        `ClickHouse automation health check exhausted ${config.automation.maxRestartAttempts} recovery attempts for ${this.databaseId}; stopping`,
+      );
+      this.stop();
+      return;
+    }
+
+    this.restartAttempts += 1;
+    const backoffMs = Math.min(60_000, 1_000 * Math.pow(2, this.restartAttempts - 1));
+    logger.warn(
+      `ClickHouse automation health check failed for ${this.databaseId} ` +
+      `(clickhouse=${clickhouseHealthy}, mysql=${mysqlHealthy}, attempt=${this.restartAttempts}); reconnecting in ${backoffMs}ms`,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, backoffMs));
+
+    try {
+      if (!clickhouseHealthy) await this.clickhouse.reconnect();
+      if (!mysqlHealthy) await this.mysql.reconnect();
+    } catch (error) {
+      logger.error(`ClickHouse automation reconnect attempt failed for ${this.databaseId}:`, error);
+      return;
+    }
+
+    const [chOk, mysqlOk] = await Promise.all([
+      this.clickhouse.testConnection(),
+      this.mysql.testConnection(),
+    ]);
+
+    if (chOk && mysqlOk) {
+      logger.info(`ClickHouse automation reconnected ${this.databaseId} successfully`);
+      this.restartAttempts = 0;
+      if (config.sync.enableIncremental) {
+        void this.performIncrementalSync();
+      } else {
+        void this.performFullSync();
+      }
     }
   }
 
@@ -157,7 +207,44 @@ class ClickHouseAutomationService {
   }
 
   async performCleanup(): Promise<void> {
-    logger.info(`ClickHouse cleanup noop for ${this.databaseId}`);
+    const startedAt = Date.now();
+    let optimized = 0;
+    let logRowsDeleted = 0;
+    try {
+      // 1. Compact every raw MergeTree table for this database.
+      const objectNames = await this.clickhouse.getAllObjectNames();
+      const rawTables = objectNames.filter((name) => name.endsWith('__raw'));
+      for (const rawTable of rawTables) {
+        try {
+          await this.clickhouse.run(`OPTIMIZE TABLE \`${rawTable.replace(/`/g, '``')}\` FINAL`);
+          optimized += 1;
+        } catch (error) {
+          logger.warn(`OPTIMIZE failed for ${rawTable} on ${this.databaseId} (continuing):`, error);
+        }
+      }
+
+      // 2. Prune sync_log rows older than RETENTION_DAYS.
+      // retentionDays is an integer pulled from server config (Math.max(1, ...) below); not user input,
+      // so inline interpolation here is safe and avoids parameterized-INTERVAL edge cases in ALTER.
+      const retentionDays = Math.max(1, Math.floor(config.automation.retentionDays));
+      const beforeRows = await this.clickhouse.execute(
+        `SELECT count() AS count FROM sync_log WHERE created_at < now() - INTERVAL ${retentionDays} DAY`,
+      );
+      const beforeCount = Number((beforeRows[0] as any)?.count || 0);
+      if (beforeCount > 0) {
+        await this.clickhouse.run(
+          `ALTER TABLE sync_log DELETE WHERE created_at < now() - INTERVAL ${retentionDays} DAY`,
+        );
+        logRowsDeleted = beforeCount;
+      }
+
+      logger.info(
+        `ClickHouse cleanup for ${this.databaseId}: optimized ${optimized} raw table(s), ` +
+        `deleted ${logRowsDeleted} sync_log row(s) older than ${retentionDays} day(s) in ${Date.now() - startedAt}ms`,
+      );
+    } catch (error) {
+      logger.error(`ClickHouse cleanup failed for ${this.databaseId}:`, error);
+    }
   }
 
   getStatus(): any {
@@ -167,11 +254,6 @@ class ClickHouseAutomationService {
         enabled: config.automation.autoCleanup,
         intervalHours: config.automation.cleanupIntervalHours,
         retentionDays: config.automation.retentionDays,
-      },
-      autoBackup: {
-        enabled: false,
-        intervalHours: null,
-        retentionDays: null,
       },
       autoRestart: {
         enabled: config.automation.autoRestart,

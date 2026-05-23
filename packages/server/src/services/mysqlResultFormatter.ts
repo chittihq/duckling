@@ -165,6 +165,8 @@ export function buildForwardedColumnDefinition(
   const baseType = baseClickHouseType(clickhouseType);
 
   switch (baseType) {
+    // Integer types decode cleanly from text protocol; keep native widths so
+    // mysql2 surfaces them as numbers/bigints to the client.
     case 'TINYINT':
     case 'UINT8':
     case 'SMALLINT':
@@ -174,13 +176,11 @@ export function buildForwardedColumnDefinition(
     case 'UINT32':
     case 'BIGINT':
     case 'UINT64':
-    case 'FLOAT':
-    case 'FLOAT32':
-    case 'DOUBLE':
-    case 'FLOAT64':
-    case 'DECIMAL':
       return buildColumnDefinition(name, clickhouseType, table);
 
+    // Floats, decimals, JSON, blobs, enums, dates: stricter clients (Sequel
+    // Pro, some BI tools) misdecode the typed text payload. Downgrade to
+    // VAR_STRING so they see a plain UTF-8 string they can re-parse.
     default:
       return buildColumnDefinition(name, 'VARCHAR', table);
   }

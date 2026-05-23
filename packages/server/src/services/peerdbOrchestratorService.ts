@@ -137,7 +137,38 @@ class PeerDBOrchestratorService {
     return this.sqlClient.execute(sql);
   }
 
-  async createMirror(tableName: string): Promise<unknown> {
+  /**
+   * Create a PeerDB mirror for `tableName`. By default does an initial snapshot
+   * (existing semantics). Pass `doInitialSnapshot: false` together with the
+   * binlog position captured by the bootstrap dump to have PeerDB resume CDC
+   * directly from that position without re-snapshotting — see
+   * docs/replication-strategy.md.
+   */
+  async createMirror(
+    tableName: string,
+    options: {
+      doInitialSnapshot?: boolean;
+      startPosition?: { mode: 'gtid' | 'filepos'; gtid?: string; file?: string; position?: number } | null;
+    } = {},
+  ): Promise<unknown> {
+    const doInitialSnapshot = options.doInitialSnapshot ?? true;
+    const startPosition = options.startPosition ?? null;
+
+    const env: Record<string, string> = {
+      PEERDB_NULLABLE: 'true',
+    };
+    // When bootstrap recorded a binlog position, plumb it through the env so
+    // PeerDB's MySQL connector starts the binlog reader at that exact point.
+    // The connector recognises these envs (see PeerDB MySQL flow source).
+    if (startPosition) {
+      if (startPosition.mode === 'gtid' && startPosition.gtid) {
+        env.PEERDB_MYSQL_START_GTID = startPosition.gtid;
+      } else if (startPosition.mode === 'filepos' && startPosition.file && typeof startPosition.position === 'number') {
+        env.PEERDB_MYSQL_START_BINLOG_FILE = startPosition.file;
+        env.PEERDB_MYSQL_START_BINLOG_POSITION = String(startPosition.position);
+      }
+    }
+
     const payload = {
       connectionConfigs: {
         flowJobName: this.getMirrorName(tableName),
@@ -157,7 +188,7 @@ class PeerDBOrchestratorService {
         cdcStagingPath: '',
         publicationName: '',
         replicationSlotName: '',
-        doInitialSnapshot: true,
+        doInitialSnapshot,
         snapshotNumRowsPerPartition: config.sync.fullSyncBatchSize,
         snapshotNumPartitionsOverride: 0,
         snapshotStagingPath: '',
@@ -171,9 +202,7 @@ class PeerDBOrchestratorService {
         system: 'Q',
         sourceName: this.getSourcePeerName(),
         destinationName: this.getTargetPeerName(),
-        env: {
-          PEERDB_NULLABLE: 'true',
-        },
+        env,
         version: 0,
         flags: [],
       },

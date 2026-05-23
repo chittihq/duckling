@@ -16,8 +16,8 @@ vi.mock('../../config', () => ({
     paths: {
       data: '/tmp/duckling-config-test',
     },
-    duckdb: {
-      path: 'data/duckling.db',
+    clickhouse: {
+      database: 'default',
     },
   },
 }));

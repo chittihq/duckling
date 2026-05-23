@@ -69,9 +69,18 @@ services:
       # Data persistence
       - ./data:/app/data
       - ./logs:/app/logs
-      # Hot reload - mount source code
-      - ./packages/server/src:/app/packages/server/src
-      - ./packages/shared/src:/app/packages/shared/src
+      # Source code is baked into the image at build time. We deliberately do
+      # NOT bind-mount packages/server/src here:
+      #   - Docker Desktop's file-sync on macOS occasionally drops paths
+      #     (Resources > File sharing), which results in an empty bind and
+      #     `docker exec ... pnpm run build:server` failing with TS18003.
+      #   - Remote Docker contexts (DOCKER_HOST=ssh://...) can't bind host
+      #     paths at all.
+      # For hot-reload dev, run the server locally against the compose'd
+      # ClickHouse: `pnpm dev:server` from the host (with MYSQL_CONNECTION_STRING
+      # pointing at localhost:3306 and CLICKHOUSE_URL=http://localhost:8123).
+      # After source changes meant to run in the container, rebuild:
+      #   docker compose build clickhouse-server && docker compose up -d clickhouse-server
     restart: unless-stopped
     depends_on:
       - clickhouse

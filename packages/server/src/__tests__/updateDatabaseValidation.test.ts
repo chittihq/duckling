@@ -19,13 +19,13 @@ describe('validateDatabaseUpdatePayload', () => {
     const result = validateDatabaseUpdatePayload({
       name: 'Updated DB',
       id: 'hijack-db',
-      duckdbPath: 'data/other.db'
+      clickhouseDatabase: 'other_db'
     });
 
     expect(result.updates).toBeUndefined();
     expect(result.error).toContain('Invalid update fields');
     expect(result.error).toContain('id');
-    expect(result.error).toContain('duckdbPath');
+    expect(result.error).toContain('clickhouseDatabase');
   });
 
   it('accepts empty update object', () => {

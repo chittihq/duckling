@@ -116,7 +116,7 @@ describe('buildColumnDefinition', () => {
     expect(buildColumnDefinition('x').catalog).toBe('def');
   });
 
-  test('uses duckdbType for column type code', () => {
+  test('uses clickhouseType for column type code', () => {
     const col = buildColumnDefinition('id', 'BIGINT');
     expect(col.columnType).toBe(TYPES.LONGLONG);
   });
@@ -215,8 +215,8 @@ describe('formatValueByType', () => {
   });
 
   test('DuckDB object with micros property uses toString', () => {
-    const duckdbTime = { micros: 45045000000n, toString: () => '12:30:45' };
-    expect(formatValueByType(duckdbTime)).toBe('12:30:45');
+    const chTime = { micros: 45045000000n, toString: () => '12:30:45' };
+    expect(formatValueByType(chTime)).toBe('12:30:45');
   });
 
   test('plain object -> JSON string', () => {
@@ -298,7 +298,7 @@ describe('singleValueResult', () => {
     expect(r.rows[0][0]).toBe('8.0.32');
   });
 
-  test('respects duckdbType', () => {
+  test('respects clickhouseType', () => {
     const r = singleValueResult('id', 1, 'BIGINT');
     expect(r.columns[0].columnType).toBe(TYPES.LONGLONG);
   });
@@ -312,7 +312,7 @@ describe('emptyResult', () => {
     expect(r.rows).toHaveLength(0);
   });
 
-  test('respects duckdbTypes', () => {
+  test('respects clickhouseTypes', () => {
     const r = emptyResult(['id', 'name'], ['BIGINT', 'VARCHAR']);
     expect(r.columns[0].columnType).toBe(TYPES.LONGLONG);
     expect(r.columns[1].columnType).toBe(TYPES.VAR_STRING);

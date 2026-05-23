@@ -15,24 +15,45 @@ class ClickHouseConnection {
 
   private readonly databaseId: string;
   private readonly databaseName: string;
-  private readonly client: ClickHouseClient;
-  private readonly adminClient: ClickHouseClient;
+  private client: ClickHouseClient;
+  private adminClient: ClickHouseClient;
   private initializationPromise: Promise<void> | null = null;
 
   private constructor(databaseId: string, databaseName: string) {
     this.databaseId = databaseId;
     this.databaseName = databaseName;
-    this.adminClient = createClient({
+    this.adminClient = this.createAdminClient();
+    this.client = this.createClient();
+  }
+
+  private createAdminClient(): ClickHouseClient {
+    return createClient({
       url: config.clickhouse.url,
       username: config.clickhouse.username,
       password: config.clickhouse.password,
     });
-    this.client = createClient({
+  }
+
+  private createClient(): ClickHouseClient {
+    return createClient({
       url: config.clickhouse.url,
       username: config.clickhouse.username,
       password: config.clickhouse.password,
-      database: databaseName,
+      database: this.databaseName,
     });
+  }
+
+  async reconnect(): Promise<void> {
+    try {
+      await this.close();
+    } catch (error) {
+      logger.warn(`ClickHouse reconnect: close failed for ${this.databaseId} (continuing):`, error);
+    }
+    this.adminClient = this.createAdminClient();
+    this.client = this.createClient();
+    // Database creation + internal table bootstrap will re-run lazily on next call.
+    ClickHouseConnection.initializedInstances.delete(this.databaseId);
+    this.initializationPromise = null;
   }
 
   static getInstance(databaseId: string = 'default', databaseName?: string): ClickHouseConnection {
@@ -173,22 +194,20 @@ class ClickHouseConnection {
 
   async execute(sql: string, params?: any[]): Promise<JsonRow[]> {
     await this.initializeDatabase();
-    const rendered = this.applyParams(sql, params);
-    const resultSet = await this.client.query({
-      query: rendered,
-      format: 'JSONEachRow',
-    });
+    const { query, query_params } = this.bindParams(sql, params);
+    const queryOpts: any = { query, format: 'JSONEachRow' };
+    if (query_params) queryOpts.query_params = query_params;
+    const resultSet = await this.client.query(queryOpts);
     const rows = await resultSet.json();
     return Array.isArray(rows) ? rows as JsonRow[] : [];
   }
 
   async executeWithMetadata(sql: string, params?: any[]): Promise<{ rows: any[][]; columnNames: string[]; columnTypes: string[] }> {
     await this.initializeDatabase();
-    const rendered = this.applyParams(sql, params);
-    const resultSet = await this.client.query({
-      query: rendered,
-      format: 'JSON',
-    });
+    const { query, query_params } = this.bindParams(sql, params);
+    const queryOpts: any = { query, format: 'JSON' };
+    if (query_params) queryOpts.query_params = query_params;
+    const resultSet = await this.client.query(queryOpts);
     const payload = await resultSet.json() as JsonResult;
     const columnNames = (payload.meta || []).map((column) => column.name);
     const columnTypes = (payload.meta || []).map((column) => column.type);
@@ -198,7 +217,10 @@ class ClickHouseConnection {
 
   async run(sql: string, params?: any[]): Promise<void> {
     await this.initializeDatabase();
-    await this.runRaw(this.applyParams(sql, params));
+    const { query, query_params } = this.bindParams(sql, params);
+    const commandOpts: any = { query, clickhouse_settings: { wait_end_of_query: 1 } };
+    if (query_params) commandOpts.query_params = query_params;
+    await this.client.command(commandOpts);
   }
 
   async insert<T extends JsonRow>(table: string, rows: T[], columns?: string[]): Promise<void> {
@@ -226,10 +248,10 @@ class ClickHouseConnection {
     const rows = await this.execute(`
       SELECT name, engine
       FROM system.tables
-      WHERE database = ${this.escapeValue(this.databaseName)}
+      WHERE database = ?
         AND is_temporary = 0
       ORDER BY name
-    `);
+    `, [this.databaseName]);
     const visibleNames = new Set<string>();
 
     for (const row of rows) {
@@ -247,9 +269,9 @@ class ClickHouseConnection {
     const rows = await this.execute(`
       SELECT name
       FROM system.tables
-      WHERE database = ${this.escapeValue(this.databaseName)}
+      WHERE database = ?
       ORDER BY name
-    `);
+    `, [this.databaseName]);
     return rows
       .map((row) => (typeof row.name === 'string' ? row.name : null))
       .filter((value): value is string => Boolean(value));
@@ -261,7 +283,8 @@ class ClickHouseConnection {
 
   async tableExists(tableName: string): Promise<boolean> {
     const rows = await this.execute(
-      `SELECT count() AS count FROM system.tables WHERE database = ${this.escapeValue(this.databaseName)} AND name = ${this.escapeValue(tableName)}`
+      `SELECT count() AS count FROM system.tables WHERE database = ? AND name = ?`,
+      [this.databaseName, tableName],
     );
     return Number(rows[0]?.count || 0) > 0;
   }
@@ -296,47 +319,74 @@ class ClickHouseConnection {
     );
   }
 
-  private applyParams(query: string, params?: any[]): string {
+  /**
+   * Bind positional `?` placeholders to ClickHouse native query_params.
+   * - Most JS types map to a named typed placeholder ({pN:Type}) — ClickHouse server-side parses safely.
+   * - NULL and Buffer are inlined (server param protocol can't carry them positionally), but go through the same
+   *   bytes-only escape used previously and never originate from arbitrary user input on those code paths.
+   */
+  private bindParams(query: string, params?: any[]): { query: string; query_params: Record<string, string> | undefined } {
     if (!params || params.length === 0) {
-      return query;
+      return { query, query_params: undefined };
     }
 
+    const query_params: Record<string, string> = {};
     let index = 0;
+
     const rendered = query.replace(/\?/g, () => {
       if (index >= params.length) {
         throw new Error('Not enough parameters provided for ClickHouse query');
       }
-      const value = this.escapeValue(params[index]);
+      const value = params[index];
+      const i = index;
       index += 1;
-      return value;
+
+      // Cannot send NULL or binary via query_params; safe inline (numbers/strings are routed through query_params).
+      if (value === null || value === undefined) return 'NULL';
+      if (Buffer.isBuffer(value)) return `unhex('${value.toString('hex')}')`;
+
+      const name = `p${i}`;
+      const bound = this.bindOne(value);
+      query_params[name] = bound.serialized;
+      return `{${name}:${bound.type}}`;
     });
 
     if (index !== params.length) {
       throw new Error('Too many parameters provided for ClickHouse query');
     }
 
-    return rendered;
+    return { query: rendered, query_params };
   }
 
-  private escapeValue(value: unknown): string {
+  private bindOne(value: unknown): { type: string; serialized: string } {
+    if (typeof value === 'number') {
+      if (Number.isInteger(value)) return { type: 'Int64', serialized: String(value) };
+      return { type: 'Float64', serialized: String(value) };
+    }
+    if (typeof value === 'bigint') return { type: 'Int64', serialized: value.toString() };
+    if (typeof value === 'boolean') return { type: 'UInt8', serialized: value ? '1' : '0' };
+    if (value instanceof Date) {
+      const iso = value.toISOString().replace('T', ' ').replace('Z', '');
+      return { type: "DateTime64(3, 'UTC')", serialized: iso };
+    }
+    if (Array.isArray(value)) {
+      // Serialize as ClickHouse array literal; type defaults to Array(String) and ClickHouse coerces.
+      const items = value.map((item) => this.literal(item)).join(',');
+      return { type: 'Array(String)', serialized: `[${items}]` };
+    }
+    if (typeof value === 'object') {
+      return { type: 'String', serialized: JSON.stringify(value) };
+    }
+    return { type: 'String', serialized: String(value) };
+  }
+
+  private literal(value: unknown): string {
     if (value === null || value === undefined) return 'NULL';
     if (typeof value === 'number' || typeof value === 'bigint') return String(value);
     if (typeof value === 'boolean') return value ? '1' : '0';
-    if (value instanceof Date) return `'${value.toISOString().replace('T', ' ').replace('Z', '')}'`;
-    if (Buffer.isBuffer(value)) return `unhex('${value.toString('hex')}')`;
-    if (Array.isArray(value)) return `[${value.map((item) => this.escapeValue(item)).join(', ')}]`;
-
-    if (typeof value === 'object') {
-      return this.escapeValue(JSON.stringify(value));
-    }
-
-    return `'${String(value)
-      .replace(/\\/g, '\\\\')
-      .replace(/'/g, "\\'")
-      .replace(/\n/g, '\\n')
-      .replace(/\r/g, '\\r')
-      .replace(/\t/g, '\\t')}'`;
+    return `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
   }
+
 }
 
 export default ClickHouseConnection;

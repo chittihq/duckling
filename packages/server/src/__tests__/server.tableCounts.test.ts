@@ -1,12 +1,12 @@
 import { describe, expect, test, vi } from 'vitest';
-import DuckDBServer from '../server';
+import ClickHouseServer from '../server';
 
-describe('DuckDBServer.getAllTableCounts', () => {
-  test('counts tables sequentially to avoid flooding the shared DuckDB connection', async () => {
+describe('ClickHouseServer.getAllTableCounts', () => {
+  test('counts tables sequentially to avoid flooding the shared ClickHouse connection', async () => {
     let active = 0;
     let maxActive = 0;
 
-    const duckdb = {
+    const clickhouse = {
       getTables: vi.fn().mockResolvedValue(['users', 'orders', 'events']),
       getTableRowCount: vi.fn(async () => {
         active += 1;
@@ -17,13 +17,13 @@ describe('DuckDBServer.getAllTableCounts', () => {
       }),
     };
 
-    const req = { duckdb } as any;
+    const req = { clickhouse } as any;
     const res = {
       json: vi.fn(),
       status: vi.fn().mockReturnThis(),
     } as any;
 
-    const server = Object.create(DuckDBServer.prototype) as any;
+    const server = Object.create(ClickHouseServer.prototype) as any;
 
     await server.getAllTableCounts(req, res);
 
