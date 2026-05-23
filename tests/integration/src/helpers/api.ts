@@ -45,6 +45,31 @@ export async function apiGet(path: string): Promise<any> {
   return res.text();
 }
 
+export async function apiPut(path: string, body?: any): Promise<any> {
+  const url = `${API_URL}${path}`;
+  const opts: RequestInit = {
+    method: 'PUT',
+    headers: {
+      'Authorization': API_KEY,
+      'Content-Type': 'application/json',
+    },
+    signal: AbortSignal.timeout(60_000),
+  };
+  if (body !== undefined) {
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(url, opts);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`PUT ${path} failed: ${res.status} ${res.statusText} ${text}`);
+  }
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    return res.json();
+  }
+  return res.text();
+}
+
 export async function apiDelete(path: string): Promise<any> {
   const url = `${API_URL}${path}`;
   const res = await fetch(url, {

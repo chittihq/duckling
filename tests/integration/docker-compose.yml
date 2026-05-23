@@ -55,6 +55,34 @@ services:
     networks:
       - integration-net
 
+  # One-shot bucket creation against RustFS. RustFS speaks the S3 API, so we
+  # reuse the same instance that PeerDB uses for CDC staging; the backup tests
+  # write to a separate `duckling-test-backups` bucket. Idempotent (`mc mb -p`).
+  # Exits after the bucket is ready so run.sh can poll its exit code.
+  rustfs-setup:
+    image: minio/mc:latest
+    container_name: integration-rustfs-setup
+    profiles: ["peerdb"]
+    depends_on:
+      - rustfs
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        for i in $$(seq 1 60); do
+          if mc alias set rustfs http://rustfs:9000 peerdb peerdbsecret >/dev/null 2>&1; then
+            if mc mb -p rustfs/duckling-test-backups >/dev/null 2>&1 || mc ls rustfs/duckling-test-backups >/dev/null 2>&1; then
+              echo "rustfs bucket duckling-test-backups ready"
+              exit 0
+            fi
+          fi
+          sleep 2
+        done
+        echo "rustfs-setup: gave up waiting for bucket" >&2
+        exit 1
+    networks:
+      - integration-net
+
   peerdb-catalog:
     image: postgres:18-alpine
     container_name: integration-peerdb-catalog

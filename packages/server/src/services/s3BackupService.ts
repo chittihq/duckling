@@ -123,7 +123,18 @@ class S3BackupService {
     }
   }
 
-  async restoreBackup(key: string): Promise<RestoreBackupResult> {
+  /**
+   * Restore from a backup directory. By default restores into the same
+   * database that was backed up; that errors if the target already exists.
+   * Pass `asDatabase` to restore under a different name (uses
+   * `RESTORE DATABASE x AS y FROM ...`) — required when the original DB
+   * still exists, and how the integration tests exercise round-trip without
+   * disturbing live state.
+   */
+  async restoreBackup(
+    key: string,
+    options: { asDatabase?: string } = {},
+  ): Promise<RestoreBackupResult> {
     const dbConfig = this.requireConfig();
     const s3 = dbConfig.s3Backup!;
     const databaseName = dbConfig.clickhouseDatabase || dbConfig.id;
@@ -131,8 +142,10 @@ class S3BackupService {
     const s3Url = this.buildS3Url(s3, trimmedKey);
 
     const startedAt = Date.now();
-    logger.info(`[s3-backup] starting RESTORE for ${this.databaseId} ← ${s3Url}`);
-    const sql = this.buildRestoreSql(databaseName, s3Url, s3);
+    logger.info(`[s3-backup] starting RESTORE for ${this.databaseId} ← ${s3Url}`, {
+      asDatabase: options.asDatabase,
+    });
+    const sql = this.buildRestoreSql(databaseName, s3Url, s3, options.asDatabase);
     await this.clickhouse.run(sql);
     const completedAt = Date.now();
     logger.info(`[s3-backup] completed RESTORE for ${this.databaseId} in ${completedAt - startedAt}ms`);
@@ -310,11 +323,18 @@ class S3BackupService {
     return `BACKUP DATABASE ${this.q(database)} TO S3('${this.escape(s3Url)}', '${this.escape(s3.accessKeyId)}', '${this.escape(s3.secretAccessKey)}')`;
   }
 
-  private buildRestoreSql(database: string, s3Url: string, s3: S3BackupConfig): string {
-    // RESTORE will error if the target database already exists; the caller is
-    // responsible for dropping it (or restoring under a different name via
-    // an explicit AS clause if/when we expose one).
-    return `RESTORE DATABASE ${this.q(database)} FROM S3('${this.escape(s3Url)}', '${this.escape(s3.accessKeyId)}', '${this.escape(s3.secretAccessKey)}')`;
+  private buildRestoreSql(
+    database: string,
+    s3Url: string,
+    s3: S3BackupConfig,
+    asDatabase?: string,
+  ): string {
+    // RESTORE errors if the target database already exists; the caller can
+    // pass `asDatabase` to land into a different name via the `AS` clause.
+    const target = asDatabase && asDatabase !== database
+      ? `${this.q(database)} AS ${this.q(asDatabase)}`
+      : this.q(database);
+    return `RESTORE DATABASE ${target} FROM S3('${this.escape(s3Url)}', '${this.escape(s3.accessKeyId)}', '${this.escape(s3.secretAccessKey)}')`;
   }
 
   private q(identifier: string): string {

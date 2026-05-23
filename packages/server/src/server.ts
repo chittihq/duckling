@@ -1878,8 +1878,13 @@ class ClickHouseServer {
     try {
       const { id } = req.params;
       const key = req.body?.key;
+      const asDatabase = req.body?.asDatabase;
       if (!key || typeof key !== 'string') {
         res.status(400).json({ success: false, error: 'body.key (S3 backup key) is required' });
+        return;
+      }
+      if (asDatabase !== undefined && typeof asDatabase !== 'string') {
+        res.status(400).json({ success: false, error: 'body.asDatabase must be a string' });
         return;
       }
       const dbConfig = DatabaseConfigManager.getInstance().getDatabase(id);
@@ -1890,7 +1895,7 @@ class ClickHouseServer {
       const clickhouse = ClickHouseConnection.getInstance(id, dbConfig.clickhouseDatabase || id);
       const S3BackupService = (await import('./services/s3BackupService')).default;
       const svc = S3BackupService.getInstance(id, clickhouse);
-      const result = await svc.restoreBackup(key);
+      const result = await svc.restoreBackup(key, asDatabase ? { asDatabase } : {});
       res.json({ success: true, databaseId: id, restore: result });
     } catch (error) {
       logger.error('Restore S3 backup failed:', error);

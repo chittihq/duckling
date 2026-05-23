@@ -438,6 +438,17 @@ ok "PeerDB SQL surface is ready"
 # mirror creation is faster when the bucket is pre-created.
 docker compose exec -T rustfs sh -c "mkdir -p /data/peerdb-stage" >/dev/null 2>&1 || true
 
+# Create the `duckling-test-backups` bucket on RustFS for the S3-backup e2e
+# tests. rustfs-setup exits 0 when the bucket is ready, non-zero on failure.
+log "  Creating duckling-test-backups bucket on RustFS..."
+docker compose --profile peerdb up rustfs-setup --exit-code-from rustfs-setup --abort-on-container-exit 2>&1 | tail -5 || true
+if docker compose --profile peerdb ps -a rustfs-setup --format json 2>/dev/null | grep -q '"ExitCode":0'; then
+  ok "RustFS bucket duckling-test-backups ready"
+else
+  # Non-fatal: the S3-backup test will fail with a clear error if the bucket is missing.
+  fail "RustFS bucket setup did not exit 0 — S3-backup test will likely fail"
+fi
+
 # ------- Step 3: Start Duckling -------
 log "[3/8] Starting Duckling server..."
 docker compose up -d --build duckling
