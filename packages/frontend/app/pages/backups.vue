@@ -315,16 +315,24 @@ async function takeBackup() {
 }
 
 async function restoreBackup(key: string) {
-  if (!confirm(`Restore from ${key}? Existing ClickHouse database will be replaced.`)) return;
+  // ClickHouse RESTORE errors if the target database already exists, so we
+  // never restore in-place from the UI — we side-load into a new database
+  // named `<currentDb>_restored_<short-timestamp>` and let the operator
+  // swap or compare out-of-band. Matches how the e2e test exercises the
+  // round-trip.
+  const safeBase = String(selectedDatabaseId.value).replace(/[^a-zA-Z0-9_]/g, '_');
+  const stamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+  const asDatabase = `${safeBase}_restored_${stamp}`;
+  if (!confirm(`Restore from ${key} into a new ClickHouse database '${asDatabase}'?`)) return;
   restoring.value = key;
   actionMessage.value = null;
   try {
     const res = await post<{ success: boolean; restore?: any }>(
       `/api/databases/${selectedDatabaseId.value}/backups/restore`,
-      { key },
+      { key, asDatabase },
     );
     actionOk.value = Boolean(res?.success);
-    actionMessage.value = `Restore from ${key} completed in ${Math.round((res?.restore?.durationMs ?? 0) / 1000)}s.`;
+    actionMessage.value = `Restored ${key} → ${asDatabase} in ${Math.round((res?.restore?.durationMs ?? 0) / 1000)}s.`;
   } catch (error: any) {
     actionOk.value = false;
     actionMessage.value = error?.data?.error ?? error?.message ?? 'failed';

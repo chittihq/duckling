@@ -37,26 +37,29 @@ Frontend: <http://localhost:3000>. API: <http://localhost:3001>. MySQL wire prot
 ## Architecture
 
 ```
-                    ┌─ Phase 1: duckling DumpService (always) ─┐
-MySQL ──────────────┤                                          ├──── ClickHouse
-                    │  - consistent snapshot                    │
-                    │  - records binlog position before reads   │
-                    │  - writes destination schema matching     │
-                    │    chosen Phase-2 backend                 │
-                    └───────────────────────────────────────────┘
-                                       │
-                       capability probe selects mode
-                       │                                │
-                  cdcSupported                     fallback
-                       │                                │
-                       ▼                                ▼
-            ┌─ Phase 2A: PeerDB ──┐         ┌─ Phase 2B: polling ──┐
-            │  doInitialSnapshot: │         │  CdcCompatibility    │
-            │    false            │         │  Service: 1s row-    │
-            │  resume from        │         │  count + change-     │
-            │  recorded binlog    │         │  token diff polling  │
-            └─────────────────────┘         └──────────────────────┘
+                            capability probe + per-DB replicationMode
+                            │                                  │
+                       peerdb mode                       polling / none mode
+                            │                                  │
+                            ▼                                  ▼
+              ┌─ PeerDB (Phase 1 + 2) ─┐         ┌─ duckling BootstrapService ┐
+MySQL ────────┤  doInitialSnapshot:    ├──CH─────┤  - keyset-paginated dump   ├── ClickHouse
+              │    true                │         │  - records binlog position │
+              │  binlog CDC stream     │         │  - writes <table>__raw +   │
+              │  via flow API          │         │    projection view         │
+              └────────────────────────┘         └──────────────┬─────────────┘
+                                                                ▼
+                                                  ┌─ CdcCompatibilityService ─┐
+                                                  │  1s row-count + change-   │
+                                                  │  token diff polling       │
+                                                  │  (only if CDC enabled)    │
+                                                  └───────────────────────────┘
 ```
+
+> **Note:** A "duckling dumps then PeerDB resumes from the captured binlog
+> position" handoff is plumbed in code but **does not ship today** — PeerDB
+> v0.36's destination connector rejects pre-populated tables. Track the
+> upstream blocker in `docs/replication-strategy.md`.
 
 Full design + open questions: [`docs/replication-strategy.md`](docs/replication-strategy.md).
 

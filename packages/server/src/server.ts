@@ -1899,7 +1899,9 @@ class ClickHouseServer {
       res.json({ success: true, databaseId: id, restore: result });
     } catch (error) {
       logger.error('Restore S3 backup failed:', error);
-      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      const status = /outside the configured prefix/.test(message) ? 400 : 500;
+      res.status(status).json({ success: false, error: message });
     }
   }
 
@@ -1923,7 +1925,9 @@ class ClickHouseServer {
       res.json({ success: true, databaseId: id, ...result });
     } catch (error) {
       logger.error('Delete S3 backup failed:', error);
-      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      const status = /outside the configured prefix/.test(message) ? 400 : 500;
+      res.status(status).json({ success: false, error: message });
     }
   }
 

@@ -201,7 +201,7 @@ Per-database service that runs three loops:
    - Delete `sync_log` rows older than `RETENTION_DAYS` days.
 3. **Health monitor** — every `monitoring.healthCheckInterval` ms, pings ClickHouse + MySQL. On failure, runs the real reconnect loop (`reconnectClickHouse()`, `reconnectMysql()`) with exponential backoff up to `MAX_RESTART_ATTEMPTS`. Successful recovery resumes the sync loop; exhausted recovery logs and disables the service.
 
-S3 backups are not part of this branch. ClickHouse has native `BACKUP TO S3` support that can be wired up later, but no scheduled backup runs currently.
+**S3 backups** are wired up via `S3BackupService` and the `/api/databases/:id/backups` + `/s3-backup` routes. The automation service's `backupInterval` tick runs `runBackup()` + `pruneOldBackups()` every 60s when `s3Backup.enabled` and `intervalHours > 0`. Backups use ClickHouse-native `BACKUP DATABASE ... TO S3(...)` / `RESTORE DATABASE ... FROM S3(...)`. The restore endpoint accepts `asDatabase` to land into a side-by-side ClickHouse database — the frontend `/backups` page always uses this path because in-place restore errors when the target already exists. Restore + delete reject keys outside the configured `<pathPrefix>` (or `<dbId>/` default) so an operator with API access for one database cannot touch backups belonging to another.
 
 ## Configuration
 

@@ -138,6 +138,7 @@ class S3BackupService {
     const dbConfig = this.requireConfig();
     const s3 = dbConfig.s3Backup!;
     const databaseName = dbConfig.clickhouseDatabase || dbConfig.id;
+    this.assertKeyWithinPrefix(key, s3.pathPrefix, dbConfig.id);
     const trimmedKey = key.replace(/\/+$/, '');
     const s3Url = this.buildS3Url(s3, trimmedKey);
 
@@ -210,6 +211,7 @@ class S3BackupService {
   async deleteBackup(key: string): Promise<{ deletedObjects: number }> {
     const dbConfig = this.requireConfig();
     const s3 = dbConfig.s3Backup!;
+    this.assertKeyWithinPrefix(key, s3.pathPrefix, dbConfig.id);
     const client = this.s3ClientFromConfig(s3);
     const prefix = key.endsWith('/') ? key : `${key}/`;
 
@@ -295,6 +297,25 @@ class S3BackupService {
     if (!p.endsWith('/')) p = `${p}/`;
     if (p.startsWith('/')) p = p.slice(1);
     return p;
+  }
+
+  /**
+   * Reject caller-supplied keys that fall outside this database's prefix. The
+   * restore/delete routes accept arbitrary S3 keys, so without this guard a
+   * caller with API access for database A could erase backups (or restore
+   * over data) for database B — or any other prefix in the same bucket.
+   */
+  private assertKeyWithinPrefix(key: string, configuredPrefix: string | undefined, dbId: string): void {
+    if (typeof key !== 'string' || key.length === 0) {
+      throw new Error('Backup key is required');
+    }
+    const normalized = key.replace(/^\/+/, '');
+    const prefix = this.normalizePrefix(configuredPrefix, dbId);
+    if (!normalized.startsWith(prefix)) {
+      throw new Error(
+        `Backup key '${key}' is outside the configured prefix '${prefix}' for database '${dbId}'`,
+      );
+    }
   }
 
   /**

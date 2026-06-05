@@ -25,7 +25,7 @@
  */
 import { describe, test, expect, beforeAll } from 'vitest';
 import { apiGet, apiPost, apiPut, apiDelete } from './helpers/api.js';
-import { DB_ID } from './helpers/config.js';
+import { API_URL, API_KEY, DB_ID } from './helpers/config.js';
 
 const BUCKET = 'duckling-test-backups';
 const RUSTFS_ENDPOINT = 'http://rustfs:9000';
@@ -180,6 +180,40 @@ describe('Suite Z2: S3 backup + restore round-trip', () => {
     const res = await apiGet(`/api/databases/${DB_ID}/backups`);
     expect(res?.success).toBe(true);
     expect(res?.backups.length).toBe(0);
+  });
+
+  test('delete + restore reject keys outside the configured prefix (400)', async () => {
+    // Try to delete an object under a sibling prefix and restore from one.
+    // The route is scoped to db `default`, whose prefix is `e2e-<ts>/` (see
+    // PUT s3-backup above) — anything that doesn't start with that prefix
+    // must be rejected.
+    const foreignKey = 'someone-elses-database/backup-2026-01-01/';
+
+    const delRes = await fetch(`${API_URL}/api/databases/${DB_ID}/backups?key=${encodeURIComponent(foreignKey)}`, {
+      method: 'DELETE',
+      headers: { Authorization: API_KEY },
+    });
+    expect(delRes.status).toBe(400);
+    const delBody = await delRes.json();
+    expect(delBody.success).toBe(false);
+    expect(delBody.error).toMatch(/outside the configured prefix/);
+
+    const restoreRes = await fetch(`${API_URL}/api/databases/${DB_ID}/backups/restore`, {
+      method: 'POST',
+      headers: { Authorization: API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: foreignKey, asDatabase: 'should_never_be_created' }),
+    });
+    expect(restoreRes.status).toBe(400);
+    const restoreBody = await restoreRes.json();
+    expect(restoreBody.success).toBe(false);
+    expect(restoreBody.error).toMatch(/outside the configured prefix/);
+
+    // Side-effect check: the foreign-target DB was not created.
+    const exists = await scalar(
+      `SELECT count() AS c FROM system.databases WHERE name = 'should_never_be_created'`,
+      'c',
+    );
+    expect(exists).toBe('0');
   });
 
   test('cleanup: DELETE /api/databases/:id/s3-backup removes the config', async () => {
