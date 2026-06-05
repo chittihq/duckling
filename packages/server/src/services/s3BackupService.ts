@@ -300,10 +300,15 @@ class S3BackupService {
   }
 
   /**
-   * Reject caller-supplied keys that fall outside this database's prefix. The
-   * restore/delete routes accept arbitrary S3 keys, so without this guard a
-   * caller with API access for database A could erase backups (or restore
-   * over data) for database B — or any other prefix in the same bucket.
+   * Reject caller-supplied keys that fall outside this database's prefix.
+   *
+   * This is an ACCIDENT guard, not a security boundary: duckling has a single
+   * shared API key for all `/api/*` routes, so any authenticated caller can
+   * already update this config's `pathPrefix` (masked `***` credentials are
+   * preserved on PUT) or run arbitrary SQL via `POST /api/query`. What this
+   * prevents is unintentional cross-database damage — a wrong key pasted into
+   * delete, a UI bug passing another database's backup key, or a prune bug
+   * walking outside its own prefix.
    */
   private assertKeyWithinPrefix(key: string, configuredPrefix: string | undefined, dbId: string): void {
     if (typeof key !== 'string' || key.length === 0) {
