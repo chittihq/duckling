@@ -6,6 +6,7 @@ import { DatabaseConfigManager } from '../database/databaseConfig';
 import config from '../config';
 import logger from '../logger';
 import { resolveClientIp } from '../utils/clientIp';
+import { timingSafeEqualStr } from '../utils/timingSafe';
 
 interface QueryMessage {
   id: string;
@@ -177,7 +178,7 @@ export class WebSocketService {
         logger.debug('WebSocket auth attempt');
 
         // Validate API key
-        if (config.auth.apiKey && message.apiKey === config.auth.apiKey) {
+        if (config.auth.apiKey && timingSafeEqualStr(message.apiKey, config.auth.apiKey)) {
           this.authenticatedClients.add(ws);
           this.sendMessage(ws, {
             id: message.id,

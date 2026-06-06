@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { verifyToken, extractTokenFromHeader } from '../utils/jwtUtils';
+import { timingSafeEqualStr } from '../utils/timingSafe';
 import config from '../config';
 
 // Extend Express Request to include JWT user info
@@ -74,7 +75,7 @@ export const requireAuth = (req: Request, res: Response, next: NextFunction): vo
   const token = extractTokenFromHeader(authHeader);
 
   // Check if it's an API key
-  if (config.auth.apiKey && token === config.auth.apiKey) {
+  if (config.auth.apiKey && timingSafeEqualStr(token, config.auth.apiKey)) {
     req.user = { username: 'api-key-user', authMethod: 'apiKey' };
     next();
     return;
@@ -114,7 +115,7 @@ export const isAuthenticated = (req: Request): boolean => {
   const token = extractTokenFromHeader(authHeader);
 
   // Check API key
-  if (config.auth.apiKey && token === config.auth.apiKey) {
+  if (config.auth.apiKey && timingSafeEqualStr(token, config.auth.apiKey)) {
     return true;
   }
 

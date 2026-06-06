@@ -23,6 +23,7 @@ import { getQueryGovernor, QueryGovernorError } from './services/queryGovernor';
 import { WorkerPool } from './workers/workerPool';
 import { generateToken, verifyToken, extractTokenFromHeader } from './utils/jwtUtils';
 import { isReadOnlyMySQLQuery } from './utils/sqlSafety';
+import { timingSafeEqualStr } from './utils/timingSafe';
 import { preAuthRateLimiter, postAuthRateLimiter, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
 import './middleware/auth'; // pull in global Express.Request.user declaration
 import config, { getAuthSecurityIssues } from './config';
@@ -199,7 +200,7 @@ class ClickHouseServer {
     }
 
     // Try the global API key first (exact match) — unscoped superuser.
-    if (config.auth.apiKey && token === config.auth.apiKey) {
+    if (config.auth.apiKey && timingSafeEqualStr(token, config.auth.apiKey)) {
       const apiKeyId = createHash('sha256').update(token).digest('hex').slice(0, 12);
       req.user = { username: 'api-key-user', authMethod: 'apiKey', apiKeyId };
       next();
@@ -1451,7 +1452,7 @@ class ClickHouseServer {
       const token = extractTokenFromHeader(authHeader);
 
       // Check if it's an API key
-      if (config.auth.apiKey && token === config.auth.apiKey) {
+      if (config.auth.apiKey && timingSafeEqualStr(token, config.auth.apiKey)) {
         res.json({
           authenticated: true,
           username: 'api-key-user',
