@@ -1,0 +1,344 @@
+diff --git a/flow/connectors/mysql/cdc.go b/flow/connectors/mysql/cdc.go
+index 88ec920..126f2c0 100644
+--- a/flow/connectors/mysql/cdc.go
++++ b/flow/connectors/mysql/cdc.go
+@@ -364,6 +364,11 @@ func (c *MySqlConnector) PullRecords(
+ 		return err
+ 	}
+ 
++	zeroDateAsNull, err := internal.PeerDBMySQLZeroDateAsNull(ctx, req.Env)
++	if err != nil {
++		return err
++	}
++
+ 	binlogRowMetadataSupported, err := c.IsBinlogRowMetadataSupported(ctx)
+ 	if err != nil {
+ 		return fmt.Errorf("failed to determine if binlog row metadata is supported: %w", err)
+@@ -602,7 +607,7 @@ func (c *MySqlConnector) PullRecords(
+ 								continue
+ 							}
+ 							val, err := QValueFromMysqlRowEvent(ev.Table, idx, enumMap[idx], setMap[idx],
+-								types.QValueKind(fd.Type), val, c.logger, &coercionReported)
++								types.QValueKind(fd.Type), val, c.logger, &coercionReported, zeroDateAsNull)
+ 							if err != nil {
+ 								return err
+ 							}
+@@ -639,7 +644,7 @@ func (c *MySqlConnector) PullRecords(
+ 								continue
+ 							}
+ 							val, err := QValueFromMysqlRowEvent(ev.Table, idx, enumMap[idx], setMap[idx],
+-								types.QValueKind(fd.Type), val, c.logger, &coercionReported)
++								types.QValueKind(fd.Type), val, c.logger, &coercionReported, zeroDateAsNull)
+ 							if err != nil {
+ 								return err
+ 							}
+@@ -653,7 +658,7 @@ func (c *MySqlConnector) PullRecords(
+ 								continue
+ 							}
+ 							val, err := QValueFromMysqlRowEvent(ev.Table, idx, enumMap[idx], setMap[idx],
+-								types.QValueKind(fd.Type), val, c.logger, &coercionReported)
++								types.QValueKind(fd.Type), val, c.logger, &coercionReported, zeroDateAsNull)
+ 							if err != nil {
+ 								return err
+ 							}
+@@ -691,7 +696,7 @@ func (c *MySqlConnector) PullRecords(
+ 								continue
+ 							}
+ 							val, err := QValueFromMysqlRowEvent(ev.Table, idx, enumMap[idx], setMap[idx],
+-								types.QValueKind(fd.Type), val, c.logger, &coercionReported)
++								types.QValueKind(fd.Type), val, c.logger, &coercionReported, zeroDateAsNull)
+ 							if err != nil {
+ 								return err
+ 							}
+diff --git a/flow/connectors/mysql/qrep.go b/flow/connectors/mysql/qrep.go
+index 77b0121..3ebafaf 100644
+--- a/flow/connectors/mysql/qrep.go
++++ b/flow/connectors/mysql/qrep.go
+@@ -14,6 +14,7 @@ import (
+ 
+ 	"github.com/PeerDB-io/peerdb/flow/connectors/utils"
+ 	"github.com/PeerDB-io/peerdb/flow/generated/protos"
++	"github.com/PeerDB-io/peerdb/flow/internal"
+ 	"github.com/PeerDB-io/peerdb/flow/model"
+ 	"github.com/PeerDB-io/peerdb/flow/otel_metrics"
+ 	"github.com/PeerDB-io/peerdb/flow/pkg/common"
+@@ -147,11 +148,12 @@ func (c *MySqlConnector) GetQRepPartitions(
+ 	}
+ 
+ 	partitionHelper := utils.NewPartitionHelper(c.logger)
+-	val1, err := QValueFromMysqlFieldValue(watermarkQKind, watermarkMyType, rs.Values[0][0])
++	// Watermark bounds are used for range math; never map zero dates to NULL here.
++	val1, err := QValueFromMysqlFieldValue(watermarkQKind, watermarkMyType, rs.Values[0][0], false)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("failed to convert partition minimum to qvalue: %w", err)
+ 	}
+-	val2, err := QValueFromMysqlFieldValue(watermarkQKind, watermarkMyType, rs.Values[0][1])
++	val2, err := QValueFromMysqlFieldValue(watermarkQKind, watermarkMyType, rs.Values[0][1], false)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("failed to convert partition maximum to qvalue: %w", err)
+ 	}
+@@ -227,6 +229,11 @@ func (c *MySqlConnector) PullQRepRecords(
+ 
+ 	c.logger.Info("[mysql] pulling records start")
+ 
++	zeroDateAsNull, err := internal.PeerDBMySQLZeroDateAsNull(ctx, config.Env)
++	if err != nil {
++		return 0, 0, err
++	}
++
+ 	c.totalBytesRead.Store(0)
+ 	c.deltaBytesRead.Store(0)
+ 	totalRecords := int64(0)
+@@ -247,7 +254,7 @@ func (c *MySqlConnector) PullQRepRecords(
+ 		}
+ 		record := make([]types.QValue, 0, len(row))
+ 		for idx, val := range row {
+-			qv, err := QValueFromMysqlFieldValue(schema.Fields[idx].Type, rs.Fields[idx].Type, val)
++			qv, err := QValueFromMysqlFieldValue(schema.Fields[idx].Type, rs.Fields[idx].Type, val, zeroDateAsNull)
+ 			if err != nil {
+ 				return fmt.Errorf("could not convert mysql value for %s: %w", schema.Fields[idx].Name, err)
+ 			}
+diff --git a/flow/connectors/mysql/qvalue_convert.go b/flow/connectors/mysql/qvalue_convert.go
+index a4d9855..878cf5c 100644
+--- a/flow/connectors/mysql/qvalue_convert.go
++++ b/flow/connectors/mysql/qvalue_convert.go
+@@ -207,7 +207,18 @@ func processTime(str string) (time.Duration, error) {
+ 	return val, nil
+ }
+ 
+-func QValueFromMysqlFieldValue(qkind types.QValueKind, mytype byte, fv mysql.FieldValue) (types.QValue, error) {
++// hasMysqlZeroDateComponent reports whether a MySQL date or datetime string
++// (`YYYY-MM-DD[ HH:MM:SS[.ffffff]]`) carries a zero month or day component.
++// Such values ('0000-00-00', '2024-00-15', '2024-01-00', ...) are storable in
++// MySQL but unrepresentable in time.Time, so they otherwise get coerced
++// (full-zero -> unix epoch, partial-zero -> '-00' rewritten to '-01').
++func hasMysqlZeroDateComponent(s string) bool {
++	return len(s) >= 10 && (s[5:7] == "00" || s[8:10] == "00")
++}
++
++func QValueFromMysqlFieldValue(
++	qkind types.QValueKind, mytype byte, fv mysql.FieldValue, zeroDateAsNull bool,
++) (types.QValue, error) {
+ 	switch fv.Type {
+ 	case mysql.FieldValueTypeNull:
+ 		return types.QValueNull(qkind), nil
+@@ -298,6 +309,9 @@ func QValueFromMysqlFieldValue(qkind types.QValueKind, mytype byte, fv mysql.Fie
+ 			}
+ 			return types.QValueNumeric{Val: val}, nil
+ 		case types.QValueKindTimestamp:
++			if zeroDateAsNull && hasMysqlZeroDateComponent(unsafeString) {
++				return types.QValueNull(qkind), nil
++			}
+ 			if strings.HasPrefix(unsafeString, "0000-00-00") {
+ 				return types.QValueTimestamp{Val: time.Unix(0, 0)}, nil
+ 			}
+@@ -313,6 +327,9 @@ func QValueFromMysqlFieldValue(qkind types.QValueKind, mytype byte, fv mysql.Fie
+ 			}
+ 			return types.QValueTime{Val: tm}, nil
+ 		case types.QValueKindDate:
++			if zeroDateAsNull && hasMysqlZeroDateComponent(unsafeString) {
++				return types.QValueNull(qkind), nil
++			}
+ 			if unsafeString == "0000-00-00" {
+ 				return types.QValueDate{Val: time.Unix(0, 0)}, nil
+ 			}
+@@ -339,6 +356,7 @@ func QValueFromMysqlRowEvent(
+ 	ev *replication.TableMapEvent, idx int,
+ 	enums []string, sets []string,
+ 	qkind types.QValueKind, val any, logger log.Logger, coercionReported *bool,
++	zeroDateAsNull bool,
+ ) (types.QValue, error) {
+ 	mytype := ev.ColumnType[idx]
+ 
+@@ -521,6 +539,9 @@ func QValueFromMysqlRowEvent(
+ 				// https://github.com/go-mysql-org/go-mysql/blob/v1.13.0/replication/row_event.go#L1316-L1327
+ 				// TIMESTAMP2  zero
+ 				// https://github.com/go-mysql-org/go-mysql/blob/v1.13.0/replication/row_event.go#L1663-L1686
++				if zeroDateAsNull && hasMysqlZeroDateComponent(val) {
++					return types.QValueNull(qkind), nil
++				}
+ 				if strings.HasPrefix(val, "0000-00-00") {
+ 					return types.QValueDate{Val: time.Unix(0, 0).UTC()}, nil
+ 				}
+@@ -530,6 +551,9 @@ func QValueFromMysqlRowEvent(
+ 				}
+ 				return types.QValueDate{Val: tm.Truncate(24 * time.Hour).UTC()}, nil
+ 			default:
++				if zeroDateAsNull && hasMysqlZeroDateComponent(val) {
++					return types.QValueNull(qkind), nil
++				}
+ 				if val == "0000-00-00" {
+ 					return types.QValueDate{Val: time.Unix(0, 0).UTC()}, nil
+ 				}
+@@ -547,6 +571,9 @@ func QValueFromMysqlRowEvent(
+ 				}
+ 				return types.QValueTimestamp{Val: time.Unix(0, 0).UTC().Add(tm)}, nil
+ 			}
++			if zeroDateAsNull && hasMysqlZeroDateComponent(val) {
++				return types.QValueNull(qkind), nil
++			}
+ 			if strings.HasPrefix(val, "0000-00-00") {
+ 				return types.QValueTimestamp{Val: time.Unix(0, 0).UTC()}, nil
+ 			}
+diff --git a/flow/connectors/mysql/qvalue_convert_test.go b/flow/connectors/mysql/qvalue_convert_test.go
+index be533f4..2e25313 100644
+--- a/flow/connectors/mysql/qvalue_convert_test.go
++++ b/flow/connectors/mysql/qvalue_convert_test.go
+@@ -1,10 +1,16 @@
+ package connmysql
+ 
+ import (
++	"log/slog"
+ 	"testing"
+ 	"time"
+ 
++	"github.com/go-mysql-org/go-mysql/mysql"
++	"github.com/go-mysql-org/go-mysql/replication"
+ 	"github.com/stretchr/testify/require"
++	"go.temporal.io/sdk/log"
++
++	"github.com/PeerDB-io/peerdb/flow/shared/types"
+ )
+ 
+ func TestProcessTime(t *testing.T) {
+@@ -51,3 +57,95 @@ func TestProcessTime(t *testing.T) {
+ 		require.Equal(t, ts.out, tm)
+ 	}
+ }
++
++func TestHasMysqlZeroDateComponent(t *testing.T) {
++	for _, tc := range []struct {
++		in  string
++		out bool
++	}{
++		{"0000-00-00", true},
++		{"0000-00-00 00:00:00", true},
++		{"0000-00-00 00:00:00.000000", true},
++		{"2024-00-15", true},          // zero month
++		{"2024-01-00", true},          // zero day
++		{"2024-00-00 10:30:00", true}, // zero month+day datetime
++		{"2024-01-15", false},
++		{"2024-01-15 10:30:00", false},
++		{"1970-01-01", false},
++		{"0000-01-01", false}, // zero year alone is representable in time.Time
++		{"1000-01-01", false},
++		{"", false},
++		{"short", false},
++	} {
++		require.Equal(t, tc.out, hasMysqlZeroDateComponent(tc.in), "input: %q", tc.in)
++	}
++}
++
++func TestZeroDateAsNullFieldValue(t *testing.T) {
++	dateFv := mysql.NewFieldValue(mysql.FieldValueTypeString, 0, []byte("0000-00-00"))
++	tsFv := mysql.NewFieldValue(mysql.FieldValueTypeString, 0, []byte("0000-00-00 00:00:00"))
++	partialFv := mysql.NewFieldValue(mysql.FieldValueTypeString, 0, []byte("2024-00-15"))
++	validFv := mysql.NewFieldValue(mysql.FieldValueTypeString, 0, []byte("2024-01-15"))
++
++	// Flag off: legacy epoch coercion is preserved.
++	qv, err := QValueFromMysqlFieldValue(types.QValueKindDate, mysql.MYSQL_TYPE_DATE, dateFv, false)
++	require.NoError(t, err)
++	require.Equal(t, types.QValueDate{Val: time.Unix(0, 0)}, qv)
++
++	// Flag on: zero date becomes NULL.
++	qv, err = QValueFromMysqlFieldValue(types.QValueKindDate, mysql.MYSQL_TYPE_DATE, dateFv, true)
++	require.NoError(t, err)
++	require.Equal(t, types.QValueNull(types.QValueKindDate), qv)
++
++	// Flag on: zero timestamp becomes NULL.
++	qv, err = QValueFromMysqlFieldValue(types.QValueKindTimestamp, mysql.MYSQL_TYPE_DATETIME, tsFv, true)
++	require.NoError(t, err)
++	require.Equal(t, types.QValueNull(types.QValueKindTimestamp), qv)
++
++	// Flag on: partial-zero date becomes NULL instead of being rewritten to -01.
++	qv, err = QValueFromMysqlFieldValue(types.QValueKindDate, mysql.MYSQL_TYPE_DATE, partialFv, true)
++	require.NoError(t, err)
++	require.Equal(t, types.QValueNull(types.QValueKindDate), qv)
++
++	// Flag on: valid dates are untouched.
++	qv, err = QValueFromMysqlFieldValue(types.QValueKindDate, mysql.MYSQL_TYPE_DATE, validFv, true)
++	require.NoError(t, err)
++	require.Equal(t, types.QValueDate{Val: time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)}, qv)
++}
++
++func TestZeroDateAsNullRowEvent(t *testing.T) {
++	logger := log.NewStructuredLogger(slog.Default())
++	var coercionReported bool
++	dateEv := &replication.TableMapEvent{ColumnType: []byte{mysql.MYSQL_TYPE_DATE}}
++	dtEv := &replication.TableMapEvent{ColumnType: []byte{mysql.MYSQL_TYPE_DATETIME}}
++
++	// Flag off: legacy epoch coercion is preserved.
++	qv, err := QValueFromMysqlRowEvent(dateEv, 0, nil, nil,
++		types.QValueKindDate, "0000-00-00", logger, &coercionReported, false)
++	require.NoError(t, err)
++	require.Equal(t, types.QValueDate{Val: time.Unix(0, 0).UTC()}, qv)
++
++	// Flag on: zero DATE becomes NULL.
++	qv, err = QValueFromMysqlRowEvent(dateEv, 0, nil, nil,
++		types.QValueKindDate, "0000-00-00", logger, &coercionReported, true)
++	require.NoError(t, err)
++	require.Equal(t, types.QValueNull(types.QValueKindDate), qv)
++
++	// Flag on: zero DATETIME (kind timestamp) becomes NULL.
++	qv, err = QValueFromMysqlRowEvent(dtEv, 0, nil, nil,
++		types.QValueKindTimestamp, "0000-00-00 00:00:00", logger, &coercionReported, true)
++	require.NoError(t, err)
++	require.Equal(t, types.QValueNull(types.QValueKindTimestamp), qv)
++
++	// Flag on: DATE column altered to DATETIME (zero) becomes NULL.
++	qv, err = QValueFromMysqlRowEvent(dtEv, 0, nil, nil,
++		types.QValueKindDate, "0000-00-00 00:00:00", logger, &coercionReported, true)
++	require.NoError(t, err)
++	require.Equal(t, types.QValueNull(types.QValueKindDate), qv)
++
++	// Flag on: valid values are untouched.
++	qv, err = QValueFromMysqlRowEvent(dateEv, 0, nil, nil,
++		types.QValueKindDate, "2024-01-15", logger, &coercionReported, true)
++	require.NoError(t, err)
++	require.Equal(t, types.QValueDate{Val: time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)}, qv)
++}
+diff --git a/flow/e2e/mysql.go b/flow/e2e/mysql.go
+index 38a8de6..f674cc9 100644
+--- a/flow/e2e/mysql.go
++++ b/flow/e2e/mysql.go
+@@ -206,7 +206,7 @@ func (s *MySqlSource) GetRows(ctx context.Context, suffix string, table string,
+ 	for _, row := range rs.Values {
+ 		record := make([]types.QValue, 0, len(row))
+ 		for idx, val := range row {
+-			qv, err := connmysql.QValueFromMysqlFieldValue(schema.Fields[idx].Type, rs.Fields[idx].Type, val)
++			qv, err := connmysql.QValueFromMysqlFieldValue(schema.Fields[idx].Type, rs.Fields[idx].Type, val, false)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+diff --git a/flow/internal/dynamicconf.go b/flow/internal/dynamicconf.go
+index b3f0e23..5451a9b 100644
+--- a/flow/internal/dynamicconf.go
++++ b/flow/internal/dynamicconf.go
+@@ -126,6 +126,16 @@ var DynamicSettings = [...]*protos.DynamicSetting{
+ 		ApplyMode:        protos.DynconfApplyMode_APPLY_MODE_NEW_MIRROR,
+ 		TargetForSetting: protos.DynconfTarget_ALL,
+ 	},
++	{
++		Name: "PEERDB_MYSQL_ZERO_DATE_AS_NULL",
++		Description: "Convert MySQL zero dates (0000-00-00) and dates with zero month/day components to NULL " +
++			"instead of coercing them to unix epoch / a valid date. Requires nullable destination columns " +
++			"(pair with PEERDB_NULLABLE) for the NULL to round-trip",
++		DefaultValue:     "false",
++		ValueType:        protos.DynconfValueType_BOOL,
++		ApplyMode:        protos.DynconfApplyMode_APPLY_MODE_IMMEDIATE,
++		TargetForSetting: protos.DynconfTarget_ALL,
++	},
+ 	{
+ 		Name:             "PEERDB_AVRO_NULLABLE_LAX",
+ 		Description:      "Make all columns nullable in initial load Avro schema (disables strict nullable checking)",
+@@ -649,6 +659,10 @@ func PeerDBNullable(ctx context.Context, env map[string]string) (bool, error) {
+ 	return dynamicConfBool(ctx, env, "PEERDB_NULLABLE")
+ }
+ 
++func PeerDBMySQLZeroDateAsNull(ctx context.Context, env map[string]string) (bool, error) {
++	return dynamicConfBool(ctx, env, "PEERDB_MYSQL_ZERO_DATE_AS_NULL")
++}
++
+ func PeerDBAvroNullableLax(ctx context.Context, env map[string]string) (bool, error) {
+ 	return dynamicConfBool(ctx, env, "PEERDB_AVRO_NULLABLE_LAX")
+ }

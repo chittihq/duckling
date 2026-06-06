@@ -10,6 +10,11 @@ API_KEY="${PEERDB_SMOKE_API_KEY:-peerdb-key}"
 ADMIN_PASSWORD="${PEERDB_SMOKE_ADMIN_PASSWORD:-admin}"
 SESSION_SECRET="${PEERDB_SMOKE_SESSION_SECRET:-peerdb-session}"
 KEEP_STACK="${PEERDB_KEEP_STACK:-false}"
+# When true, mirrors are created with PEERDB_MYSQL_ZERO_DATE_AS_NULL and the
+# zero-date assertions expect NULL instead of recording a known blocker.
+# Requires the patched flow images (docs/peerdb-upstream-zero-date-poc-v3.patch);
+# stock v0.36 images ignore the setting and the assertions will fail loudly.
+ZERO_DATE_AS_NULL="${PEERDB_ZERO_DATE_AS_NULL:-false}"
 MYSQL_CONTAINER="duckling-peerdb-mysql"
 MYSQL_DB="peerdbtest"
 MYSQL_ROOT_PASSWORD="cipass"
@@ -167,6 +172,9 @@ DELETE FROM peers WHERE name IN ('mysql_default','clickhouse_default');
 docker exec duckling-peerdb-clickhouse clickhouse-client --query "DROP TABLE IF EXISTS default.type_coverage; DROP TABLE IF EXISTS default.type_coverage_cdc; DROP TABLE IF EXISTS default._peerdb_raw_duckling_default_type_coverage; DROP TABLE IF EXISTS default._peerdb_raw_duckling_default_type_coverage_cdc;" >/dev/null 2>&1 || true
 
 log "Starting MySQL source"
+# A prior run with PEERDB_KEEP_STACK=true (or an aborted run) leaves this
+# container behind; docker run fails on the name conflict otherwise.
+docker rm -f "${MYSQL_CONTAINER}" >/dev/null 2>&1 || true
 docker run -d \
   --name "${MYSQL_CONTAINER}" \
   --network duckling-peerdb-network \
@@ -225,7 +233,11 @@ CREATE PEER clickhouse_default FROM CLICKHOUSE WITH (
 );
 SQL"
 
-log "Creating PeerDB mirrors with zero-date string override"
+log "Creating PeerDB mirrors"
+MIRROR_ZERO_DATE_ENV=""
+if [[ "$ZERO_DATE_AS_NULL" == "true" ]]; then
+  MIRROR_ZERO_DATE_ENV=", PEERDB_MYSQL_ZERO_DATE_AS_NULL: 'true'"
+fi
 create_mirror() {
   local flow_job_name="$1"
   local source_table="$2"
@@ -239,14 +251,13 @@ const body = {
       destinationTableIdentifier: '${destination_table}',
       partitionKey: '',
       exclude: [],
-      columns: [{
-        sourceName: 'col_date_zero',
-        destinationName: '',
-        destinationType: 'String',
-        ordering: 0,
-        partitioning: 0,
-        nullableEnabled: true
-      }],
+      // NOTE: no per-column destinationType override here. The old
+      // col_date_zero -> String override never worked: PeerDB v0.36 honors it
+      // in destination DDL but not in the staged Avro schema, so the snapshot
+      // dies with 'Type String is not compatible with Avro int'. Zero-date
+      // handling is the mirror-level PEERDB_MYSQL_ZERO_DATE_AS_NULL env
+      // (patched images) instead.
+      columns: [],
       engine: 'CH_ENGINE_REPLACING_MERGE_TREE',
       shardingKey: '',
       policyName: '',
@@ -271,7 +282,7 @@ const body = {
     system: 'Q',
     sourceName: 'mysql_default',
     destinationName: 'clickhouse_default',
-    env: { PEERDB_NULLABLE: 'true' },
+    env: { PEERDB_NULLABLE: 'true'${MIRROR_ZERO_DATE_ENV} },
     version: 0,
     flags: []
   }
@@ -355,7 +366,13 @@ assert_eq "$(ch_scalar "SELECT isNull(col_enum) FROM default.type_coverage WHERE
 
 log "Checking zero dates"
 actual_zero_date="$(ch_scalar "SELECT col_date_zero FROM default.type_coverage WHERE id = 1")"
-if [[ "$actual_zero_date" != "0000-00-00" ]]; then
+if [[ "$ZERO_DATE_AS_NULL" == "true" ]]; then
+  # Patched flow images + PEERDB_MYSQL_ZERO_DATE_AS_NULL: zero date must land
+  # as NULL (TSVRaw renders it as \N). This is a hard assertion, not a blocker.
+  if [[ "$actual_zero_date" != '\N' ]]; then
+    record_failure "zero date full-sync mismatch: expected NULL (\\N), got ${actual_zero_date}"
+  fi
+elif [[ "$actual_zero_date" != "0000-00-00" ]]; then
   record_known_blocker "zero date full-sync mismatch: expected 0000-00-00, got ${actual_zero_date}"
 fi
 actual_min_date="$(ch_scalar "SELECT col_date_zero FROM default.type_coverage WHERE id = 2")"
@@ -417,7 +434,11 @@ assert_eq "$(ch_scalar "SELECT col_enum FROM default.type_coverage_cdc WHERE id 
 cdc_bool="$(ch_scalar "SELECT col_boolean FROM default.type_coverage_cdc WHERE id = 7001")"
 [[ "$cdc_bool" == "1" || "$cdc_bool" == "true" ]] || record_failure "CDC boolean: expected semantic true, got '${cdc_bool}'"
 actual_cdc_zero_date="$(ch_scalar "SELECT col_date_zero FROM default.type_coverage_cdc WHERE id = 7001")"
-if [[ "$actual_cdc_zero_date" != "0000-00-00" ]]; then
+if [[ "$ZERO_DATE_AS_NULL" == "true" ]]; then
+  if [[ "$actual_cdc_zero_date" != '\N' ]]; then
+    record_failure "zero date CDC mismatch: expected NULL (\\N), got ${actual_cdc_zero_date}"
+  fi
+elif [[ "$actual_cdc_zero_date" != "0000-00-00" ]]; then
   record_known_blocker "zero date CDC mismatch: expected 0000-00-00, got ${actual_cdc_zero_date}"
 fi
 assert_eq "$(ch_scalar "SELECT hex(col_utf8_emoji) FROM default.type_coverage_cdc WHERE id = 7001")" "43444320F09FA68620656D6F6A69" "CDC utf8 emoji bytes"

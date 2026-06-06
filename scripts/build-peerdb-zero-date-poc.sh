@@ -2,10 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PATCH_FILE="${PEERDB_PATCH_FILE:-${ROOT_DIR}/docs/peerdb-upstream-zero-date-poc-v2.patch}"
+PATCH_FILE="${PEERDB_PATCH_FILE:-${ROOT_DIR}/docs/peerdb-upstream-zero-date-poc-v3.patch}"
 WORK_DIR="${PEERDB_SRC_DIR:-${ROOT_DIR}/.tmp/peerdb-src}"
 REPO_URL="${PEERDB_REPO_URL:-https://github.com/PeerDB-io/peerdb.git}"
-REPO_REF="${PEERDB_REPO_REF:-main}"
+# v3 patch is written against v0.36.19 (the tag behind the
+# stable-v0.36.19 images pinned in docker-compose.peerdb.yml).
+REPO_REF="${PEERDB_REPO_REF:-v0.36.19}"
 
 FLOW_API_IMAGE="${PEERDB_FLOW_API_IMAGE_TAG:-duckling-peerdb-flow-api:zero-date-poc}"
 FLOW_WORKER_IMAGE="${PEERDB_FLOW_WORKER_IMAGE_TAG:-duckling-peerdb-flow-worker:zero-date-poc}"
