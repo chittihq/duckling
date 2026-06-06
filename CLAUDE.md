@@ -201,7 +201,7 @@ Per-database service that runs three loops:
    - Delete `sync_log` rows older than `RETENTION_DAYS` days.
 3. **Health monitor** — every `monitoring.healthCheckInterval` ms, pings ClickHouse + MySQL. On failure, runs the real reconnect loop (`reconnectClickHouse()`, `reconnectMysql()`) with exponential backoff up to `MAX_RESTART_ATTEMPTS`. Successful recovery resumes the sync loop; exhausted recovery logs and disables the service.
 
-**S3 backups** are wired up via `S3BackupService` and the `/api/databases/:id/backups` + `/s3-backup` routes. The automation service's `backupInterval` tick runs `runBackup()` + `pruneOldBackups()` every 60s when `s3Backup.enabled` and `intervalHours > 0`. Backups use ClickHouse-native `BACKUP DATABASE ... TO S3(...)` / `RESTORE DATABASE ... FROM S3(...)`. The restore endpoint accepts `asDatabase` to land into a side-by-side ClickHouse database — the frontend `/backups` page always uses this path because in-place restore errors when the target already exists. Restore + delete reject keys outside the configured `<pathPrefix>` (or `<dbId>/` default). This is an accident guard (wrong key pasted, UI bug, prune walking out of its prefix), **not** a security boundary — duckling uses one shared `DUCKLING_API_KEY` for all `/api/*` routes, so any authenticated caller can retarget `pathPrefix` via PUT (masked `***` credentials are preserved) or run arbitrary SQL via `POST /api/query`. Per-database isolation requires per-database S3 credentials scoped by IAM policy to their own prefix.
+**S3 backups** are wired up via `S3BackupService` and the `/api/databases/:id/backups` + `/s3-backup` routes. The automation service's `backupInterval` tick runs `runBackup()` + `pruneOldBackups()` every 60s when `s3Backup.enabled` and `intervalHours > 0`. Backups use ClickHouse-native `BACKUP DATABASE ... TO S3(...)` / `RESTORE DATABASE ... FROM S3(...)`. The restore endpoint accepts `asDatabase` to land into a side-by-side ClickHouse database — the frontend `/backups` page always uses this path because in-place restore errors when the target already exists. Restore + delete reject keys outside the configured `<pathPrefix>` (or `<dbId>/` default). This is an accident guard (wrong key pasted, UI bug, prune walking out of its prefix), **not** a cross-database security boundary for *admins* — any admin caller (the global `DUCKLING_API_KEY` or a JWT session) can retarget `pathPrefix` via PUT (masked `***` credentials are preserved) or run arbitrary SQL via `POST /api/query`. (Per-database API keys *are* confined — they can't reach the S3 control plane at all; see the API-keys section.) True per-tenant S3 isolation still requires per-database S3 credentials scoped by IAM policy to their own prefix.
 
 ## Configuration
 
@@ -249,7 +249,12 @@ Configure via `.env` (copy from `.env.example`).
 
 ## API Endpoints
 
-All `/api/*` endpoints require auth via `Authorization: Bearer <DUCKLING_API_KEY>` or a session cookie from `/api/login`. Endpoints accept `?db=<id>` for multi-database routing.
+All `/api/*` endpoints require auth via `Authorization: Bearer <token>` or a session cookie from `/api/login`. Endpoints accept `?db=<id>` for multi-database routing.
+
+Three credential types:
+- **`DUCKLING_API_KEY`** (global, env) — unscoped superuser; reaches any database and the full control plane.
+- **JWT session** (from `/api/login`) — admin-equivalent for the dashboard.
+- **Per-database API keys** (`dk_…`) — created via `POST /api/databases/:id/api-keys`, scoped to a single database's **data plane only** (query, tables, sync, cdc, automation, health/status under `?db=<that-db>`). A scoped key is 403'd on any other database and on the entire `/api/databases/:id` control plane (editing/deleting the database, replication mode, S3 config, backups, and key management itself). Keys are stored hash-only (`ApiKeyRecord` in `databaseConfig.ts`), shown once at creation, and resolved per-request via an in-memory `sha256 → {dbId, keyId}` index (`DatabaseConfigManager.apiKeyIndex`) — no per-request disk I/O. `lastUsedAt` is updated in memory and persisted at most once/minute. Auth/scoping live in `checkApiKeyOrSession` + `enforceDatabaseScope` (`server.ts`).
 
 ### Health & status
 
@@ -259,6 +264,14 @@ All `/api/*` endpoints require auth via `Authorization: Bearer <DUCKLING_API_KEY
 
 - `GET|POST|PUT|DELETE /api/databases` and `/api/databases/:id`
 - `POST /api/databases/:id/test`
+
+### Per-database API keys (admin-only)
+
+- `GET /api/databases/:id/api-keys` — list (metadata only; hashes never returned).
+- `POST /api/databases/:id/api-keys` — mint a key. Body: `{ name, expiresAt? }`. Returns the full `dk_…` secret **once**.
+- `PATCH /api/databases/:id/api-keys/:keyId` — `{ name?, enabled?, expiresAt? }` (enable/disable/rename).
+- `DELETE /api/databases/:id/api-keys/:keyId` — revoke.
+- Dashboard: `/api-keys` page.
 
 ### Bootstrap (Phase 1)
 

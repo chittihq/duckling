@@ -193,10 +193,25 @@ class ClickHouseServer {
       return;
     }
 
-    // Try API key first (exact match)
+    // Try the global API key first (exact match) — unscoped superuser.
     if (config.auth.apiKey && token === config.auth.apiKey) {
       const apiKeyId = createHash('sha256').update(token).digest('hex').slice(0, 12);
       req.user = { username: 'api-key-user', authMethod: 'apiKey', apiKeyId };
+      next();
+      return;
+    }
+
+    // Try per-database API keys — pure in-memory hash lookup, no disk. A match
+    // scopes the request to that database (enforceDatabaseScope rejects any
+    // attempt to reach another db). Disabled/expired keys return no match.
+    const keyMatch = DatabaseConfigManager.getInstance().lookupApiKey(token);
+    if (keyMatch) {
+      req.user = {
+        username: `dbkey:${keyMatch.databaseId}`,
+        authMethod: 'apiKey',
+        apiKeyId: keyMatch.keyId,
+        scopedDatabaseId: keyMatch.databaseId,
+      };
       next();
       return;
     }
@@ -214,6 +229,56 @@ class ClickHouseServer {
       error: 'Unauthorized',
       message: 'Invalid or expired token'
     });
+  }
+
+  /**
+   * Confine per-database API keys to the data plane of their own database.
+   *
+   * A per-db key is a data-plane credential: query, read tables, drive
+   * sync/cdc/automation, read health/status — all against its own database,
+   * selected via `?db=`. It is NOT an admin credential. The entire
+   * `/api/databases/:id/...` control plane (editing or deleting the database
+   * record, replication mode, S3 backup config, backups, and API-key
+   * management itself) is admin-only — reachable with the global
+   * DUCKLING_API_KEY or a JWT session, never with a scoped key. This stops a
+   * leaked data token from reconfiguring, deleting, or minting more access to
+   * its database.
+   *
+   * Enforcement:
+   *   1. `?db=<other>` that disagrees with the key's database -> 403.
+   *   2. any `/api/databases/<id>/...` (control plane) -> 403.
+   *
+   * We parse the path with a regex rather than req.params because this runs as
+   * top-level middleware, before route matching populates params. Unscoped
+   * callers (global key, JWT) skip all of this.
+   */
+  private enforceDatabaseScope(req: express.Request, res: express.Response, next: express.NextFunction): void {
+    const scoped = req.user?.scopedDatabaseId;
+    if (!scoped) {
+      next();
+      return;
+    }
+
+    const queryDb = typeof req.query.db === 'string' ? req.query.db : undefined;
+    if (queryDb && queryDb !== scoped) {
+      res.status(403).json({
+        success: false,
+        error: `This API key is scoped to database '${scoped}' and cannot access '${queryDb}'.`,
+      });
+      return;
+    }
+
+    // Block the per-database control plane outright. (The bare GET
+    // /api/databases list is still allowed and filtered to the scoped db.)
+    if (/^\/api\/databases\/[^/]+(\/|$)/.test(req.path)) {
+      res.status(403).json({
+        success: false,
+        error: 'This API key is scoped to data access only; database administration requires an admin session or the global API key.',
+      });
+      return;
+    }
+
+    next();
   }
 
   private setupRoutes(): void {
@@ -251,6 +316,11 @@ class ClickHouseServer {
       next();
     });
 
+    // Database-scope enforcement for per-database API keys. Runs after auth so
+    // req.user is set, before any route handler. Unscoped callers (global key,
+    // JWT) pass through untouched.
+    this.app.use(this.enforceDatabaseScope.bind(this));
+
     // Post-auth rate limiting (identity-based for read/query/write endpoints)
     this.app.use(postAuthRateLimiter);
 
@@ -282,6 +352,11 @@ class ClickHouseServer {
     this.app.post('/api/databases/:id/backups', this.takeS3Backup.bind(this));
     this.app.post('/api/databases/:id/backups/restore', this.restoreS3Backup.bind(this));
     this.app.delete('/api/databases/:id/backups', this.deleteS3Backup.bind(this));
+    // Per-database API keys (admin-only; enforceDatabaseScope blocks scoped keys)
+    this.app.get('/api/databases/:id/api-keys', this.listApiKeys.bind(this));
+    this.app.post('/api/databases/:id/api-keys', this.createApiKey.bind(this));
+    this.app.patch('/api/databases/:id/api-keys/:keyId', this.updateApiKey.bind(this));
+    this.app.delete('/api/databases/:id/api-keys/:keyId', this.deleteApiKey.bind(this));
 
     // Serve static files from Nuxt build output (production)
     const publicPath = path.join(__dirname, '..', 'public');
@@ -1411,13 +1486,18 @@ class ClickHouseServer {
    * credentials to "***" when present.
    */
   private sanitizeDatabaseConfig(dbConfig: any): any {
-    const { mysqlConnectionString, s3, s3Backup, ...sanitized } = dbConfig;
+    const { mysqlConnectionString, s3, s3Backup, apiKeys, ...sanitized } = dbConfig;
     if (s3Backup) {
       sanitized.s3Backup = {
         ...s3Backup,
         accessKeyId: s3Backup.accessKeyId ? '***' : undefined,
         secretAccessKey: s3Backup.secretAccessKey ? '***' : undefined,
       };
+    }
+    // Never leak key hashes. Expose only safe metadata; the full secret is
+    // shown once at creation and never again.
+    if (Array.isArray(apiKeys)) {
+      sanitized.apiKeys = apiKeys.map(({ hash, ...safe }: any) => safe);
     }
     return sanitized;
   }
@@ -1426,7 +1506,12 @@ class ClickHouseServer {
   private async getDatabases(req: express.Request, res: express.Response): Promise<void> {
     try {
       const dbManager = DatabaseConfigManager.getInstance();
-      const databases = dbManager.getAllDatabases();
+      let databases = dbManager.getAllDatabases();
+      // A per-database key only sees its own database in the list.
+      const scoped = req.user?.scopedDatabaseId;
+      if (scoped) {
+        databases = databases.filter((db) => db.id === scoped);
+      }
       // Remove MySQL connection strings from response (security)
       const sanitizedDatabases = databases.map(db => this.sanitizeDatabaseConfig(db));
       res.json({ success: true, databases: sanitizedDatabases });
@@ -1928,6 +2013,93 @@ class ClickHouseServer {
       const message = error instanceof Error ? error.message : 'Unknown error';
       const status = /outside the configured prefix/.test(message) ? 400 : 500;
       res.status(status).json({ success: false, error: message });
+    }
+  }
+
+  // ---- Per-database API keys ------------------------------------------------
+  // These endpoints require an unscoped caller (global API key or JWT session);
+  // enforceDatabaseScope rejects per-database keys before they reach here, so a
+  // scoped key cannot mint or revoke keys.
+
+  private async listApiKeys(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const keys = DatabaseConfigManager.getInstance().listApiKeys(id);
+      if (keys === null) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+      res.json({ success: true, databaseId: id, apiKeys: keys });
+    } catch (error) {
+      logger.error('List API keys failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async createApiKey(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const name = typeof req.body?.name === 'string' ? req.body.name : '';
+      if (!name.trim()) {
+        res.status(400).json({ success: false, error: 'body.name is required' });
+        return;
+      }
+      const expiresAt = req.body?.expiresAt;
+      if (expiresAt !== undefined && (typeof expiresAt !== 'string' || Number.isNaN(Date.parse(expiresAt)))) {
+        res.status(400).json({ success: false, error: 'body.expiresAt must be an ISO date string' });
+        return;
+      }
+      const created = DatabaseConfigManager.getInstance().createApiKey(id, { name, expiresAt });
+      if (!created) {
+        res.status(404).json({ success: false, error: `Database '${id}' not found` });
+        return;
+      }
+      const { hash, ...safe } = created.record;
+      // `secret` is returned exactly once — the client must surface it now.
+      res.status(201).json({ success: true, databaseId: id, secret: created.secret, apiKey: safe });
+    } catch (error) {
+      logger.error('Create API key failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async updateApiKey(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id, keyId } = req.params;
+      const { name, enabled, expiresAt } = req.body ?? {};
+      if (enabled !== undefined && typeof enabled !== 'boolean') {
+        res.status(400).json({ success: false, error: 'body.enabled must be a boolean' });
+        return;
+      }
+      if (name !== undefined && typeof name !== 'string') {
+        res.status(400).json({ success: false, error: 'body.name must be a string' });
+        return;
+      }
+      const updated = DatabaseConfigManager.getInstance().updateApiKey(id, keyId, { name, enabled, expiresAt });
+      if (!updated) {
+        res.status(404).json({ success: false, error: `API key '${keyId}' not found for database '${id}'` });
+        return;
+      }
+      const { hash, ...safe } = updated;
+      res.json({ success: true, databaseId: id, apiKey: safe });
+    } catch (error) {
+      logger.error('Update API key failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  private async deleteApiKey(req: express.Request, res: express.Response): Promise<void> {
+    try {
+      const { id, keyId } = req.params;
+      const ok = DatabaseConfigManager.getInstance().deleteApiKey(id, keyId);
+      if (!ok) {
+        res.status(404).json({ success: false, error: `API key '${keyId}' not found for database '${id}'` });
+        return;
+      }
+      res.json({ success: true, databaseId: id, deleted: keyId });
+    } catch (error) {
+      logger.error('Delete API key failed:', error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
     }
   }
 

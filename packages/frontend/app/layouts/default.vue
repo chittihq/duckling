@@ -121,6 +121,21 @@
         </NuxtLink>
 
         <NuxtLink
+          to="/api-keys"
+          class="flex items-center justify-center h-12 hover:bg-accent transition-colors group relative"
+          :class="{ 'bg-accent': $route.path === '/api-keys' }"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="7.5" cy="15.5" r="5.5"/>
+            <path d="m21 2-9.6 9.6"/>
+            <path d="m15.5 7.5 3 3L22 7l-3-3"/>
+          </svg>
+          <span class="absolute left-full ml-2 px-2 py-1 bg-popover text-popover-foreground text-sm rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
+            API Keys
+          </span>
+        </NuxtLink>
+
+        <NuxtLink
           to="/settings"
           class="flex items-center justify-center h-12 hover:bg-accent transition-colors group relative"
           :class="{ 'bg-accent': $route.path === '/settings' }"

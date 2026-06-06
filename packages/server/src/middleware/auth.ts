@@ -11,6 +11,13 @@ declare global {
         jti?: string;
         authMethod?: 'jwt' | 'apiKey';
         apiKeyId?: string;
+        /**
+         * Set when the caller authenticated with a per-database API key. The
+         * request is locked to this database — see enforceDatabaseScope. The
+         * global DUCKLING_API_KEY and JWT sessions leave this undefined and are
+         * unscoped (superuser).
+         */
+        scopedDatabaseId?: string;
       };
     }
   }

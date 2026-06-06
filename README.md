@@ -111,7 +111,7 @@ Full list in `.env.example` and `packages/server/src/config.ts`.
 
 ## API surface
 
-All `/api/*` endpoints require `Authorization: Bearer ${DUCKLING_API_KEY}`. Per-database routing via `?db=<id>`.
+All `/api/*` endpoints require `Authorization: Bearer <token>`. Per-database routing via `?db=<id>`. Tokens are the global `DUCKLING_API_KEY` (superuser), a JWT session, or a **per-database API key** (`dk_…`) minted at `POST /api/databases/:id/api-keys` / the `/api-keys` dashboard page — scoped to one database's data plane (query/sync/cdc) and 403'd everywhere else. Per-db keys are stored hash-only and served from an in-memory index (no per-request disk I/O).
 
 ### Database management
 

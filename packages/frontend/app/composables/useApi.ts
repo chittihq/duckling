@@ -58,6 +58,9 @@ export const useApi = () => {
   const put = <T>(endpoint: string, body?: any, options = {}) =>
     apiCall<T>(endpoint, { ...options, method: 'PUT', body })
 
+  const patch = <T>(endpoint: string, body?: any, options = {}) =>
+    apiCall<T>(endpoint, { ...options, method: 'PATCH', body })
+
   const del = <T>(endpoint: string, options = {}) =>
     apiCall<T>(endpoint, { ...options, method: 'DELETE' })
 
@@ -66,6 +69,7 @@ export const useApi = () => {
     get,
     post,
     put,
+    patch,
     delete: del
   }
 }

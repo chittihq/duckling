@@ -100,3 +100,86 @@ describe('DatabaseConfigManager safety', () => {
     expect(fs.writeFileSync).not.toHaveBeenCalled();
   });
 });
+
+describe('DatabaseConfigManager per-database API keys', () => {
+  // Seed two databases so cross-database lookups can be exercised.
+  const seed = JSON.stringify([
+    { id: 'alpha', name: 'Alpha', mysqlConnectionString: '', clickhouseDatabase: 'alpha', createdAt: 'x', updatedAt: 'x' },
+    { id: 'beta', name: 'Beta', mysqlConnectionString: '', clickhouseDatabase: 'beta', createdAt: 'x', updatedAt: 'x' },
+  ]);
+
+  let mgr: DatabaseConfigManager;
+
+  beforeEach(() => {
+    (DatabaseConfigManager as any).instance = undefined;
+    vi.clearAllMocks();
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => p === CONFIG_FILE);
+    vi.mocked(fs.readFileSync).mockReturnValue(seed);
+    mgr = DatabaseConfigManager.getInstance();
+  });
+
+  afterEach(() => {
+    (DatabaseConfigManager as any).instance = undefined;
+    vi.restoreAllMocks();
+  });
+
+  test('created key resolves to its database; secret shown once, hash never returned', () => {
+    const created = mgr.createApiKey('alpha', { name: 'CI token' });
+    expect(created).not.toBeNull();
+    expect(created!.secret).toMatch(/^dk_/);
+
+    const match = mgr.lookupApiKey(created!.secret);
+    expect(match).not.toBeNull();
+    expect(match!.databaseId).toBe('alpha');
+    expect(match!.keyId).toBe(created!.record.id);
+
+    // listApiKeys exposes metadata but never the hash.
+    const listed = mgr.listApiKeys('alpha')!;
+    expect(listed).toHaveLength(1);
+    expect((listed[0] as any).hash).toBeUndefined();
+    expect(listed[0].last4).toBe(created!.secret.slice(-4));
+  });
+
+  test('unknown / malformed tokens return null', () => {
+    expect(mgr.lookupApiKey('dk_does-not-exist')).toBeNull();
+    expect(mgr.lookupApiKey('')).toBeNull();
+  });
+
+  test('a key for one database never resolves to another', () => {
+    const a = mgr.createApiKey('alpha', { name: 'a' })!;
+    const b = mgr.createApiKey('beta', { name: 'b' })!;
+    expect(mgr.lookupApiKey(a.secret)!.databaseId).toBe('alpha');
+    expect(mgr.lookupApiKey(b.secret)!.databaseId).toBe('beta');
+  });
+
+  test('disabled key stops resolving and re-enabling restores it', () => {
+    const k = mgr.createApiKey('alpha', { name: 'toggle' })!;
+    mgr.updateApiKey('alpha', k.record.id, { enabled: false });
+    expect(mgr.lookupApiKey(k.secret)).toBeNull();
+    mgr.updateApiKey('alpha', k.record.id, { enabled: true });
+    expect(mgr.lookupApiKey(k.secret)).not.toBeNull();
+  });
+
+  test('expired key does not resolve', () => {
+    const k = mgr.createApiKey('alpha', { name: 'exp', expiresAt: '2000-01-01T00:00:00.000Z' })!;
+    expect(mgr.lookupApiKey(k.secret)).toBeNull();
+  });
+
+  test('revoked key stops resolving', () => {
+    const k = mgr.createApiKey('alpha', { name: 'revoke' })!;
+    expect(mgr.deleteApiKey('alpha', k.record.id)).toBe(true);
+    expect(mgr.lookupApiKey(k.secret)).toBeNull();
+    expect(mgr.deleteApiKey('alpha', k.record.id)).toBe(false);
+  });
+
+  test('lookup updates lastUsedAt in memory', () => {
+    const k = mgr.createApiKey('alpha', { name: 'touch' })!;
+    expect(mgr.listApiKeys('alpha')![0].lastUsedAt).toBeUndefined();
+    mgr.lookupApiKey(k.secret);
+    expect(mgr.listApiKeys('alpha')![0].lastUsedAt).toBeDefined();
+  });
+
+  test('createApiKey on an unknown database returns null', () => {
+    expect(mgr.createApiKey('ghost', { name: 'x' })).toBeNull();
+  });
+});

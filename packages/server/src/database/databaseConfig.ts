@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import config from '../config';
 
 /**
@@ -71,6 +72,34 @@ export interface S3BackupConfig {
   retentionDays?: number;
 }
 
+/**
+ * A per-database API key. The full secret (`dk_<random>`) is shown to the
+ * operator exactly once, at creation, and never stored — only its SHA-256
+ * `hash` is persisted. Authentication looks the key up by hash via an
+ * in-memory index (see DatabaseConfigManager.apiKeyIndex), so incoming
+ * requests never touch disk and never compare against the plaintext.
+ *
+ * A request authenticated with a per-database key is scoped to THAT database:
+ * it cannot reach any other database's data or config. The global
+ * DUCKLING_API_KEY remains the unscoped superuser.
+ */
+export interface ApiKeyRecord {
+  /** Stable identifier, e.g. `key_a1b2c3d4`. Safe to expose. */
+  id: string;
+  /** Operator-facing label. */
+  name: string;
+  /** SHA-256 hex of the full `dk_...` secret. Never leaves the server. */
+  hash: string;
+  /** Last 4 chars of the secret, for disambiguation in the UI. */
+  last4: string;
+  createdAt: string;
+  /** Updated (in-memory immediately, persisted throttled) on each use. */
+  lastUsedAt?: string;
+  /** Optional ISO expiry; past this the key is rejected. */
+  expiresAt?: string;
+  enabled: boolean;
+}
+
 export interface DatabaseConfig {
   id: string;
   name: string;
@@ -98,8 +127,22 @@ export interface DatabaseConfig {
   replicationMode?: ReplicationMode;
   /** Optional ClickHouse-native BACKUP TO S3 config; see S3BackupConfig. */
   s3Backup?: S3BackupConfig;
+  /** Per-database API keys (hash-only); see ApiKeyRecord. */
+  apiKeys?: ApiKeyRecord[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** Result of resolving an incoming bearer token to a per-database key. */
+export interface ApiKeyMatch {
+  databaseId: string;
+  keyId: string;
+  record: ApiKeyRecord;
+}
+
+/** Hash a full `dk_...` secret the same way it is stored/indexed. */
+export function hashApiKey(secret: string): string {
+  return crypto.createHash('sha256').update(secret).digest('hex');
 }
 
 // Use config to ensure correct path in both dev and production
@@ -108,9 +151,18 @@ const CONFIG_FILE = path.join(config.paths.data, 'databases.json');
 export class DatabaseConfigManager {
   private static instance: DatabaseConfigManager;
   private databases: Map<string, DatabaseConfig> = new Map();
+  /**
+   * sha256(secret) -> { databaseId, keyId }. Rebuilt from `databases` on every
+   * load and save so request-time auth is a single O(1) Map lookup with no
+   * disk access. This is the whole point of keeping keys in memory.
+   */
+  private apiKeyIndex: Map<string, { databaseId: string; keyId: string }> = new Map();
+  /** Throttle for persisting lastUsedAt: wall-clock ms of the last flush. */
+  private lastUsageFlush = 0;
 
   private constructor() {
     this.loadConfig();
+    this.rebuildApiKeyIndex();
   }
 
   static getInstance(): DatabaseConfigManager {
@@ -233,6 +285,107 @@ export class DatabaseConfigManager {
       console.error('Failed to save database config:', error);
       throw error;
     }
+    // Keep the request-time lookup index in lockstep with persisted state.
+    this.rebuildApiKeyIndex();
+  }
+
+  /** Rebuild the hash -> {databaseId, keyId} index from current config. */
+  private rebuildApiKeyIndex(): void {
+    const next = new Map<string, { databaseId: string; keyId: string }>();
+    for (const db of this.databases.values()) {
+      for (const key of db.apiKeys ?? []) {
+        next.set(key.hash, { databaseId: db.id, keyId: key.id });
+      }
+    }
+    this.apiKeyIndex = next;
+  }
+
+  /**
+   * Resolve an incoming bearer token to a per-database key. Pure in-memory:
+   * one SHA-256 + one Map lookup, no disk. Returns null when the token is not
+   * a per-db key, the key is disabled, or it has expired. On a hit, the key's
+   * `lastUsedAt` is updated in memory and persisted at most once per minute so
+   * request traffic never drives per-request disk writes.
+   */
+  lookupApiKey(secret: string): ApiKeyMatch | null {
+    if (!secret) return null;
+    const ref = this.apiKeyIndex.get(hashApiKey(secret));
+    if (!ref) return null;
+    const db = this.databases.get(ref.databaseId);
+    const record = db?.apiKeys?.find((k) => k.id === ref.keyId);
+    if (!db || !record || !record.enabled) return null;
+    if (record.expiresAt && Date.parse(record.expiresAt) <= Date.now()) return null;
+
+    const now = Date.now();
+    record.lastUsedAt = new Date(now).toISOString();
+    if (now - this.lastUsageFlush > 60_000) {
+      this.lastUsageFlush = now;
+      try { this.saveConfig(); } catch { /* best-effort; auth already succeeded */ }
+    }
+    return { databaseId: ref.databaseId, keyId: ref.keyId, record };
+  }
+
+  /**
+   * Mint a new per-database key. Returns the full one-time secret alongside the
+   * stored record; the caller must surface `secret` to the operator exactly
+   * once — it is never recoverable afterward.
+   */
+  createApiKey(
+    databaseId: string,
+    opts: { name: string; expiresAt?: string },
+  ): { secret: string; record: ApiKeyRecord } | null {
+    const db = this.databases.get(databaseId);
+    if (!db) return null;
+    const secret = `dk_${crypto.randomBytes(24).toString('base64url')}`;
+    const record: ApiKeyRecord = {
+      id: `key_${crypto.randomBytes(6).toString('hex')}`,
+      name: opts.name.trim() || 'Unnamed key',
+      hash: hashApiKey(secret),
+      last4: secret.slice(-4),
+      createdAt: new Date().toISOString(),
+      expiresAt: opts.expiresAt,
+      enabled: true,
+    };
+    db.apiKeys = [...(db.apiKeys ?? []), record];
+    db.updatedAt = new Date().toISOString();
+    this.saveConfig();
+    return { secret, record };
+  }
+
+  /** Toggle/rename an existing key. Returns the updated record or null. */
+  updateApiKey(
+    databaseId: string,
+    keyId: string,
+    updates: { name?: string; enabled?: boolean; expiresAt?: string | null },
+  ): ApiKeyRecord | null {
+    const db = this.databases.get(databaseId);
+    const record = db?.apiKeys?.find((k) => k.id === keyId);
+    if (!db || !record) return null;
+    if (typeof updates.name === 'string') record.name = updates.name.trim() || record.name;
+    if (typeof updates.enabled === 'boolean') record.enabled = updates.enabled;
+    if (updates.expiresAt !== undefined) record.expiresAt = updates.expiresAt ?? undefined;
+    db.updatedAt = new Date().toISOString();
+    this.saveConfig();
+    return record;
+  }
+
+  /** Revoke (delete) a key. Returns true if it existed. */
+  deleteApiKey(databaseId: string, keyId: string): boolean {
+    const db = this.databases.get(databaseId);
+    if (!db?.apiKeys) return false;
+    const before = db.apiKeys.length;
+    db.apiKeys = db.apiKeys.filter((k) => k.id !== keyId);
+    if (db.apiKeys.length === before) return false;
+    db.updatedAt = new Date().toISOString();
+    this.saveConfig();
+    return true;
+  }
+
+  /** Public, hash-free view of a database's keys for listing in the UI. */
+  listApiKeys(databaseId: string): Array<Omit<ApiKeyRecord, 'hash'>> | null {
+    const db = this.databases.get(databaseId);
+    if (!db) return null;
+    return (db.apiKeys ?? []).map(({ hash, ...safe }) => safe);
   }
 
   private backupCorruptedConfig(): string {
