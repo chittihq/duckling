@@ -128,6 +128,11 @@ class ClickHouseServer {
   }
 
   private setupMiddleware(): void {
+    // Make req.ip / X-Forwarded-For proxy-aware so IP-based rate limiting keys
+    // on the real client instead of the reverse proxy's address (issue #66).
+    // Defaults to `false` (no trust) unless TRUST_PROXY is set.
+    this.app.set('trust proxy', config.server.trustProxy);
+
     if (config.server.enableCors) {
       this.app.use(cors({
         origin: true, // Allow requests from any origin in development

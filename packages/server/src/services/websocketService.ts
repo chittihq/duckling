@@ -5,6 +5,7 @@ import ClickHouseConnection from '../database/clickhouse';
 import { DatabaseConfigManager } from '../database/databaseConfig';
 import config from '../config';
 import logger from '../logger';
+import { resolveClientIp } from '../utils/clientIp';
 
 interface QueryMessage {
   id: string;
@@ -277,17 +278,14 @@ export class WebSocketService {
   }
 
   private getClientIp(req: IncomingMessage): string {
-    const forwardedFor = req.headers['x-forwarded-for'];
-
-    if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-      return forwardedFor.split(',')[0].trim();
-    }
-
-    if (Array.isArray(forwardedFor) && forwardedFor.length > 0) {
-      return forwardedFor[0].split(',')[0].trim();
-    }
-
-    return req.socket.remoteAddress || 'unknown';
+    // Only trust X-Forwarded-For up to the configured number of proxy hops;
+    // otherwise use the direct socket peer so the header can't be spoofed to
+    // forge an IP for logging / connection limits (issue #66).
+    return resolveClientIp(
+      req.headers['x-forwarded-for'],
+      req.socket.remoteAddress,
+      config.server.trustProxyHops,
+    );
   }
 
   /**

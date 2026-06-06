@@ -23,6 +23,31 @@ const getDataPath = (): string => {
 
 const DATA_PATH = getDataPath();
 
+/**
+ * Parse TRUST_PROXY into a value Express `app.set('trust proxy', ...)` accepts.
+ * Default is `false` (do NOT trust X-Forwarded-For) — trusting proxy headers
+ * unconditionally is itself a spoofing vector, so it must be opted into.
+ *   - unset / 'false' -> false       (use the socket peer; ignore XFF)
+ *   - 'true'          -> true        (trust all hops — only behind a closed network)
+ *   - '<n>'           -> n (number)  (trust n proxy hops closest to the server)
+ *   - anything else   -> string      ('loopback', a CIDR, or comma list)
+ */
+const parseTrustProxy = (raw: string | undefined): boolean | number | string => {
+  if (raw === undefined || raw.trim() === '' || raw === 'false') return false;
+  if (raw === 'true') return true;
+  if (/^\d+$/.test(raw.trim())) return parseInt(raw.trim(), 10);
+  return raw.trim();
+};
+
+const TRUST_PROXY = parseTrustProxy(process.env.TRUST_PROXY);
+// Number of proxy hops the raw-socket paths (WebSocket) should trust in
+// X-Forwarded-For. Defaults to the numeric TRUST_PROXY value when given, else
+// 0 (don't trust XFF at all). Set TRUST_PROXY_HOPS explicitly when TRUST_PROXY
+// is non-numeric (e.g. 'loopback' or a CIDR) but you still front with N proxies.
+const TRUST_PROXY_HOPS = process.env.TRUST_PROXY_HOPS !== undefined
+  ? Math.max(0, parseInt(process.env.TRUST_PROXY_HOPS, 10) || 0)
+  : (typeof TRUST_PROXY === 'number' ? TRUST_PROXY : 0);
+
 export const config = {
   env: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3000'),
@@ -146,6 +171,11 @@ export const config = {
   server: {
     enableCors: true,
     requestTimeout: 30000,
+    // Express `trust proxy` value; governs how req.ip / X-Forwarded-For is
+    // resolved for HTTP (and therefore IP-based rate limiting).
+    trustProxy: TRUST_PROXY,
+    // Trusted proxy hop count for raw-socket paths (WebSocket IP extraction).
+    trustProxyHops: TRUST_PROXY_HOPS,
   },
 
   auth: {

@@ -215,6 +215,8 @@ Configure via `.env` (copy from `.env.example`).
 - `REPLICATION_BACKEND` — `duckling` (default) or `peerdb`
 - `PORT` (server HTTP, default 3000)
 - `DUCKLING_API_KEY` — required for `/api/*` programmatic access
+- `TRUST_PROXY` — Express `trust proxy` value (default `false`). Set when behind a reverse proxy so `req.ip` / rate limiting key on the real client, not the proxy. Accepts `true`, a hop count (`1`), `loopback`, or a CIDR list.
+- `TRUST_PROXY_HOPS` — proxy hop count the WebSocket path trusts in `X-Forwarded-For` (default: the numeric `TRUST_PROXY`, else `0` = ignore the header). Set explicitly when `TRUST_PROXY` is non-numeric.
 
 ### Sync
 
