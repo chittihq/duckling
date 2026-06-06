@@ -8,10 +8,11 @@
 > (`QValueFromMysqlFieldValue`) and CDC (`QValueFromMysqlRowEvent`) paths,
 > before the value collapses into `time.Time`. Verified end-to-end against
 > v0.36.19: `tests/peerdb/run-type-coverage.sh` with `PEERDB_ZERO_DATE_AS_NULL=true`
-> hard-asserts NULL for both full-sync and CDC, and passes. Build the patched
-> images with `scripts/build-peerdb-zero-date-poc.sh` (defaults to v3 against
-> the v0.36.19 tag). Pair the setting with `PEERDB_NULLABLE=true` so the
-> destination column is Nullable. The v1/v2 patches below are superseded —
+> hard-asserts NULL for both full-sync and CDC, and passes. Bring the stack up
+> with `scripts/peerdb-up.sh` — it builds the patched images on first run (via
+> `scripts/build-peerdb-zero-date-poc.sh`, defaults to v3 against the v0.36.19
+> tag) and pins them, so peerdb mode is zero-date-safe by default. Pair the
+> setting with `PEERDB_NULLABLE=true` so the destination column is Nullable. The v1/v2 patches below are superseded —
 > they worked at Avro-staging level and could not distinguish a real epoch
 > value from a coerced zero-date. The separate `1000-01-01` → Date32 range
 > clamp issue is NOT addressed by this patch.

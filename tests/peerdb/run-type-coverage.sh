@@ -144,6 +144,15 @@ docker network create \
   --label com.docker.compose.project=duckling \
   duckling-peerdb-network >/dev/null 2>&1 || true
 
+# In zero-date-as-null mode, guarantee the patched flow images exist (build
+# from source on first run) and pin them via the exported PEERDB_FLOW_*_IMAGE
+# vars. Without this the run would silently use stock images and the hardened
+# NULL assertions would fail.
+if [[ "$ZERO_DATE_AS_NULL" == "true" ]]; then
+  # shellcheck source=../../scripts/ensure-peerdb-zero-date-images.sh
+  source "${ROOT_DIR}/scripts/ensure-peerdb-zero-date-images.sh"
+fi
+
 log "Starting PeerDB stack"
 MYSQL_CONNECTION_STRING="${MYSQL_CONN}" \
 ADMIN_PASSWORD="${ADMIN_PASSWORD}" \

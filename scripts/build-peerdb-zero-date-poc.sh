@@ -9,9 +9,9 @@ REPO_URL="${PEERDB_REPO_URL:-https://github.com/PeerDB-io/peerdb.git}"
 # stable-v0.36.19 images pinned in docker-compose.peerdb.yml).
 REPO_REF="${PEERDB_REPO_REF:-v0.36.19}"
 
-FLOW_API_IMAGE="${PEERDB_FLOW_API_IMAGE_TAG:-duckling-peerdb-flow-api:zero-date-poc}"
-FLOW_WORKER_IMAGE="${PEERDB_FLOW_WORKER_IMAGE_TAG:-duckling-peerdb-flow-worker:zero-date-poc}"
-FLOW_SNAPSHOT_IMAGE="${PEERDB_FLOW_SNAPSHOT_WORKER_IMAGE_TAG:-duckling-peerdb-flow-snapshot-worker:zero-date-poc}"
+FLOW_API_IMAGE="${PEERDB_FLOW_API_IMAGE_TAG:-duckling-peerdb-flow-api:zero-date-v3}"
+FLOW_WORKER_IMAGE="${PEERDB_FLOW_WORKER_IMAGE_TAG:-duckling-peerdb-flow-worker:zero-date-v3}"
+FLOW_SNAPSHOT_IMAGE="${PEERDB_FLOW_SNAPSHOT_WORKER_IMAGE_TAG:-duckling-peerdb-flow-snapshot-worker:zero-date-v3}"
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
