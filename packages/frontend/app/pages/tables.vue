@@ -90,7 +90,9 @@ const loadTableData = async (tableName: string) => {
     tableData.value = response
 
     if (tableData.value.length > 0) {
-      tableColumns.value = Object.keys(tableData.value[0])
+      // Union keys across all rows so a column isn't dropped when the first
+      // row is null/missing for it (#75).
+      tableColumns.value = columnsFromRows(tableData.value)
     } else {
       tableColumns.value = []
     }

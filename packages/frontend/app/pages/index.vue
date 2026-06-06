@@ -78,7 +78,9 @@ const executeQuery = async () => {
     queryResults.value = response.result || []
 
     if (queryResults.value.length > 0) {
-      queryResultColumns.value = Object.keys(queryResults.value[0])
+      // Union keys across all rows so a column isn't dropped when the first
+      // row is null/missing for it (#75).
+      queryResultColumns.value = columnsFromRows(queryResults.value)
     }
 
     queryCurrentPage.value = 1
