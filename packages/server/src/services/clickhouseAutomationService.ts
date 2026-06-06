@@ -53,6 +53,19 @@ class ClickHouseAutomationService {
     return ClickHouseAutomationService.instances.get(databaseId)!;
   }
 
+  /**
+   * Stop the automation loops for a database and drop its instance. Used when a
+   * database is deleted so the periodic sync / cleanup / backup / health-check
+   * timers don't keep firing forever. No-op if no instance exists.
+   */
+  static closeInstance(databaseId: string): void {
+    const instance = ClickHouseAutomationService.instances.get(databaseId);
+    if (instance) {
+      instance.stop();
+      ClickHouseAutomationService.instances.delete(databaseId);
+    }
+  }
+
   async start(syncOffsetMs = 0): Promise<void> {
     if (this.isRunning) return;
     this.isRunning = true;

@@ -76,6 +76,19 @@ class CdcCompatibilityService {
     return CdcCompatibilityService.instances.get(databaseId)!;
   }
 
+  /**
+   * Stop the poller for a database and drop its instance. Used when a database
+   * is deleted so the 1-second MySQL polling loop doesn't keep running (and
+   * erroring) against a now-removed source. No-op if no instance exists.
+   */
+  static async closeInstance(databaseId: string): Promise<void> {
+    const instance = CdcCompatibilityService.instances.get(databaseId);
+    if (instance) {
+      await instance.stop();
+      CdcCompatibilityService.instances.delete(databaseId);
+    }
+  }
+
   async start(): Promise<CdcStatus> {
     await this.loadCheckpoint();
 

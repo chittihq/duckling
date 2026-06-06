@@ -1644,9 +1644,7 @@ class ClickHouseServer {
       const { id } = req.params;
 
       const dbManager = DatabaseConfigManager.getInstance();
-      const deleted = dbManager.deleteDatabase(id);
-
-      if (!deleted) {
+      if (!dbManager.getDatabase(id)) {
         res.status(404).json({
           success: false,
           error: 'Database not found'
@@ -1654,7 +1652,17 @@ class ClickHouseServer {
         return;
       }
 
+      // Stop every per-database background service BEFORE removing the config
+      // and connections. Each is keyed by databaseId and holds timers/pollers/
+      // pools; leaving them running after deletion leaks resources and keeps
+      // hammering a source that no longer exists (issue #70).
+      await CdcCompatibilityService.closeInstance(id);
+      ClickHouseAutomationService.closeInstance(id);
+
+      dbManager.deleteDatabase(id);
+
       await ClickHouseConnection.closeInstance(id);
+      MySQLConnection.closeInstance(id);
 
       res.json({ success: true, message: 'Database deleted successfully' });
     } catch (error) {
