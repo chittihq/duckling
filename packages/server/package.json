@@ -35,7 +35,7 @@
     "node-cron": "^3.0.3",
     "pg": "^8.20.0",
     "winston": "^3.11.0",
-    "ws": "^8.18.3"
+    "ws": "^8.20.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
