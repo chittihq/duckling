@@ -39,7 +39,7 @@
   "author": "ChittiHQ Team",
   "license": "MIT",
   "dependencies": {
-    "ws": "^8.18.3"
+    "ws": "^8.20.1"
   },
   "devDependencies": {
     "@types/node": "^20.19.8",
