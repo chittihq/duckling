@@ -212,6 +212,16 @@ export class DatabaseConfigManager {
   }
 
   private createDefaultDatabase(): void {
+    // No env-driven source configured → start with zero databases. The operator
+    // adds them from the dashboard / POST /api/databases (connection string per
+    // database, persisted to databases.json). Avoids a phantom "default" db that
+    // would error on sync with an empty connection. We do NOT persist here, so
+    // if MYSQL_CONNECTION_STRING is set on a later boot the default db is still
+    // created.
+    if (!process.env.MYSQL_CONNECTION_STRING) {
+      return;
+    }
+
     // The env-driven default database stays on polling mode — it's the one
     // the legacy /sync/full path expects to operate on, and the polling
     // schema is what all the existing integration tests assume. Operators

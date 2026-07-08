@@ -31,11 +31,15 @@ describe('DatabaseConfigManager safety', () => {
   beforeEach(() => {
     (DatabaseConfigManager as any).instance = undefined;
     vi.clearAllMocks();
+    // A default database is only auto-created (and persisted) when a source is
+    // configured via env; these atomic-write tests rely on that write path.
+    process.env.MYSQL_CONNECTION_STRING = 'mysql://user:pass@localhost:3306/db';
   });
 
   afterEach(() => {
     (DatabaseConfigManager as any).instance = undefined;
     vi.restoreAllMocks();
+    delete process.env.MYSQL_CONNECTION_STRING;
   });
 
   test('writes configs atomically via temp file + rename', () => {
@@ -62,6 +66,18 @@ describe('DatabaseConfigManager safety', () => {
 
     expect(() => DatabaseConfigManager.getInstance()).toThrow('rename failed');
     expect(fs.unlinkSync).toHaveBeenCalledWith(TEMP_FILE);
+  });
+
+  test('does not create a phantom default database when no MYSQL_CONNECTION_STRING is set', () => {
+    // UI-first flow: with no env source, start empty and let the operator add
+    // databases via POST /api/databases (persisted on first addDatabase).
+    delete process.env.MYSQL_CONNECTION_STRING;
+    vi.mocked(fs.existsSync).mockImplementation(() => false);
+
+    const mgr = DatabaseConfigManager.getInstance();
+
+    expect(mgr.getAllDatabases()).toEqual([]);
+    expect(fs.writeFileSync).not.toHaveBeenCalled();
   });
 
   test('backs up corrupted config and throws instead of silently resetting', () => {

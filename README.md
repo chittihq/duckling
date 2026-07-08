@@ -34,6 +34,28 @@ curl -X POST http://localhost:3001/api/databases \
 
 Frontend: <http://localhost:3000>. API: <http://localhost:3001>. MySQL wire protocol: `mysql -h 127.0.0.1 -P 3307 -u duckling -p${DUCKLING_API_KEY}`.
 
+## Deploy (self-host)
+
+For a server deploy, use the **published image** (`chittihq/duckling`, built from the single-container `Dockerfile` — API + dashboard on one port) plus ClickHouse. Grab [`docker-compose.prod.yml`](docker-compose.prod.yml):
+
+```bash
+curl -O https://raw.githubusercontent.com/chittihq/duckling/main/docker-compose.prod.yml
+docker compose -f docker-compose.prod.yml up -d
+```
+
+That's it — **no environment variables required**:
+
+- **ClickHouse is bundled and auto-connected** (you never configure it).
+- **Persistence uses named volumes** (`clickhouse-data`, `duckling-data`) — nothing to map by hand, works the same under the Compose CLI or Dokploy's Compose deploy.
+- **Secrets auto-generate on first boot** (admin password, API key, session secret) and are printed once in the logs:
+  ```bash
+  docker compose -f docker-compose.prod.yml logs duckling | grep -A6 generated
+  ```
+
+Then open <http://SERVER_IP:3000>, log in, and **add your MySQL database from the dashboard** (or `POST /api/databases`) — the connection string is stored per-database on the `duckling-data` volume, so you don't bake it into the compose. Set `MYSQL_CONNECTION_STRING` in the compose only if you want a single default database created automatically. Behind a reverse proxy, set `TRUST_PROXY=1`.
+
+> This container is **not** self-contained like the old DuckDB build — ClickHouse is a separate service reached over `CLICKHOUSE_URL`. The compose wires that for you; the volume that holds your data is ClickHouse's `clickhouse-data` (`/var/lib/clickhouse`).
+
 ## Architecture
 
 ```
