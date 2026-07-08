@@ -13,6 +13,14 @@ services:
     volumes:
       - ./data/clickhouse:/var/lib/clickhouse
       - ./logs/clickhouse:/var/log/clickhouse-server
+    healthcheck:
+      # Gate the server on ClickHouse actually accepting queries (default user
+      # has no password in this stack). Lets `depends_on: service_healthy` work.
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     restart: unless-stopped
     networks:
       - clickhouse-network
@@ -27,7 +35,10 @@ services:
       - "3001:3000"
       - "3307:3307"
     env_file:
-      - .env
+      # Optional: the stack runs with just MYSQL_CONNECTION_STRING set (see the
+      # environment block). Missing .env is fine — no error.
+      - path: .env
+        required: false
     environment:
       # Server configuration
       - NODE_ENV=${NODE_ENV:-development}
@@ -83,7 +94,8 @@ services:
       #   docker compose build clickhouse-server && docker compose up -d clickhouse-server
     restart: unless-stopped
     depends_on:
-      - clickhouse
+      clickhouse:
+        condition: service_healthy
     networks:
       - clickhouse-network
 

@@ -1,5 +1,7 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import * as fs from 'fs';
+import * as crypto from 'crypto';
 
 dotenv.config();
 
@@ -22,6 +24,94 @@ const getDataPath = (): string => {
 };
 
 const DATA_PATH = getDataPath();
+
+/**
+ * Turnkey secret management. So a plain `docker compose up` works with almost
+ * no configuration, the admin password, global API key, and session secret are
+ * auto-generated on first boot and persisted to `<DATA_PATH>/.secrets.json`
+ * (0600). Precedence per secret: explicit env var > previously persisted value
+ * > freshly generated. Anything set in the environment always wins and is never
+ * written to disk, so real deployments stay fully env-driven.
+ *
+ * Pure so it can be unit-tested; the file I/O wrapper below is thin.
+ */
+export function pickSecret(
+  envValue: string | undefined,
+  storedValue: string | undefined,
+  generate: () => string,
+): { value: string; generated: boolean } {
+  if (envValue && envValue.trim()) return { value: envValue, generated: false };
+  if (storedValue && String(storedValue).trim()) return { value: String(storedValue), generated: false };
+  return { value: generate(), generated: true };
+}
+
+const SECRETS_FILE = path.join(DATA_PATH, '.secrets.json');
+
+function loadOrGenerateManagedSecrets(): {
+  adminUsername: string;
+  adminPassword: string;
+  apiKey: string;
+  sessionSecret: string;
+  generated: string[];
+} {
+  let stored: Record<string, string> = {};
+  try {
+    if (fs.existsSync(SECRETS_FILE)) {
+      stored = JSON.parse(fs.readFileSync(SECRETS_FILE, 'utf-8')) as Record<string, string>;
+    }
+  } catch {
+    stored = {};
+  }
+
+  const generated: string[] = [];
+  const take = (envValue: string | undefined, key: string, generate: () => string): string => {
+    const result = pickSecret(envValue, stored[key], generate);
+    if (result.generated) {
+      stored[key] = result.value;
+      generated.push(key);
+    }
+    return result.value;
+  };
+
+  const adminUsername = process.env.ADMIN_USERNAME || 'admin';
+  const adminPassword = take(process.env.ADMIN_PASSWORD, 'adminPassword', () => crypto.randomBytes(12).toString('base64url'));
+  const apiKey = take(process.env.DUCKLING_API_KEY, 'apiKey', () => `dk_root_${crypto.randomBytes(24).toString('base64url')}`);
+  const sessionSecret = take(
+    process.env.SESSION_SECRET || process.env.JWT_SECRET,
+    'sessionSecret',
+    () => crypto.randomBytes(32).toString('hex'),
+  );
+
+  // In tests, resolve secrets in memory but never touch disk or print — avoids
+  // polluting ./data and leaking generated values into test output.
+  const isTest = process.env.NODE_ENV === 'test' || !!process.env.VITEST;
+
+  if (generated.length > 0 && !isTest) {
+    try {
+      if (!fs.existsSync(DATA_PATH)) fs.mkdirSync(DATA_PATH, { recursive: true });
+      fs.writeFileSync(SECRETS_FILE, JSON.stringify(stored, null, 2), { mode: 0o600 });
+    } catch (error) {
+      // Non-fatal: the process still runs with in-memory secrets, they just
+      // won't survive a restart. Surface it so the operator can fix perms.
+      console.warn(`[secrets] could not persist auto-generated secrets to ${SECRETS_FILE}:`, error);
+    }
+    // One-time notice (only on the boot that generated them) so the operator
+    // can retrieve the credentials. They are also in <DATA_PATH>/.secrets.json.
+    console.log(
+      '\n========================================================================\n' +
+      '  Duckling generated missing credentials on first boot (persisted to\n' +
+      `  ${SECRETS_FILE}). Set these in the environment to manage them yourself.\n` +
+      (generated.includes('adminPassword') ? `    ADMIN_USERNAME=${adminUsername}\n    ADMIN_PASSWORD=${adminPassword}\n` : '') +
+      (generated.includes('apiKey') ? `    DUCKLING_API_KEY=${apiKey}\n` : '') +
+      (generated.includes('sessionSecret') ? '    SESSION_SECRET=(generated 32-byte secret)\n' : '') +
+      '========================================================================\n',
+    );
+  }
+
+  return { adminUsername, adminPassword, apiKey, sessionSecret, generated };
+}
+
+const MANAGED_SECRETS = loadOrGenerateManagedSecrets();
 
 /**
  * Parse TRUST_PROXY into a value Express `app.set('trust proxy', ...)` accepts.
@@ -179,11 +269,13 @@ export const config = {
   },
 
   auth: {
-    adminUsername: process.env.ADMIN_USERNAME || '',
-    adminPassword: process.env.ADMIN_PASSWORD || '',
-    sessionSecret: process.env.SESSION_SECRET || '',
-    apiKey: process.env.DUCKLING_API_KEY || '',
-    jwtSecret: process.env.JWT_SECRET || process.env.SESSION_SECRET || DEFAULT_JWT_SECRET,
+    // Auto-generated + persisted on first boot when the corresponding env var
+    // is unset (see loadOrGenerateManagedSecrets). Env always wins.
+    adminUsername: MANAGED_SECRETS.adminUsername,
+    adminPassword: MANAGED_SECRETS.adminPassword,
+    sessionSecret: MANAGED_SECRETS.sessionSecret,
+    apiKey: MANAGED_SECRETS.apiKey,
+    jwtSecret: process.env.JWT_SECRET || MANAGED_SECRETS.sessionSecret,
     jwtExpiresIn: process.env.JWT_EXPIRES_IN || '1h', // 1 hour by default
   },
 
