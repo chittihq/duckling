@@ -226,6 +226,30 @@ class MySQLConnection {
   }
 
   /**
+   * Columns of a UNIQUE (non-PRIMARY) index, used as the read-side dedup key
+   * fallback for tables that have no PRIMARY KEY. Picks a single deterministic
+   * index (the alphabetically-first key name) and returns its columns in index
+   * order. Returns [] when the table has no usable unique index.
+   *
+   * ClickHouse enforces no uniqueness, so without a dedup key a PK-less table
+   * would accumulate duplicate rows on incremental re-sync (the watermark is
+   * re-read with `>=`). Keying the projection view on a UNIQUE index restores
+   * "one row per logical key" for such tables.
+   */
+  async getUniqueKeyColumns(tableName: string): Promise<string[]> {
+    const rows = await this.execute(
+      `SHOW INDEX FROM ${this.q(tableName)} WHERE Non_unique = 0 AND Key_name <> 'PRIMARY'`
+    );
+    if (rows.length === 0) return [];
+    // Deterministically choose one index (alphabetically-first key name).
+    const keyName = rows.map((row: any) => String(row.Key_name)).sort()[0];
+    return rows
+      .filter((row: any) => String(row.Key_name) === keyName)
+      .sort((a: any, b: any) => a.Seq_in_index - b.Seq_in_index)
+      .map((row: any) => String(row.Column_name));
+  }
+
+  /**
    * Get exact row count using COUNT(*) - SLOW for large tables
    * Use getTableRowCountFast() for progress tracking or estimates
    */

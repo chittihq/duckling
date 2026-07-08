@@ -58,6 +58,29 @@ CREATE TABLE IF NOT EXISTS composite_keyset_test (
   PRIMARY KEY (b, a)
 ) ENGINE=InnoDB;
 
+-- Suite 16: unique-constraint edge cases.
+-- Secondary UNIQUE index ALONGSIDE a primary key. Read-side dedup must key on
+-- the PRIMARY KEY; a change to the UNIQUE column must reflect without dupes.
+CREATE TABLE IF NOT EXISTS pk_with_unique (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(255) NOT NULL,
+  name VARCHAR(200),
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  UNIQUE KEY uq_email (email)
+) ENGINE=InnoDB;
+
+-- UNIQUE key but NO primary key. Read-side dedup must fall back to the UNIQUE
+-- key so incremental re-sync doesn't accumulate duplicate rows.
+CREATE TABLE IF NOT EXISTS no_pk_unique (
+  sku VARCHAR(64) NOT NULL,
+  name VARCHAR(200),
+  qty INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  UNIQUE KEY uq_sku (sku)
+) ENGINE=InnoDB;
+
 -- =============================================
 -- Comprehensive type coverage for Suite 7
 -- Tests all MySQL 8 data types through full-sync Appender path

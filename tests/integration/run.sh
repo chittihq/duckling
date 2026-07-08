@@ -251,6 +251,16 @@ INSERT INTO composite_keyset_test (a, b, payload, created_at, updated_at) VALUES
   (3, 20, 'seed-3-20', '2025-01-03 09:00:00', '2025-01-03 09:00:00'),
   (4, 20, 'seed-4-20', '2025-01-03 09:00:00', '2025-01-03 09:00:00');
 
+-- Seed pk_with_unique (Suite 16: secondary UNIQUE index alongside a PK)
+INSERT INTO pk_with_unique (id, email, name, created_at, updated_at) VALUES
+  (1, 'alice@example.com', 'Alice', '2025-01-01 09:00:00', '2025-01-01 09:00:00'),
+  (2, 'bob@example.com', 'Bob', '2025-01-01 09:00:00', '2025-01-01 09:00:00');
+
+-- Seed no_pk_unique (Suite 16: UNIQUE key, no primary key)
+INSERT INTO no_pk_unique (sku, name, qty, created_at, updated_at) VALUES
+  ('SKU-A', 'Widget A', 10, '2025-01-01 09:00:00', '2025-01-01 09:00:00'),
+  ('SKU-B', 'Widget B', 20, '2025-01-01 09:00:00', '2025-01-01 09:00:00');
+
 -- Allow zero dates for type_coverage testing
 SET SESSION sql_mode = REPLACE(@@sql_mode, 'NO_ZERO_DATE', '');
 

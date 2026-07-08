@@ -173,6 +173,8 @@ Watermark detection priority used during incremental syncs (and re-sync) is:
 
 Queries use `>=` (not `>`) on the watermark to avoid losing rows at the boundary. Re-processing the boundary row is idempotent because the raw tables use `ReplacingMergeTree`-style projection views for dedup.
 
+**Uniqueness / dedup key.** ClickHouse enforces no unique constraint — `<table>__raw` is a plain append-only MergeTree. "One row per logical key" is a read-time projection: the `<table>` view keeps `row_number() = 1` per key partition, latest by `_sync_timestamp`. The dedup key is the MySQL **PRIMARY KEY**, falling back to a **UNIQUE index** (`getUniqueKeyColumns`) when the table has no primary key — otherwise a PK-less table would accumulate duplicate rows on incremental re-sync (the boundary row is re-read every time). Secondary UNIQUE indexes on a table that *does* have a PK are not used for dedup and are not enforced. A table with neither a PK nor a UNIQUE index gets no read-side dedup (the view selects all non-deleted rows). Watermark/keyset pagination still use the real PK, independent of the dedup key. Covered by `suite16-unique-constraints.test.ts`.
+
 #### Phase 2A — PeerDB CDC (binlog-capable MySQL)
 
 Activated when:
@@ -334,6 +336,7 @@ cd tests/integration
 - `suite13-interrupted-incremental-restart.test.ts`
 - `suite14-incremental-crash-probe.test.ts`
 - `suite15-clear-all-data.test.ts`
+- `suite16-unique-constraints.test.ts` — PK / composite-PK / secondary-UNIQUE / PK-less-UNIQUE dedup edge cases
 
 Server port for the integration stack is **3002** (avoids collision with a running dev instance on 3001).
 

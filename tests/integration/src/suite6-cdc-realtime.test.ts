@@ -449,6 +449,26 @@ describe('Suite 6: CDC Real-Time Replication', () => {
     let preFailPos: string;
     let postFailPos: string;
 
+    // `position` is a synthetic per-cycle counter the polling CDC bumps once per
+    // successful cycle (~1s). After recovery it advances asynchronously, so read
+    // it with a bounded poll instead of a single shot — otherwise the assertion
+    // races the next cycle's checkpoint commit (flaky "expected N > N").
+    async function waitForPositionAbove(threshold: number, timeoutMs = 15000): Promise<number> {
+      const deadline = Date.now() + timeoutMs;
+      let latest = threshold;
+      while (Date.now() < deadline) {
+        latest = Number(
+          await clickhouseScalarStrict(
+            `SELECT position FROM cdc_binlog_position WHERE database_id = '${DB_ID}'`,
+            'position',
+          ),
+        );
+        if (latest > threshold) return latest;
+        await sleep(500);
+      }
+      return latest;
+    }
+
     test('record pre-fail checkpoint', async () => {
       preFailFile = await clickhouseScalarStrict(
         `SELECT filename FROM cdc_binlog_position WHERE database_id = '${DB_ID}'`,
@@ -553,21 +573,15 @@ describe('Suite 6: CDC Real-Time Replication', () => {
     });
 
     test('checkpoint advanced after successful recovery', async () => {
-      const recoveredPos = await clickhouseScalarStrict(
-        `SELECT position FROM cdc_binlog_position WHERE database_id = '${DB_ID}'`,
-        'position',
-      );
-      expect(Number(recoveredPos)).toBeGreaterThan(Number(postFailPos));
+      const recoveredPos = await waitForPositionAbove(Number(postFailPos));
+      expect(recoveredPos).toBeGreaterThan(Number(postFailPos));
     });
 
     test('checkpoint monotonicity', async () => {
-      const recoveredPos = await clickhouseScalarStrict(
-        `SELECT position FROM cdc_binlog_position WHERE database_id = '${DB_ID}'`,
-        'position',
-      );
       // post_fail_pos <= pre_fail_pos < recovered_pos
       expect(Number(postFailPos)).toBeLessThanOrEqual(Number(preFailPos));
-      expect(Number(recoveredPos)).toBeGreaterThan(Number(preFailPos));
+      const recoveredPos = await waitForPositionAbove(Number(preFailPos));
+      expect(recoveredPos).toBeGreaterThan(Number(preFailPos));
     });
 
     test('cleanup checkpoint test', async () => {

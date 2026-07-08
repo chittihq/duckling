@@ -428,10 +428,17 @@ class ClickHouseSyncService extends EventEmitter {
   }> {
     const startedAt = Date.now();
     const primaryKeyColumns = await this.mysql.getPrimaryKeyColumns(tableName);
+    // Read-side dedup keys on the PRIMARY KEY, falling back to a UNIQUE index
+    // when the table has no primary key. ClickHouse enforces no uniqueness, so
+    // without a dedup key a PK-less table would accumulate duplicate rows on
+    // incremental re-sync. Pagination/watermark still use the real PK below.
+    const dedupKeyColumns = primaryKeyColumns.length > 0
+      ? primaryKeyColumns
+      : await this.mysql.getUniqueKeyColumns(tableName);
     const timestampColumn = this.detectTimestampColumn(schema);
     const rawTableName = this.getRawTableName(tableName);
 
-    await this.rebuildTable(tableName, rawTableName, schema, primaryKeyColumns);
+    await this.rebuildTable(tableName, rawTableName, schema, dedupKeyColumns);
 
     let recordsProcessed = 0;
     let lastProcessedId: string | number | undefined;
