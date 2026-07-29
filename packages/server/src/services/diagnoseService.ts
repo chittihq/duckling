@@ -1,4 +1,5 @@
 import MySQLConnection from '../database/mysql';
+import { safeDetectReplicationCapability } from './replicationModeDetector';
 import logger from '../logger';
 
 // --- Types ---
@@ -158,35 +159,67 @@ export async function diagnoseDatabase(
     reportProgress(check);
   }
 
-  // 4. Binlog enabled
-  const logBin = await getVariable(mysql, 'log_bin');
-  {
-    const check: DiagnoseProgressEvent = logBin !== null
-      ? { name: 'Binlog enabled', status: logBin === 'ON' ? 'pass' : 'warn', detail: logBin === 'ON' ? 'ON' : 'OFF — CDC will not work' }
-      : { name: 'Binlog enabled', status: 'warn', detail: 'Not available — insufficient privileges' };
+  // 4. Binlog CDC capability — derived from the SAME probe the replication
+  // coordinator uses to pick peerdb vs polling, so these ticks always match
+  // the mode duckling will actually select for this database.
+  const capability = await safeDetectReplicationCapability(mysql);
+  const { variables, grants } = capability;
+
+  const pushCheck = (check: DiagnoseProgressEvent): void => {
     serverChecks.push(check);
     reportProgress(check);
+  };
+  // Hard CDC requirement: ✗ when the value is wrong or unreadable.
+  const requirement = (name: string, value: string | null | undefined, ok: boolean, badSuffix: string): void => {
+    pushCheck(value == null
+      ? { name, status: 'fail', detail: 'Not available — insufficient privileges' }
+      : { name, status: ok ? 'pass' : 'fail', detail: ok ? value : `${value} — ${badSuffix}` });
+  };
+
+  const isOn = (value: string | null | undefined): boolean =>
+    value != null && /^(ON|1)$/i.test(String(value).trim());
+  const equalsCi = (value: string | null | undefined, expected: string): boolean =>
+    value != null && String(value).trim().toUpperCase() === expected;
+
+  requirement('Binlog enabled', variables.log_bin, isOn(variables.log_bin), 'binlog CDC will not work');
+  requirement('Binlog format', variables.binlog_format, equalsCi(variables.binlog_format, 'ROW'), 'CDC needs ROW format');
+  requirement('Binlog row image', variables.binlog_row_image, equalsCi(variables.binlog_row_image, 'FULL'), 'CDC needs FULL row image');
+  requirement('Binlog row metadata', variables.binlog_row_metadata, equalsCi(variables.binlog_row_metadata, 'FULL'), 'CDC needs FULL metadata');
+
+  // GTID is not a hard requirement (file-position CDC works without it) — warn only.
+  pushCheck(variables.gtid_mode == null
+    ? { name: 'GTID mode', status: 'warn', detail: 'Not available — insufficient privileges' }
+    : isOn(variables.gtid_mode)
+      ? { name: 'GTID mode', status: 'pass', detail: variables.gtid_mode }
+      : { name: 'GTID mode', status: 'warn', detail: `${variables.gtid_mode} — CDC falls back to file-position tracking` });
+
+  // Replication grants (hard requirement for binlog CDC).
+  {
+    const hasGrant = (substring: string): boolean =>
+      grants.some((line) => line.toUpperCase().includes(substring));
+    const missingGrants = ['REPLICATION SLAVE', 'REPLICATION CLIENT'].filter((grant) => !hasGrant(grant));
+    pushCheck(missingGrants.length === 0
+      ? { name: 'Replication grants', status: 'pass', detail: 'REPLICATION SLAVE, REPLICATION CLIENT' }
+      : { name: 'Replication grants', status: 'fail', detail: `Missing: ${missingGrants.join(', ')}` });
   }
 
-  // 5. Binlog format
-  const binlogFormat = await getVariable(mysql, 'binlog_format');
-  {
-    const check: DiagnoseProgressEvent = binlogFormat !== null
-      ? { name: 'Binlog format', status: binlogFormat === 'ROW' ? 'pass' : 'warn', detail: binlogFormat === 'ROW' ? 'ROW' : `${binlogFormat} — CDC needs ROW format` }
-      : { name: 'Binlog format', status: 'warn', detail: 'Not available — insufficient privileges' };
-    serverChecks.push(check);
-    reportProgress(check);
+  // Binlog retention (advisory): short retention means a stalled CDC pipeline
+  // loses its position and needs a full re-snapshot.
+  if (isOn(variables.log_bin)) {
+    const expireSeconds = await getVariable(mysql, 'binlog_expire_logs_seconds');
+    if (expireSeconds !== null && Number(expireSeconds) > 0) {
+      const days = Number(expireSeconds) / 86400;
+      const daysLabel = days >= 1 ? `${Math.round(days * 10) / 10} days` : `${Math.round(Number(expireSeconds) / 3600)} hours`;
+      pushCheck(days >= 7
+        ? { name: 'Binlog retention', status: 'pass', detail: daysLabel }
+        : { name: 'Binlog retention', status: 'warn', detail: `${daysLabel} — a CDC pipeline stalled longer than this loses its position` });
+    }
   }
 
-  // 6. Binlog row image
-  const binlogRowImage = await getVariable(mysql, 'binlog_row_image');
-  {
-    const check: DiagnoseProgressEvent = binlogRowImage !== null
-      ? { name: 'Binlog row image', status: binlogRowImage === 'FULL' ? 'pass' : 'warn', detail: binlogRowImage === 'FULL' ? 'FULL' : `${binlogRowImage} — CDC may miss columns` }
-      : { name: 'Binlog row image', status: 'warn', detail: 'Not available — insufficient privileges' };
-    serverChecks.push(check);
-    reportProgress(check);
-  }
+  // Bottom-line verdict mirroring the coordinator's decision.
+  pushCheck(capability.cdcSupported
+    ? { name: 'CDC readiness', status: 'pass', detail: 'All binlog CDC requirements met — peerdb mode available' }
+    : { name: 'CDC readiness', status: 'warn', detail: 'Binlog CDC unavailable — will use polling mode (see failed checks above)' });
 
   // 7. sql_mode zero dates
   try {
