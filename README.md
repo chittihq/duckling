@@ -4,8 +4,8 @@
 
 ClickHouse-backed analytical replica for MySQL. Replication is per-database, picked from a capability probe (or pinned by the operator), with two backends today:
 
-- **`peerdb`** — PeerDB does both the initial snapshot AND ongoing binlog CDC. Requires PeerDB stack (Temporal, flow workers, RustFS, catalog Postgres).
-- **`polling`** — duckling dumps the source, then a 1-second row-count + change-token poller keeps it live. No PeerDB dependency. The fallback when binlog CDC isn't available on the source.
+- **`peerdb`** — **PeerDB end-to-end**: it does the full initial snapshot itself and continues into binlog streaming as one continuous operation; duckling never touches the data. Requires PeerDB stack (Temporal, flow workers, RustFS, catalog Postgres).
+- **`polling`** — duckling dumps the source, then a 1-second row-count + change-token poller fires incremental syncs. **This is not CDC** — it behaves like CDC for inserts and updates, but it's polling, and a delete paired with an insert in the same window can go unnoticed (see Known limitations). No PeerDB dependency. The fallback when binlog CDC isn't available on the source.
 
 A duckling-led dump-then-PeerDB-attach handoff (so duckling owns Phase 1 even in peerdb mode) is implemented in code but currently blocked upstream — PeerDB v0.36 rejects pre-populated destination tables. See `docs/replication-strategy.md`.
 
@@ -182,6 +182,7 @@ pnpm run benchmark
 - **PeerDB MySQL zero-date corruption (UNRESOLVED)** — PeerDB's ClickHouse path silently corrupts MySQL `0000-00-00` and `1000-01-01` values, typically surfacing them as `1970-01-01`. **This is not fixed in this repo.** The capability probe surfaces it as a `knownBlockers` entry on `/api/databases/:id/replication-mode` so operators see it before adopting `peerdb` mode. Workarounds: (a) use `polling` mode — duckling normalizes zero-dates to `NULL`; (b) build a patched PeerDB image via `scripts/build-peerdb-zero-date-poc.sh` (POC patches in `docs/`); (c) accept the corruption. Upstream fix tracked in `docs/peerdb-upstream-zero-date-patch.md`.
 - **PeerDB v0.36 rejects pre-populated destination tables** — the "duckling dumps then PeerDB attaches with `doInitialSnapshot: false`" handoff is implemented in code (`bootstrapTableForPeerDB`, `createMirror({ startPosition })`) but PeerDB rejects all variants we tried (`"not all PeerDB columns found"`). In `peerdb` mode today, PeerDB does the snapshot itself. Unblocking requires upstream PeerDB support for attach-to-existing or per-mirror `cdcStartingFromPosition`.
 - **Mid-dump source writes during polling-mode Phase 1** — per-table reads aren't wrapped in a single MySQL transaction yet, so cross-table snapshots may be slightly inconsistent under active writes. Mitigation in polling mode: the next incremental sync picks up new rows. Not yet implemented.
+- **Polling-mode delete blind spot** — the poller triggers a full table rebuild only when the row count *decreases*. A delete paired with an insert inside the same polling window keeps the count unchanged, takes the incremental path, and incremental syncs never tombstone rows (`_sync_deleted` stays 0) — so the deleted row survives in the replica until the next full rebuild. Binlog CDC (`peerdb` mode) does not have this gap.
 
 ## Docs
 
