@@ -1,0 +1,122 @@
+name: Publish Patched PeerDB Images
+
+# Builds PeerDB's flow images from a PINNED upstream commit with our zero-date
+# patch (docs/peerdb-upstream-zero-date-poc-v3.patch) applied, and pushes them
+# to Docker Hub. Mirrors scripts/build-peerdb-zero-date-poc.sh, which stays the
+# local/dev path. Published so the default deploy compose can run peerdb mode
+# zero-date-safe without a local source build.
+#
+# Manual trigger only — bumping the upstream pin requires re-verifying the
+# patch applies and re-running tests/peerdb/run-type-coverage.sh first.
+
+on:
+  workflow_dispatch:
+    inputs:
+      peerdb_commit:
+        description: 'Upstream PeerDB commit SHA (immutable pin; 34ecaea = v0.36.19)'
+        required: true
+        default: '34ecaea70a6dd36dbd99cceb4701685cc914b631'
+      tag:
+        description: 'Image tag to publish'
+        required: true
+        default: 'v0.36.19-zerodate-v3'
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_PREFIX: chittihq/peerdb
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout duckling (for the patch file)
+        uses: actions/checkout@v4
+        with:
+          path: duckling
+
+      - name: Fetch pinned PeerDB commit
+        run: |
+          git init peerdb-src
+          cd peerdb-src
+          git remote add origin https://github.com/PeerDB-io/peerdb.git
+          git fetch --depth 1 origin "${{ inputs.peerdb_commit }}"
+          git -c advice.detachedHead=false checkout --force --detach FETCH_HEAD
+          ACTUAL="$(git rev-parse HEAD)"
+          if [ "$ACTUAL" != "${{ inputs.peerdb_commit }}" ]; then
+            echo "Pinned ${{ inputs.peerdb_commit }} but landed on $ACTUAL" >&2
+            exit 1
+          fi
+
+      - name: Apply zero-date patch
+        run: |
+          cd peerdb-src
+          git apply --reject --whitespace=fix ../duckling/docs/peerdb-upstream-zero-date-poc-v3.patch
+          git status --short
+
+      - name: Generate protobufs
+        run: |
+          docker run --rm \
+            -v "$PWD/peerdb-src:/workspace" \
+            -w /workspace \
+            bufbuild/buf:1.58.0 \
+            generate --template buf.gen.yaml protos
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Three targets share the same build stages; the gha cache makes the
+      # 2nd and 3rd builds mostly cache hits.
+      - name: Build and push flow-api
+        uses: docker/build-push-action@v6
+        with:
+          context: ./peerdb-src
+          file: ./peerdb-src/stacks/flow.Dockerfile
+          target: flow-api
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_PREFIX }}-flow-api:${{ inputs.tag }}
+          cache-from: type=gha,scope=peerdb-flow
+          cache-to: type=gha,mode=max,scope=peerdb-flow
+
+      - name: Build and push flow-worker
+        uses: docker/build-push-action@v6
+        with:
+          context: ./peerdb-src
+          file: ./peerdb-src/stacks/flow.Dockerfile
+          target: flow-worker
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_PREFIX }}-flow-worker:${{ inputs.tag }}
+          cache-from: type=gha,scope=peerdb-flow
+          cache-to: type=gha,mode=max,scope=peerdb-flow
+
+      - name: Build and push flow-snapshot-worker
+        uses: docker/build-push-action@v6
+        with:
+          context: ./peerdb-src
+          file: ./peerdb-src/stacks/flow.Dockerfile
+          target: flow-snapshot-worker
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_PREFIX }}-flow-snapshot-worker:${{ inputs.tag }}
+          cache-from: type=gha,scope=peerdb-flow
+          cache-to: type=gha,mode=max,scope=peerdb-flow
+
+      - name: Summary
+        run: |
+          echo "Published:" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ${{ env.IMAGE_PREFIX }}-flow-api:${{ inputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ${{ env.IMAGE_PREFIX }}-flow-worker:${{ inputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ${{ env.IMAGE_PREFIX }}-flow-snapshot-worker:${{ inputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "From PeerDB commit ${{ inputs.peerdb_commit }} + zero-date patch v3 (linux/amd64)." >> "$GITHUB_STEP_SUMMARY"
