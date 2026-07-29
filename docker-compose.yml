@@ -1,5 +1,5 @@
 # ============================================================================
-# Duckling — self-host deployment (published image). This is the DEFAULT
+# Duckling — self-host deployment (published images). This is the DEFAULT
 # compose file:
 #
 #   docker compose up -d
@@ -11,8 +11,24 @@
 #
 #   docker compose logs duckling | grep -A6 "generated"
 #
-# Persistence is handled by named volumes (no host-path mapping to configure),
-# so this works as-is under Docker Compose CLI or Dokploy's Compose deploy.
+# PeerDB (real binlog CDC) is INCLUDED and is the primary replication mode:
+# CDC-capable MySQL sources are mirrored via binlog streaming automatically;
+# sources without binlog CDC fall back to duckling's 1-second polling. The
+# flow images default to chittihq's zero-date-patched builds (stock PeerDB
+# v0.36 corrupts MySQL 0000-00-00 dates — see
+# docs/peerdb-upstream-zero-date-patch.md).
+#
+# Sizing: the PeerDB stack (Temporal, catalog Postgres, 3 flow services,
+# RustFS) wants roughly 4 GB RAM on top of duckling + ClickHouse. If you only
+# need polling mode on a small host, remove the PeerDB services and pin your
+# databases to replicationMode: 'polling'.
+#
+# Only duckling publishes host ports (3000 dashboard+API, 3307 MySQL wire).
+# Everything else is internal to the compose network — do NOT add host ports
+# to catalog/temporal/flow services on an internet-facing machine.
+#
+# Debug UIs (not started by default):
+#   docker compose --profile debug up -d   # PeerDB UI :13003, Temporal UI :18233
 #
 # For local development (source builds + hot reload), use the dev stack:
 #   docker compose -f docker-compose.dev.yml up -d
@@ -42,12 +58,31 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+      flow-api:
+        condition: service_started
     ports:
       - "3000:3000"     # dashboard + REST API + WebSocket (same origin)
       - "3307:3307"     # MySQL wire protocol (optional; remove if unused)
     environment:
       - NODE_ENV=production
       - CLICKHOUSE_URL=http://clickhouse:8123
+      # --- PeerDB (primary replication mode) ---
+      - REPLICATION_BACKEND=peerdb
+      - PEERDB_ENABLED=true
+      - PEERDB_API_URL=http://flow-api:8113
+      - PEERDB_SQL_HOST=peerdb
+      - PEERDB_SQL_PORT=9900
+      - PEERDB_SQL_USER=peerdb
+      - PEERDB_SQL_PASSWORD=${PEERDB_SQL_PASSWORD:-peerdb}
+      - PEERDB_CLICKHOUSE_HOST=clickhouse
+      - PEERDB_CLICKHOUSE_PORT=9000
+      - PEERDB_MYSQL_DISABLE_TLS=${PEERDB_MYSQL_DISABLE_TLS:-true}
+      - PEERDB_MYSQL_FLAVOR=${PEERDB_MYSQL_FLAVOR:-mysql}
+      - AWS_ENDPOINT_URL_S3=http://rustfs:9000
+      - AWS_ACCESS_KEY_ID=${RUSTFS_ACCESS_KEY:-peerdb}
+      - AWS_SECRET_ACCESS_KEY=${RUSTFS_SECRET_KEY:-peerdbsecret}
+      - AWS_REGION=${RUSTFS_REGION:-us-east-1}
+      - PEERDB_S3_BUCKET=${PEERDB_S3_BUCKET:-peerdb-stage}
       # --- Everything below is OPTIONAL ---
       # Add databases from the dashboard instead of here. To auto-create a
       # single default database from env, uncomment:
@@ -67,6 +102,215 @@ services:
     networks:
       - duckling
 
+  # ── PeerDB stack (binlog CDC) ─────────────────────────────────────────────
+  # Flow images default to chittihq's ZERO-DATE-PATCHED builds of PeerDB
+  # v0.36.19 (pinned upstream commit 34ecaea + the v3 patch). Stock upstream
+  # images silently corrupt MySQL 0000-00-00 values — don't swap these for
+  # ghcr.io/peerdb-io/* unless your data has no zero dates.
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: duckling-rustfs
+    environment:
+      - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY:-peerdb}
+      - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY:-peerdbsecret}
+      - RUSTFS_REGION=${RUSTFS_REGION:-us-east-1}
+    volumes:
+      - rustfs-data:/data
+    restart: unless-stopped
+    networks:
+      - duckling
+
+  catalog:
+    image: postgres:18-alpine
+    container_name: duckling-peerdb-catalog
+    environment:
+      - PGUSER=postgres
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${PEERDB_CATALOG_PASSWORD:-postgres}
+      - POSTGRES_INITDB_ARGS=--locale=C.UTF-8
+    volumes:
+      - catalog-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-d", "postgres", "-U", "postgres"]
+      interval: 10s
+      timeout: 30s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - duckling
+
+  temporal:
+    image: temporalio/auto-setup:1.25.1
+    container_name: duckling-temporal
+    depends_on:
+      catalog:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PWD=${PEERDB_CATALOG_PASSWORD:-postgres}
+      - POSTGRES_SEEDS=catalog
+      - DYNAMIC_CONFIG_FILE_PATH=/tmp/development-sql.yaml
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        cat > /tmp/development-sql.yaml <<'EOF'
+        limit.maxIDLength:
+          - value: 255
+            constraints: {}
+        system.forceSearchAttributesCacheRefreshOnRead:
+          - value: true
+            constraints: {}
+        frontend.enableUpdateWorkflowExecution:
+          - value: true
+            constraints: {}
+        EOF
+        exec /etc/temporal/entrypoint.sh autosetup
+    restart: unless-stopped
+    networks:
+      - duckling
+
+  temporal-admin-tools:
+    image: temporalio/admin-tools:1.25.2-tctl-1.18.1-cli-1.1.1
+    container_name: duckling-temporal-admin-tools
+    depends_on:
+      - temporal
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CLI_ADDRESS=temporal:7233
+      - TEMPORAL_CLI_SHOW_STACKS=1
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        sleep 5
+        until temporal operator search-attribute list --namespace default >/dev/null 2>&1; do sleep 2; done
+        if ! temporal operator search-attribute list --namespace default | grep -w MirrorName >/dev/null 2>&1; then
+          temporal operator search-attribute create --name MirrorName --type Text --namespace default
+        fi
+        exec tail -f /dev/null
+    restart: unless-stopped
+    networks:
+      - duckling
+
+  flow-api:
+    image: ${PEERDB_FLOW_API_IMAGE:-chittihq/peerdb-flow-api:v0.36.19-zerodate-v3}
+    container_name: duckling-peerdb-flow-api
+    depends_on:
+      temporal:
+        condition: service_started
+      catalog:
+        condition: service_healthy
+    environment: &flow-env
+      - PEERDB_CATALOG_HOST=catalog
+      - PEERDB_CATALOG_PORT=5432
+      - PEERDB_CATALOG_USER=postgres
+      - PEERDB_CATALOG_PASSWORD=${PEERDB_CATALOG_PASSWORD:-postgres}
+      - PEERDB_CATALOG_DATABASE=postgres
+      - TEMPORAL_HOST_PORT=temporal:7233
+      - PEERDB_TEMPORAL_NAMESPACE=default
+      - AWS_ACCESS_KEY_ID=${RUSTFS_ACCESS_KEY:-peerdb}
+      - AWS_SECRET_ACCESS_KEY=${RUSTFS_SECRET_KEY:-peerdbsecret}
+      - AWS_REGION=${RUSTFS_REGION:-us-east-1}
+      - AWS_ENDPOINT=http://rustfs:9000
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ACCESS_KEY_ID=${RUSTFS_ACCESS_KEY:-peerdb}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_SECRET_ACCESS_KEY=${RUSTFS_SECRET_KEY:-peerdbsecret}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_REGION=${RUSTFS_REGION:-us-east-1}
+      - PEERDB_CLICKHOUSE_AWS_CREDENTIALS_AWS_ENDPOINT_URL_S3=http://rustfs:9000
+      - PEERDB_CLICKHOUSE_AWS_S3_BUCKET_NAME=${PEERDB_S3_BUCKET:-peerdb-stage}
+      - PEERDB_ALLOWED_TARGETS=
+    restart: unless-stopped
+    networks:
+      - duckling
+
+  flow-snapshot-worker:
+    image: ${PEERDB_FLOW_SNAPSHOT_WORKER_IMAGE:-chittihq/peerdb-flow-snapshot-worker:v0.36.19-zerodate-v3}
+    container_name: duckling-peerdb-flow-snapshot-worker
+    depends_on:
+      temporal:
+        condition: service_started
+      catalog:
+        condition: service_healthy
+    environment: *flow-env
+    restart: unless-stopped
+    networks:
+      - duckling
+
+  flow-worker:
+    image: ${PEERDB_FLOW_WORKER_IMAGE:-chittihq/peerdb-flow-worker:v0.36.19-zerodate-v3}
+    container_name: duckling-peerdb-flow-worker
+    depends_on:
+      temporal:
+        condition: service_started
+      catalog:
+        condition: service_healthy
+    environment: *flow-env
+    restart: unless-stopped
+    networks:
+      - duckling
+
+  peerdb:
+    image: ${PEERDB_SERVER_IMAGE:-ghcr.io/peerdb-io/peerdb-server:stable-v0.36.19}
+    container_name: duckling-peerdb-server
+    depends_on:
+      catalog:
+        condition: service_healthy
+    environment:
+      - PEERDB_CATALOG_HOST=catalog
+      - PEERDB_CATALOG_PORT=5432
+      - PEERDB_CATALOG_USER=postgres
+      - PEERDB_CATALOG_PASSWORD=${PEERDB_CATALOG_PASSWORD:-postgres}
+      - PEERDB_CATALOG_DATABASE=postgres
+      - PEERDB_PASSWORD=${PEERDB_SQL_PASSWORD:-peerdb}
+      - PEERDB_FLOW_SERVER_ADDRESS=grpc://flow-api:8112
+      - RUST_LOG=info
+    restart: unless-stopped
+    networks:
+      - duckling
+
+  # ── Debug UIs (opt-in: docker compose --profile debug up -d) ─────────────
+  peerdb-ui:
+    image: ${PEERDB_UI_IMAGE:-ghcr.io/peerdb-io/peerdb-ui:stable-v0.36.19}
+    container_name: duckling-peerdb-ui
+    profiles: [debug]
+    depends_on:
+      - flow-api
+    environment:
+      - PEERDB_CATALOG_HOST=catalog
+      - PEERDB_CATALOG_PORT=5432
+      - PEERDB_CATALOG_USER=postgres
+      - PEERDB_CATALOG_PASSWORD=${PEERDB_CATALOG_PASSWORD:-postgres}
+      - PEERDB_CATALOG_DATABASE=postgres
+      - PEERDB_FLOW_SERVER_HTTP=http://flow-api:8113
+      - NEXTAUTH_SECRET=${PEERDB_NEXTAUTH_SECRET:-__changeme_debug_only__}
+      - NEXTAUTH_URL=http://localhost:13003
+      - PEERDB_ALLOWED_TARGETS=
+      - PEERDB_CLICKHOUSE_ALLOWED_DOMAINS=
+    ports:
+      - "13003:3000"
+    restart: unless-stopped
+    networks:
+      - duckling
+
+  temporal-ui:
+    image: temporalio/ui:2.31.2
+    container_name: duckling-temporal-ui
+    profiles: [debug]
+    depends_on:
+      - temporal
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    ports:
+      - "18233:8080"
+    restart: unless-stopped
+    networks:
+      - duckling
+
 networks:
   duckling:
     name: duckling-network
@@ -74,3 +318,5 @@ networks:
 volumes:
   clickhouse-data:
   duckling-data:
+  rustfs-data:
+  catalog-data:

@@ -14,6 +14,7 @@ The format is based on Keep a Changelog, with the latest unreleased work listed 
 ### Changed
 
 - **Compose files swapped**: `docker-compose.yml` is now the self-host deploy stack (published image + ClickHouse; formerly `docker-compose.prod.yml`), so `docker compose up -d` deploys out of the box. The dev stack (source builds + hot reload) moved to `docker-compose.dev.yml` — use `docker compose -f docker-compose.dev.yml up -d` for development.
+- **PeerDB is now the primary replication mode in the default deploy** — the deploy compose bundles the full PeerDB CDC stack (catalog Postgres, Temporal, flow services, RustFS) always-on with `REPLICATION_BACKEND=peerdb`; polling remains the automatic fallback for sources without binlog CDC. The flow services are pinned to `chittihq/peerdb-flow-*:v0.36.19-zerodate-v3` — zero-date-patched builds published to Docker Hub by the new `publish-peerdb-patched.yml` workflow (pinned upstream commit + the v3 patch), so peerdb mode is zero-date-safe on a fresh server without a local source build. Debug UIs (PeerDB UI, Temporal UI) sit behind `--profile debug`; only duckling publishes host ports.
 
 ### Fixed
 

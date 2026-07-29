@@ -1,234 +1,108 @@
 # Deployment Guide
 
-> ⚠️ **Legacy doc (DuckDB era).** Duckling is ClickHouse-backed now. The Dockerfile, compose layout, and image strategy have all changed. Current production deployment guidance lives in `README.md` ("Quick start" + "Development" sections) and `CLAUDE.md` ("Docker Development" section). The current Dockerfile is `docker/server.Dockerfile`. The PeerDB stack is in `docker-compose.peerdb.yml`.
+Duckling is a ClickHouse-backed analytical replica for MySQL. The default deployment is **peerdb-primary**: real binlog CDC via the bundled PeerDB stack, with duckling's 1-second polling as the automatic fallback for sources that can't do CDC.
 
----
-
-This guide covers deployment options for Duckling DuckDB Server.
-
-## Docker Deployment
-
-### Monorepo Multi-Stage Dockerfile
-
-The project uses multi-stage Docker builds for optimal image sizes:
-
-- **`Dockerfile`** - Production build with optimized layers for server and frontend
-- **`Dockerfile.dev`** - Development build with all dev dependencies
-
-### docker-compose.yml
-
-Create a `.env` file in the project root with real values for `MYSQL_CONNECTION_STRING` and `MYSQL_ROOT_PASSWORD` before running this compose setup.
-
-```yaml
-version: '3.8'
-
-services:
-  duckdb-server:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    ports:
-      - "3001:3000"
-    environment:
-      - MYSQL_CONNECTION_STRING=${MYSQL_CONNECTION_STRING}
-      - BATCH_SIZE=10000
-      - SYNC_INTERVAL_MINUTES=15
-    volumes:
-      - ./packages/server/src:/app/packages/server/src:ro
-      - ./packages/server/public:/app/packages/server/public:ro
-      - ./packages/shared:/app/packages/shared:ro
-      - ./data:/app/data
-      - ./logs:/app/logs
-    depends_on:
-      - mysql
-    restart: unless-stopped
-    command: pnpm dev:server
-
-  duckdb-frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    ports:
-      - "3000:3001"
-    volumes:
-      - ./packages/frontend:/app/packages/frontend:ro
-      - ./packages/shared:/app/packages/shared:ro
-      - ./packages/sdk:/app/packages/sdk:ro
-    depends_on:
-      - duckdb-server
-    restart: unless-stopped
-    command: pnpm dev:frontend
-
-  mysql:
-    image: mysql:8.0
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: myapp
-    volumes:
-      - mysql_data:/var/lib/mysql
-    restart: unless-stopped
-
-volumes:
-  mysql_data:
-  node_modules:
-```
-
-### Production Build
+## TL;DR — self-host
 
 ```bash
-# Build production images
-docker build --target server -t duckling-server .
-docker build --target frontend -t duckling-frontend .
-
-# Run production containers
-docker run -d -p 3000:3000 duckling-server
-docker run -d -p 3001:3001 duckling-frontend
+curl -O https://raw.githubusercontent.com/chittihq/duckling/main/docker-compose.yml
+docker compose up -d
+docker compose logs duckling | grep -A6 generated   # one-time credentials
 ```
 
-## Security Configuration (REQUIRED)
+Open `http://<host>:3000`, log in, and add your MySQL database from the dashboard. Done — the capability probe picks `peerdb` (binlog CDC) or `polling` per database automatically.
 
-**⚠️ IMPORTANT: You MUST configure these security settings before deploying to production!**
+## What the default compose runs
 
-### Required Security Settings
+| Service | Image | Purpose |
+|---|---|---|
+| `duckling` | `chittihq/duckling:latest` | Dashboard + REST API + WebSocket (port **3000**), MySQL wire protocol (port **3307**) |
+| `clickhouse` | `clickhouse/clickhouse-server:25.8` | The analytical store — your replicated data lives here |
+| `flow-api`, `flow-worker`, `flow-snapshot-worker` | `chittihq/peerdb-flow-*:v0.36.19-zerodate-v3` | PeerDB CDC engine (**zero-date-patched builds** — stock upstream v0.36 corrupts MySQL `0000-00-00`) |
+| `peerdb` | `ghcr.io/peerdb-io/peerdb-server` | PeerDB SQL control surface |
+| `catalog` | `postgres:18-alpine` | PeerDB catalog |
+| `temporal` + `temporal-admin-tools` | `temporalio/*` | PeerDB workflow engine |
+| `rustfs` | `rustfs/rustfs` | S3-compatible staging for CDC batches |
 
-1. **Set Strong Admin Credentials**
-   ```bash
-   # In your .env file:
-   ADMIN_USERNAME=your-admin-username
-   ADMIN_PASSWORD=your-strong-password-here
-   ```
+Only `duckling` publishes host ports (3000, 3307). Everything else is internal to the compose network — **do not add host ports to catalog/temporal/flow services on an internet-facing machine**.
 
-   **WARNING:** Never use default credentials like `admin/admin` in production!
-
-2. **Generate Strong Session Secret**
-   ```bash
-   # Generate a secure random session secret:
-   SESSION_SECRET=$(openssl rand -hex 32)
-
-   # Add to .env file:
-   SESSION_SECRET=<generated-value>
-   ```
-
-3. **Set API Key for Programmatic Access**
-   ```bash
-   # Generate a secure API key:
-   DUCKLING_API_KEY=$(openssl rand -hex 32)
-
-   # Or use your own secure random string
-   # Add to .env file:
-   DUCKLING_API_KEY=<your-secure-api-key>
-   ```
-
-### Security Best Practices
-
-- **Never commit `.env` files** to version control (already in `.gitignore`)
-- **Use strong, unique passwords** for admin accounts
-- **Rotate API keys regularly** in production environments
-- **Enable HTTPS** when exposing the service externally
-- **Restrict network access** using firewall rules or VPC configurations
-- **Monitor authentication logs** for suspicious activity
-
-### Security Features
-
-- API key authentication for programmatic access
-- Session-based authentication for web dashboard
-- Input validation and SQL injection prevention
-- Rate limiting on API endpoints
-- Comprehensive audit logging in `sync_log` table
-- Secure file permissions for DuckDB database file
-
-## Environment Variables
-
-For a complete list of environment variables, see the [Configuration](../README.md#configuration) section in README.md.
-
-### Production Recommendations
-
-| Variable | Production Value | Notes |
-|----------|------------------|-------|
-| `NODE_ENV` | `production` | Enables production optimizations |
-| `BATCH_SIZE` | `10000-20000` | Larger batches for faster sync |
-| `SYNC_INTERVAL_MINUTES` | `15-30` | Balance freshness vs load |
-| `MAX_RETRIES` | `3-5` | Handle transient failures |
-| `AUTO_BACKUP` | `true` | Enable daily backups |
-| `BACKUP_RETENTION_DAYS` | `7-30` | Based on compliance needs |
-
-## Health Checks
-
-Use the health endpoint for load balancer and orchestration:
+Debug UIs are opt-in:
 
 ```bash
-# Health check endpoint
-curl http://localhost:3001/health
-
-# Expected response
-{
-  "status": "healthy",
-  "architecture": "sequential-appender",
-  "duckdb": "connected",
-  "mysql": "connected"
-}
+docker compose --profile debug up -d   # PeerDB UI :13003, Temporal UI :18233
 ```
 
-## Monitoring
+## Configuration
 
-- Structured logs for external log aggregation (stdout/stderr)
-- Health check endpoints for load balancer integration
-- Sync metrics available at `/metrics` endpoint
-- Sync logs available at `/api/sync-logs`
+**None required.** On first boot duckling generates the admin password, API key, and session secret, persists them to the `duckling-data` volume (`.secrets.json`), and prints them once in the logs.
 
-### Log Aggregation
+Optional overrides (set in the compose or a `.env` next to it):
 
-Logs are written to stdout in JSON format for easy integration with:
-- ELK Stack (Elasticsearch, Logstash, Kibana)
-- Datadog
-- CloudWatch
-- Splunk
+| Variable | Default | Why override |
+|----------|---------|--------------|
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | auto-generated | Pin dashboard credentials |
+| `DUCKLING_API_KEY` | auto-generated | Pin the superuser API key |
+| `SESSION_SECRET` | auto-generated | Pin JWT signing |
+| `MYSQL_CONNECTION_STRING` | unset | Auto-create one default database from env (otherwise add via UI) |
+| `TRUST_PROXY` | unset | Set `1` behind a reverse proxy (Traefik/Nginx/Dokploy) so rate limiting keys on the real client IP |
+| `PEERDB_SQL_PASSWORD`, `PEERDB_CATALOG_PASSWORD`, `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY` | dev defaults | Harden internal PeerDB credentials (compose-network-internal either way) |
+| `CLICKHOUSE_FINAL_READS` | `true` | Leave on — guarantees deduplicated reads in peerdb mode |
 
-## Backup & Recovery
+Full list: `.env.example` and `packages/server/src/config.ts`.
 
-Automated backups are enabled by default:
+## Persistence
 
-- **Frequency**: Every 24 hours (`BACKUP_INTERVAL_HOURS=24`)
-- **Retention**: 7 days (`BACKUP_RETENTION_DAYS=7`)
-- **Location**: `data/backups/`
+Named volumes — nothing to map by hand, works the same under the Compose CLI or Dokploy's Compose deploy:
 
-### Manual Backup
+| Volume | Contents |
+|--------|----------|
+| `clickhouse-data` | **Your replicated data** (back this one up) |
+| `duckling-data` | `databases.json` (per-database config incl. connection strings + API key hashes) + generated secrets |
+| `catalog-data` | PeerDB catalog (mirror state, replication progress) |
+| `rustfs-data` | Transient CDC staging |
+
+For off-host backups, use the built-in S3 backups (`/backups` dashboard page or `/api/databases/:id/backups`) — ClickHouse-native `BACKUP TO S3(...)` against AWS S3 or any S3-compatible store.
+
+## Sizing
+
+The PeerDB stack wants roughly **4 GB RAM** on top of duckling + ClickHouse; plan ~8 GB total for a small production host. If you only need polling mode on a tiny host: remove the PeerDB services from the compose and pin databases to `replicationMode: 'polling'` — duckling runs fine with just `clickhouse` + `duckling`.
+
+## Replication modes
+
+Decided **per database, before any data moves**, by a capability probe (`log_bin=ON`, `binlog_format=ROW`, `binlog_row_image=FULL`, `binlog_row_metadata=FULL`, `REPLICATION SLAVE`/`CLIENT` grants):
+
+- **CDC-capable source → `peerdb`**: PeerDB does the initial snapshot AND streams binlog changes, end-to-end. Deletes are tombstoned correctly.
+- **Not capable → `polling`**: duckling dumps the source, then polls row counts/change tokens every second. Near-real-time for inserts/updates; see README "Known limitations" for the delete blind spot.
+
+The dashboard's **Diagnose** button shows the full checklist with ✓/✗ per requirement — run it on any new source. Managed-MySQL note: `binlog_row_metadata` commonly defaults to `MINIMAL` (e.g. DigitalOcean); flip it to `FULL` in the provider's advanced config to unlock CDC. Also check binlog retention — with short retention (e.g. 3 days), a CDC pipeline stalled longer than that loses its position and needs a re-snapshot.
+
+## Dokploy
+
+Use the Compose deploy type pointed at `docker-compose.yml`. Named volumes mean no host-path configuration in the UI. For the domain: service `duckling`, container port `3000`. Set `TRUST_PROXY=1` on the duckling service (Traefik fronts it).
+
+## Health & monitoring
+
+- `GET /health` — liveness
+- `GET /status` — replication + connection status
+- `GET /metrics` — metrics endpoint
+- `docker compose logs -f duckling` — structured JSON logs (stdout, ready for ELK/Datadog/CloudWatch)
+
+## Upgrades
 
 ```bash
-curl -X POST http://localhost:3001/automation/backup \
-  -H "Authorization: Bearer $DUCKLING_API_KEY"
+docker compose pull && docker compose up -d
 ```
 
-### Restore
+Image tags: `chittihq/duckling:latest` tracks releases; pin `:0.x.y` for controlled rollouts (multi-arch amd64+arm64). The patched PeerDB flow images are pinned by exact version tag and only change when the upstream PeerDB pin is bumped (see `.github/workflows/publish-peerdb-patched.yml`).
 
-```bash
-curl -X POST http://localhost:3001/automation/restore \
-  -H "Authorization: Bearer $DUCKLING_API_KEY"
-```
+## Migrating from the old DuckDB deployment
 
-## Troubleshooting
+The DuckDB runtime is retired. There is no in-place data migration — stand up the new stack and re-bootstrap:
 
-### Common Issues
+1. Deploy this compose alongside (or after stopping) the old instance.
+2. Add your MySQL databases in the dashboard — the initial load re-dumps from MySQL (the source of truth), so nothing from the old DuckDB volume is needed.
+3. Point SDK / wire-protocol clients at the new host, then archive and remove the old volume.
 
-1. **Connection Refused**: Check if MySQL is accessible from the container
-2. **Sync Failing**: Check `/api/sync-logs` for error details
-3. **Slow Queries**: Verify DuckDB file isn't corrupted, check disk I/O
-4. **Out of Memory**: Reduce `BATCH_SIZE` for large tables
+## Development
 
-### Debug Mode
-
-Enable debug logging:
-
-```bash
-LOG_LEVEL=debug docker-compose up
-```
-
-### Container Logs
-
-```bash
-# Server logs
-docker-compose logs -f duckdb-server
-
-# Frontend logs
-docker-compose logs -f duckdb-frontend
-```
+Local development doesn't use this compose — see `README.md` (Development) for the dev stack (`docker-compose.dev.yml`, source builds + hot reload) and `CLAUDE.md` for the full development guide.

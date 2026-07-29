@@ -38,7 +38,7 @@ Dashboard + API: <http://localhost:3000> (same origin). MySQL wire protocol: `my
 
 ## Deploy (self-host)
 
-For a server deploy, use the **published image** (`chittihq/duckling`, built from the single-container `Dockerfile` — API + dashboard on one port) plus ClickHouse. The default [`docker-compose.yml`](docker-compose.yml) is exactly that:
+For a server deploy, use the **published image** (`chittihq/duckling`, built from the single-container `Dockerfile` — API + dashboard on one port) plus ClickHouse **and the PeerDB CDC stack**. The default [`docker-compose.yml`](docker-compose.yml) is exactly that:
 
 ```bash
 curl -O https://raw.githubusercontent.com/chittihq/duckling/main/docker-compose.yml
@@ -48,11 +48,14 @@ docker compose up -d
 That's it — **no environment variables required**:
 
 - **ClickHouse is bundled and auto-connected** (you never configure it).
-- **Persistence uses named volumes** (`clickhouse-data`, `duckling-data`) — nothing to map by hand, works the same under the Compose CLI or Dokploy's Compose deploy.
+- **PeerDB (real binlog CDC) is bundled and is the primary mode** — CDC-capable MySQL sources stream via binlog automatically; sources without binlog CDC fall back to polling. The flow images are chittihq's zero-date-patched PeerDB builds, so MySQL `0000-00-00` values survive as `NULL` instead of corrupting.
+- **Persistence uses named volumes** (`clickhouse-data`, `duckling-data`, `catalog-data`, `rustfs-data`) — nothing to map by hand, works the same under the Compose CLI or Dokploy's Compose deploy.
 - **Secrets auto-generate on first boot** (admin password, API key, session secret) and are printed once in the logs:
   ```bash
   docker compose logs duckling | grep -A6 generated
   ```
+- **Sizing**: the PeerDB stack (Temporal, catalog Postgres, flow workers, RustFS) wants ~4 GB RAM on top of duckling + ClickHouse. Small host, polling is enough? Remove the PeerDB services from the compose and pin databases to `replicationMode: 'polling'`.
+- Debug UIs are off by default: `docker compose --profile debug up -d` adds the PeerDB UI (`:13003`) and Temporal UI (`:18233`).
 
 Then open <http://SERVER_IP:3000>, log in, and **add your MySQL database from the dashboard** (or `POST /api/databases`) — the connection string is stored per-database on the `duckling-data` volume, so you don't bake it into the compose. Set `MYSQL_CONNECTION_STRING` in the compose only if you want a single default database created automatically. Behind a reverse proxy, set `TRUST_PROXY=1`.
 
@@ -96,9 +99,9 @@ duckling/
 │   ├── frontend/   # @chittihq/duckling-frontend — Nuxt 4 dashboard
 │   ├── sdk/        # @chittihq/duckling — WebSocket SDK
 │   └── shared/     # @chittihq/duckling-shared — types
-├── docker-compose.yml          # DEFAULT: self-host deploy (published image + ClickHouse)
+├── docker-compose.yml          # DEFAULT: self-host deploy (published image + ClickHouse + PeerDB CDC stack)
 ├── docker-compose.dev.yml      # Dev stack (source builds + hot reload: ClickHouse + server + UI)
-├── docker-compose.peerdb.yml   # PeerDB stack (catalog, Temporal, workers, RustFS)
+├── docker-compose.peerdb.yml   # Dev/integration PeerDB stack (used by scripts/peerdb-up.sh + tests)
 └── tests/integration/          # Full vitest e2e suite with PeerDB end-to-end
 ```
 

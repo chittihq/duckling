@@ -31,9 +31,9 @@ duckling/
 │   └── shared/          # @chittihq/duckling-shared - shared TypeScript types
 ├── pnpm-workspace.yaml
 ├── package.json
-├── docker-compose.yml             # DEFAULT: self-host deploy (published image + ClickHouse, named volumes)
+├── docker-compose.yml             # DEFAULT: self-host deploy (published image + ClickHouse + PeerDB CDC stack; peerdb-primary)
 ├── docker-compose.dev.yml         # Dev stack: MySQL + ClickHouse + server + frontend (source builds, hot reload)
-└── docker-compose.peerdb.yml      # PeerDB stack (opt-in)
+└── docker-compose.peerdb.yml      # Dev/integration PeerDB stack (scripts/peerdb-up.sh + tests)
 ```
 
 ### Package Dependencies
@@ -358,4 +358,4 @@ Server port for the integration stack is **3002** (avoids collision with a runni
 
 ## Production deployment
 
-The default `docker-compose.yml` is the deploy stack: the published `chittihq/duckling` image (built from the root `Dockerfile` — single container serving API + dashboard same-origin on port 3000) plus ClickHouse, with named volumes and auto-generated secrets. Health endpoints are at `/health` and `/status`. (`docker/server.Dockerfile` is the dev-stack server image.)
+The default `docker-compose.yml` is the deploy stack and is **peerdb-primary**: the published `chittihq/duckling` image (built from the root `Dockerfile` — single container serving API + dashboard same-origin on port 3000), ClickHouse, and the full PeerDB CDC stack (catalog Postgres, Temporal + admin-tools, flow-api/worker/snapshot-worker, peerdb-server, RustFS), with named volumes and auto-generated secrets. The flow services default to `chittihq/peerdb-flow-*:v0.36.19-zerodate-v3` — the zero-date-patched builds published by `.github/workflows/publish-peerdb-patched.yml` — NOT stock upstream images. `REPLICATION_BACKEND=peerdb` is set; polling remains the automatic fallback for non-CDC-capable sources. Only duckling publishes host ports (3000, 3307); debug UIs (PeerDB UI :13003, Temporal UI :18233) are behind `--profile debug`. Health endpoints are at `/health` and `/status`. (`docker/server.Dockerfile` is the dev-stack server image.)
