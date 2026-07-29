@@ -20,9 +20,11 @@ A duckling-led dump-then-PeerDB-attach handoff (so duckling owns Phase 1 even in
 ## Quick start
 
 ```bash
-docker-compose up -d                       # ClickHouse + duckling-server + frontend
+docker compose up -d                       # published image + ClickHouse (see Deploy below)
+# For local development with hot reload instead:
+#   docker compose -f docker-compose.dev.yml up -d
 # Wait for healthy, then create a database (auto-bootstraps by default):
-curl -X POST http://localhost:3001/api/databases \
+curl -X POST http://localhost:3000/api/databases \
   -H "Authorization: Bearer ${DUCKLING_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
@@ -32,15 +34,15 @@ curl -X POST http://localhost:3001/api/databases \
       }'
 ```
 
-Frontend: <http://localhost:3000>. API: <http://localhost:3001>. MySQL wire protocol: `mysql -h 127.0.0.1 -P 3307 -u duckling -p${DUCKLING_API_KEY}`.
+Dashboard + API: <http://localhost:3000> (same origin). MySQL wire protocol: `mysql -h 127.0.0.1 -P 3307 -u duckling -p${DUCKLING_API_KEY}`. (Dev stack splits them: dashboard on 3000, API on 3001.)
 
 ## Deploy (self-host)
 
-For a server deploy, use the **published image** (`chittihq/duckling`, built from the single-container `Dockerfile` — API + dashboard on one port) plus ClickHouse. Grab [`docker-compose.prod.yml`](docker-compose.prod.yml):
+For a server deploy, use the **published image** (`chittihq/duckling`, built from the single-container `Dockerfile` — API + dashboard on one port) plus ClickHouse. The default [`docker-compose.yml`](docker-compose.yml) is exactly that:
 
 ```bash
-curl -O https://raw.githubusercontent.com/chittihq/duckling/main/docker-compose.prod.yml
-docker compose -f docker-compose.prod.yml up -d
+curl -O https://raw.githubusercontent.com/chittihq/duckling/main/docker-compose.yml
+docker compose up -d
 ```
 
 That's it — **no environment variables required**:
@@ -49,7 +51,7 @@ That's it — **no environment variables required**:
 - **Persistence uses named volumes** (`clickhouse-data`, `duckling-data`) — nothing to map by hand, works the same under the Compose CLI or Dokploy's Compose deploy.
 - **Secrets auto-generate on first boot** (admin password, API key, session secret) and are printed once in the logs:
   ```bash
-  docker compose -f docker-compose.prod.yml logs duckling | grep -A6 generated
+  docker compose logs duckling | grep -A6 generated
   ```
 
 Then open <http://SERVER_IP:3000>, log in, and **add your MySQL database from the dashboard** (or `POST /api/databases`) — the connection string is stored per-database on the `duckling-data` volume, so you don't bake it into the compose. Set `MYSQL_CONNECTION_STRING` in the compose only if you want a single default database created automatically. Behind a reverse proxy, set `TRUST_PROXY=1`.
@@ -94,7 +96,8 @@ duckling/
 │   ├── frontend/   # @chittihq/duckling-frontend — Nuxt 4 dashboard
 │   ├── sdk/        # @chittihq/duckling — WebSocket SDK
 │   └── shared/     # @chittihq/duckling-shared — types
-├── docker-compose.yml          # Default dev stack (ClickHouse + server + UI)
+├── docker-compose.yml          # DEFAULT: self-host deploy (published image + ClickHouse)
+├── docker-compose.dev.yml      # Dev stack (source builds + hot reload: ClickHouse + server + UI)
 ├── docker-compose.peerdb.yml   # PeerDB stack (catalog, Temporal, workers, RustFS)
 └── tests/integration/          # Full vitest e2e suite with PeerDB end-to-end
 ```
@@ -103,9 +106,14 @@ duckling/
 
 `pnpm` workspaces. Install once at repo root: `pnpm install`.
 
+Development uses the **dev stack** (`docker-compose.dev.yml` — source builds + hot reload), not the default deploy compose:
+
 ```bash
-# Local server with hot reload, against compose'd ClickHouse + MySQL
-docker compose up -d clickhouse
+# Full dev stack: ClickHouse + server (nodemon) + frontend (Nuxt HMR)
+docker compose -f docker-compose.dev.yml up -d
+
+# Or just ClickHouse, with the server running on the host:
+docker compose -f docker-compose.dev.yml up -d clickhouse
 pnpm dev:server
 
 # Tests
@@ -116,7 +124,7 @@ cd tests/integration && ./run.sh                   # full e2e (brings up PeerDB 
 Source is baked into the duckling-server Docker image at build time, so `docker exec duckling-server pnpm run build:server` works even on hosts where Docker file-sharing is flaky. For hot reload against the container, rebuild after edits:
 
 ```bash
-docker compose build clickhouse-server && docker compose up -d clickhouse-server
+docker compose -f docker-compose.dev.yml build clickhouse-server && docker compose -f docker-compose.dev.yml up -d clickhouse-server
 ```
 
 ## Configuration

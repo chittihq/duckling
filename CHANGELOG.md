@@ -11,6 +11,10 @@ The format is based on Keep a Changelog, with the latest unreleased work listed 
 - Connection diagnosis now shows the **full binlog-CDC capability checklist**: `binlog_row_metadata` (the usual managed-MySQL blocker — e.g. DigitalOcean defaults to `MINIMAL`), GTID mode, `REPLICATION SLAVE`/`CLIENT` grants, binlog retention, and a bottom-line CDC-readiness verdict. Checks are derived from the same capability probe the replication coordinator uses to pick the mode, so the dashboard can never disagree with the mode actually selected. Hard CDC requirements show ✗ when unmet or unreadable; advisories (GTID, retention) warn.
 - `CLICKHOUSE_FINAL_READS` (default `true`) — see the fix below.
 
+### Changed
+
+- **Compose files swapped**: `docker-compose.yml` is now the self-host deploy stack (published image + ClickHouse; formerly `docker-compose.prod.yml`), so `docker compose up -d` deploys out of the box. The dev stack (source builds + hot reload) moved to `docker-compose.dev.yml` — use `docker compose -f docker-compose.dev.yml up -d` for development.
+
 ### Fixed
 
 - **peerdb-mode reads could return duplicate rows / over-counts between background merges.** PeerDB destination tables are `ReplacingMergeTree`, whose dedup is eventual (merge-time), and no query surface applied `FINAL` — so `/api/query`, the WebSocket SDK, the MySQL wire protocol, and the table data/count/validation endpoints could all transiently over-count, non-deterministically. All reads now apply the ClickHouse `final = 1` query setting at the single shared client wrapper (no-op on the polling-mode plain-MergeTree layout; requires ClickHouse ≥ 23.2; opt out with `CLICKHOUSE_FINAL_READS=false`). Also fixes stale reads of the internal `appender_watermarks` / `full_sync_sessions` / `cdc_binlog_position` state tables.

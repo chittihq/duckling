@@ -1,21 +1,32 @@
+# ============================================================================
+# Duckling — self-host deployment (published image). This is the DEFAULT
+# compose file:
+#
+#   docker compose up -d
+#
+# Then open http://<host>:3000 and add your MySQL database from the dashboard
+# (or POST /api/databases). No environment variables are required — the admin
+# password, API key, and session secret are auto-generated on first boot and
+# printed once in the logs:
+#
+#   docker compose logs duckling | grep -A6 "generated"
+#
+# Persistence is handled by named volumes (no host-path mapping to configure),
+# so this works as-is under Docker Compose CLI or Dokploy's Compose deploy.
+#
+# For local development (source builds + hot reload), use the dev stack:
+#   docker compose -f docker-compose.dev.yml up -d
+# ============================================================================
+
 services:
   clickhouse:
-    container_name: duckling-clickhouse
     image: clickhouse/clickhouse-server:25.8
-    ports:
-      - "8123:8123"
-      - "9000:9000"
+    container_name: duckling-clickhouse
     environment:
-      - CLICKHOUSE_DB=${CLICKHOUSE_DATABASE:-default}
-      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
-      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
       - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
     volumes:
-      - ./data/clickhouse:/var/lib/clickhouse
-      - ./logs/clickhouse:/var/log/clickhouse-server
+      - clickhouse-data:/var/lib/clickhouse   # <-- your replicated data lives here
     healthcheck:
-      # Gate the server on ClickHouse actually accepting queries (default user
-      # has no password in this stack). Lets `depends_on: service_healthy` work.
       test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' || exit 1"]
       interval: 5s
       timeout: 3s
@@ -23,114 +34,43 @@ services:
       start_period: 10s
     restart: unless-stopped
     networks:
-      - clickhouse-network
+      - duckling
 
-  # ClickHouse Server - Backend API with MySQL replication
-  clickhouse-server:
-    container_name: duckling-server
-    build:
-      context: .
-      dockerfile: docker/server.Dockerfile
-    ports:
-      - "3001:3000"
-      - "3307:3307"
-    env_file:
-      # Optional: the stack runs with just MYSQL_CONNECTION_STRING set (see the
-      # environment block). Missing .env is fine — no error.
-      - path: .env
-        required: false
-    environment:
-      # Server configuration
-      - NODE_ENV=${NODE_ENV:-development}
-      - PORT=${PORT:-3000}
-
-      # Database configuration
-      - MYSQL_CONNECTION_STRING=${MYSQL_CONNECTION_STRING}
-      - MYSQL_MAX_CONNECTIONS=${MYSQL_MAX_CONNECTIONS:-5}
-      - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://clickhouse:8123}
-      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
-      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
-      - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-default}
-
-      # Sync configuration
-      - SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES:-15}
-      - BATCH_SIZE=${BATCH_SIZE:-5000}
-      - INSERT_BATCH_SIZE=${INSERT_BATCH_SIZE:-2000}
-      - FULL_SYNC_BATCH_SIZE=${FULL_SYNC_BATCH_SIZE:-1000}
-      - FULL_SYNC_APPENDER_FLUSH_INTERVAL=${FULL_SYNC_APPENDER_FLUSH_INTERVAL:-1000}
-      - MAX_RETRIES=${MAX_RETRIES:-3}
-      - ENABLE_INCREMENTAL_SYNC=${ENABLE_INCREMENTAL_SYNC:-true}
-
-      # Health checks
-      - ENABLE_HEALTH_CHECKS=${ENABLE_HEALTH_CHECKS:-true}
-      - HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL:-60000}
-
-      # Logging
-      - LOG_LEVEL=${LOG_LEVEL:-debug}
-
-      # Security & Authentication
-      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
-      - DUCKLING_API_KEY=${DUCKLING_API_KEY}
-      - SESSION_SECRET=${SESSION_SECRET}
-
-      # CORS
-      - ENABLE_CORS=${ENABLE_CORS:-true}
-    volumes:
-      # Data persistence
-      - ./data:/app/data
-      - ./logs:/app/logs
-      # Source code is baked into the image at build time. We deliberately do
-      # NOT bind-mount packages/server/src here:
-      #   - Docker Desktop's file-sync on macOS occasionally drops paths
-      #     (Resources > File sharing), which results in an empty bind and
-      #     `docker exec ... pnpm run build:server` failing with TS18003.
-      #   - Remote Docker contexts (DOCKER_HOST=ssh://...) can't bind host
-      #     paths at all.
-      # For hot-reload dev, run the server locally against the compose'd
-      # ClickHouse: `pnpm dev:server` from the host (with MYSQL_CONNECTION_STRING
-      # pointing at localhost:3306 and CLICKHOUSE_URL=http://localhost:8123).
-      # After source changes meant to run in the container, rebuild:
-      #   docker compose build clickhouse-server && docker compose up -d clickhouse-server
-    restart: unless-stopped
+  duckling:
+    image: chittihq/duckling:latest
+    container_name: duckling
     depends_on:
       clickhouse:
         condition: service_healthy
-    networks:
-      - clickhouse-network
-
-  # ClickHouse Frontend - Nuxt 4 Dashboard
-  clickhouse-frontend:
-    container_name: duckling-frontend
-    build:
-      context: .
-      dockerfile: docker/frontend.Dockerfile
     ports:
-      - "3000:3000"
+      - "3000:3000"     # dashboard + REST API + WebSocket (same origin)
+      - "3307:3307"     # MySQL wire protocol (optional; remove if unused)
     environment:
-      - NODE_ENV=${NODE_ENV:-development}
-      - NUXT_PUBLIC_API_BASE=http://localhost:3001
+      - NODE_ENV=production
+      - CLICKHOUSE_URL=http://clickhouse:8123
+      # --- Everything below is OPTIONAL ---
+      # Add databases from the dashboard instead of here. To auto-create a
+      # single default database from env, uncomment:
+      # - MYSQL_CONNECTION_STRING=mysql://user:pass@host:3306/dbname
+      #
+      # Pin credentials instead of using the auto-generated ones:
+      # - ADMIN_USERNAME=admin
+      # - ADMIN_PASSWORD=change-me
+      # - DUCKLING_API_KEY=your-api-key
+      # - SESSION_SECRET=your-32-byte-secret
+      #
+      # Behind a reverse proxy (so rate limiting keys on the real client IP):
+      # - TRUST_PROXY=1
     volumes:
-      # Hot reload - mount source code
-      - ./packages/frontend/app:/app/packages/frontend/app
-      - ./packages/frontend/nuxt.config.ts:/app/packages/frontend/nuxt.config.ts
-      - ./packages/frontend/tailwind.config.ts:/app/packages/frontend/tailwind.config.ts
-      - ./packages/shared/src:/app/packages/shared/src
-      - ./packages/sdk/src:/app/packages/sdk/src
+      - duckling-data:/app/data   # databases.json + generated secrets
     restart: unless-stopped
-    depends_on:
-      - clickhouse-server
     networks:
-      - clickhouse-network
+      - duckling
 
 networks:
-  clickhouse-network:
+  duckling:
     name: duckling-network
-    driver: bridge
 
-# Volumes for data persistence (optional, using bind mounts above)
 volumes:
   clickhouse-data:
-    name: duckling-data
-  clickhouse-logs:
-    name: duckling-logs
+  duckling-data:

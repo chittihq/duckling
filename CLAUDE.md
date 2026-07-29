@@ -31,7 +31,8 @@ duckling/
 │   └── shared/          # @chittihq/duckling-shared - shared TypeScript types
 ├── pnpm-workspace.yaml
 ├── package.json
-├── docker-compose.yml             # MySQL + ClickHouse + server + frontend (default dev stack)
+├── docker-compose.yml             # DEFAULT: self-host deploy (published image + ClickHouse, named volumes)
+├── docker-compose.dev.yml         # Dev stack: MySQL + ClickHouse + server + frontend (source builds, hot reload)
 └── docker-compose.peerdb.yml      # PeerDB stack (opt-in)
 ```
 
@@ -65,7 +66,7 @@ docker exec duckling-server pnpm run lint
 docker exec duckling-frontend pnpm run lint
 ```
 
-Dev mode runs automatically via `docker-compose up -d` with hot reload (nodemon for server, Nuxt HMR for frontend). Do not `restart` containers for code changes — only rebuild when dependencies, Dockerfile, or compose file change.
+Dev mode runs automatically via `docker compose -f docker-compose.dev.yml up -d` with hot reload (nodemon for server, Nuxt HMR for frontend). Do not `restart` containers for code changes — only rebuild when dependencies, Dockerfile, or compose file change. (The bare `docker-compose.yml` is the self-host **deploy** compose — published image, no hot reload.)
 
 ### CLI (Server)
 
@@ -80,12 +81,14 @@ docker exec duckling-server node packages/server/dist/cli.js <command>
 docker exec duckling-server node scripts/mysql.js "SELECT COUNT(*) FROM User"
 ```
 
-### Ports
+### Ports (dev stack, `docker-compose.dev.yml`)
 
 - Server: http://localhost:3001
 - Frontend: http://localhost:3000
 - ClickHouse HTTP: http://localhost:8123 (via the compose file)
 - PeerDB UI (when `docker-compose.peerdb.yml` is up): http://localhost:13003
+
+(The default deploy compose serves dashboard + API together on port 3000.)
 
 ## Architecture Overview
 
@@ -355,4 +358,4 @@ Server port for the integration stack is **3002** (avoids collision with a runni
 
 ## Production deployment
 
-The default stack uses Docker Compose. `docker/server.Dockerfile` builds the production image. Health endpoints are at `/health` and `/status`.
+The default `docker-compose.yml` is the deploy stack: the published `chittihq/duckling` image (built from the root `Dockerfile` — single container serving API + dashboard same-origin on port 3000) plus ClickHouse, with named volumes and auto-generated secrets. Health endpoints are at `/health` and `/status`. (`docker/server.Dockerfile` is the dev-stack server image.)
