@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with the latest unreleased work listed first.
 
+## [Unreleased]
+
+### Added
+
+- Connection diagnosis now shows the **full binlog-CDC capability checklist**: `binlog_row_metadata` (the usual managed-MySQL blocker — e.g. DigitalOcean defaults to `MINIMAL`), GTID mode, `REPLICATION SLAVE`/`CLIENT` grants, binlog retention, and a bottom-line CDC-readiness verdict. Checks are derived from the same capability probe the replication coordinator uses to pick the mode, so the dashboard can never disagree with the mode actually selected. Hard CDC requirements show ✗ when unmet or unreadable; advisories (GTID, retention) warn.
+- `CLICKHOUSE_FINAL_READS` (default `true`) — see the fix below.
+
+### Fixed
+
+- **peerdb-mode reads could return duplicate rows / over-counts between background merges.** PeerDB destination tables are `ReplacingMergeTree`, whose dedup is eventual (merge-time), and no query surface applied `FINAL` — so `/api/query`, the WebSocket SDK, the MySQL wire protocol, and the table data/count/validation endpoints could all transiently over-count, non-deterministically. All reads now apply the ClickHouse `final = 1` query setting at the single shared client wrapper (no-op on the polling-mode plain-MergeTree layout; requires ClickHouse ≥ 23.2; opt out with `CLICKHOUSE_FINAL_READS=false`). Also fixes stale reads of the internal `appender_watermarks` / `full_sync_sessions` / `cdc_binlog_position` state tables.
+
+### Documentation
+
+- README: clarified mode ownership — `peerdb` is PeerDB end-to-end (snapshot + binlog streaming as one continuous operation; duckling never touches the data), `polling` is **not CDC**; documented the polling-mode delete blind spot (a count-neutral delete+insert survives until the next full rebuild).
+
+## [0.3.0] - 2026-07-08
+
+First release on the **ClickHouse** runtime — the DuckDB era is fully retired — plus a turnkey self-host deployment. Covers ~75 commits since 0.2.0.
+
+### Added
+
+- **Three-phase replication with per-database modes**: duckling bootstrap (Phase 1) → PeerDB binlog CDC or 1-second polling (Phase 2), auto-selected by a source capability probe (`log_bin`, `binlog_format`, `binlog_row_image`, `binlog_row_metadata`, replication grants) and pinnable via `POST /api/databases/:id/replication-mode`.
+- **PeerDB integration**: orchestrator + SQL client create source/target peers and per-table mirrors via the flow API; opt-in stack (`docker-compose.peerdb.yml` — catalog Postgres, Temporal, flow workers, RustFS) brought up by `scripts/peerdb-up.sh`.
+- **Per-database API keys** (`dk_…`): minted from the dashboard (`/api-keys`) or `POST /api/databases/:id/api-keys`, scoped to a single database's data plane (403 on other databases and the entire control plane), stored hash-only, resolved via an in-memory index — no per-request disk I/O. Full e2e suite.
+- **Turnkey self-host deploy**: `docker-compose.prod.yml` with the published `chittihq/duckling` image + bundled ClickHouse + named volumes. Zero required environment variables — admin password, API key, and session secret auto-generate on first boot (persisted to `<data>/.secrets.json`, printed once in logs); databases are added from the dashboard (`MYSQL_CONNECTION_STRING` is optional and no longer creates a phantom default database).
+- **S3 backups on ClickHouse-native `BACKUP`/`RESTORE`**: scheduled or manual, restore-as-side-database, and a path-prefix guard on restore/delete keys (accident guard, not a tenant security boundary).
+- **Unique-key dedup fallback**: tables without a primary key now dedup on a UNIQUE index instead of accumulating duplicates on every incremental re-sync (`suite16` integration coverage).
+- `TRUST_PROXY` / `TRUST_PROXY_HOPS` for correct client IPs (rate limiting + WebSocket) behind reverse proxies.
+- Multi-arch image publishing (linux/amd64 + linux/arm64) on release tags.
+
+### Changed
+
+- **Runtime migrated from DuckDB to ClickHouse.** Storage layout per table: `<table>__raw` append-only MergeTree + `<table>` projection view (`row_number()` per dedup key, newest `_sync_timestamp` wins). All parameterized queries route through native `query_params`.
+- Root `Dockerfile` rebuilt for the ClickHouse runtime: single container serves API + dashboard same-origin (ClickHouse itself is a separate service — see the compose files).
+- Integration harness runs against ClickHouse exclusively (16 suites), with the PeerDB stack exercised end-to-end by default.
+
+### Fixed
+
+- **PeerDB zero-date corruption**: stock PeerDB v0.36 silently turns MySQL `0000-00-00` into `1970-01-01` on the ClickHouse path. A row-read-layer patch (`PEERDB_MYSQL_ZERO_DATE_AS_NULL`) converts zero/partial-zero dates to `NULL` in both snapshot and CDC, matching polling-mode behavior. `scripts/peerdb-up.sh` builds SHA-pinned patched flow images so peerdb mode is zero-date-safe by default (patch not yet upstreamed; `1000-01-01` Date32 clamp still open).
+- Database deletion now stops the polling CDC service and automation loops and closes the MySQL pool (was leaking pollers, timers, and connections) (#70).
+- Constant-time comparison for API key checks (#71).
+- Rate limiting keyed on the real client IP behind proxies (#66).
+- Table views build result columns from all rows instead of just the first (#75).
+
 ## [0.2.0] - 2026-04-02
 
 ### Added
