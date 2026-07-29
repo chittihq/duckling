@@ -158,6 +158,13 @@ export const config = {
     username: process.env.CLICKHOUSE_USER || 'default',
     password: process.env.CLICKHOUSE_PASSWORD || '',
     database: process.env.CLICKHOUSE_DATABASE || 'default',
+    // Apply the `final = 1` query setting on all reads so ReplacingMergeTree
+    // tables (PeerDB-mode destinations + internal watermark/session tables)
+    // return fully-deduplicated state instead of whatever the background
+    // merges have gotten to. No-op on plain MergeTree (polling-mode layout).
+    // Requires ClickHouse >= 23.2. Disable for raw scan speed over
+    // read-time consistency.
+    finalReads: process.env.CLICKHOUSE_FINAL_READS !== 'false',
   },
 
   replication: {

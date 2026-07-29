@@ -192,10 +192,24 @@ class ClickHouseConnection {
     return this.execute(sql, params);
   }
 
+  /**
+   * Settings applied to every read. ReplacingMergeTree dedup is eventual
+   * (merge-time), so without `final = 1` a PeerDB-mode table can return
+   * duplicate rows / over-counts between merges. The setting applies FINAL
+   * to every table in the query that supports it and is a no-op on plain
+   * MergeTree (the polling-mode `__raw` + view layout). All read surfaces —
+   * /api/query, WebSocket, MySQL wire protocol, table data/count/validation
+   * endpoints — converge on execute()/executeWithMetadata(), so this is the
+   * single enforcement point. Opt out via CLICKHOUSE_FINAL_READS=false.
+   */
+  private readSettings(): Record<string, number> {
+    return config.clickhouse.finalReads ? { final: 1 } : {};
+  }
+
   async execute(sql: string, params?: any[]): Promise<JsonRow[]> {
     await this.initializeDatabase();
     const { query, query_params } = this.bindParams(sql, params);
-    const queryOpts: any = { query, format: 'JSONEachRow' };
+    const queryOpts: any = { query, format: 'JSONEachRow', clickhouse_settings: this.readSettings() };
     if (query_params) queryOpts.query_params = query_params;
     const resultSet = await this.client.query(queryOpts);
     const rows = await resultSet.json();
@@ -205,7 +219,7 @@ class ClickHouseConnection {
   async executeWithMetadata(sql: string, params?: any[]): Promise<{ rows: any[][]; columnNames: string[]; columnTypes: string[] }> {
     await this.initializeDatabase();
     const { query, query_params } = this.bindParams(sql, params);
-    const queryOpts: any = { query, format: 'JSON' };
+    const queryOpts: any = { query, format: 'JSON', clickhouse_settings: this.readSettings() };
     if (query_params) queryOpts.query_params = query_params;
     const resultSet = await this.client.query(queryOpts);
     const payload = await resultSet.json() as JsonResult;

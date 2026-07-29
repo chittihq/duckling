@@ -214,6 +214,7 @@ Configure via `.env` (copy from `.env.example`).
 - `MYSQL_CONNECTION_STRING`
 - `CLICKHOUSE_URL` (default `http://localhost:8123`)
 - `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD` / `CLICKHOUSE_DATABASE`
+- `CLICKHOUSE_FINAL_READS` (default `true`) — apply the `final = 1` query setting on every read (`execute`/`executeWithMetadata` in `database/clickhouse.ts`, which all read surfaces converge on). Without it, peerdb-mode tables (`ReplacingMergeTree`) can return duplicate rows / over-counts between background merges — dedup there is eventual, unlike polling mode's always-correct projection views. No-op on plain MergeTree. Requires ClickHouse ≥ 23.2.
 - `REPLICATION_BACKEND` — `duckling` (default) or `peerdb`
 - `PORT` (server HTTP, default 3000)
 - `DUCKLING_API_KEY` — required for `/api/*` programmatic access
