@@ -4,7 +4,9 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with the latest unreleased work listed first.
 
-## [Unreleased]
+## [0.5.1] - 2026-07-31
+
+**Security release — upgrade immediately.** The case-variant path bypass below allows unauthenticated reads of database configuration (including MySQL connection strings) and arbitrary SQL execution on any instance reachable by an untrusted network. It affects all prior releases, not only 0.5.0.
 
 ### Added
 
