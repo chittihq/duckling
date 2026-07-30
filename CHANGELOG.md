@@ -11,6 +11,10 @@ The format is based on Keep a Changelog, with the latest unreleased work listed 
 - **CodeMirror 6 SQL editor in the dashboard** (#74). The query editor's plain `<textarea>` is replaced with a CodeMirror 6 component: SQL syntax highlighting, line numbers, bracket matching/auto-close, undo history, and autocompletion — SQL keywords plus live table names fetched from `/api/tables` (refreshed on database switch). Cmd/Ctrl+Enter still runs the query. Styled with the app's design tokens, so it follows the shadcn theme (including `.dark` if a theme toggle ever lands).
 - **Single-port mode: MySQL wire protocol and HTTP can share one port** (#64). Opt-in via `MYSQL_PROTOCOL_SHARED_PORT=true`: a TCP multiplexer on the HTTP port classifies connections by first bytes — HTTP/WebSocket clients send first, MySQL clients silently await the server greeting (`MYSQL_PROTOCOL_DETECTION_TIMEOUT_MS`, default 50 ms). Dashboard, API, WebSocket, and MySQL clients all use one published port; default behavior (separate 3000 + 3307) is unchanged. MySQL remains raw TCP, so it's reachable via direct `IP:port`, not through HTTP reverse-proxy domains.
 
+### Security
+
+- Dependency updates (supersedes Dependabot PRs #86/#87/#95): `nuxt` 4.4.2 → 4.4.8 (includes the 4.4.7 security hotfix), `ws` 8.19 → 8.21, `postcss` → 8.5.18, `vitest` → 3.2.6, plus transitive bumps (`devalue`, `lodash`, `nitropack`, `node-forge`, `picomatch`, `serialize-javascript`, `@babel/core`, `launch-editor`). `rollup` is pinned to 4.59.1 via a pnpm override: rollup ≥ 4.60 misclassifies Nuxt's `#build/*` virtual modules as source-phase imports and fails the frontend build (bisected; remove the override once Nuxt/Vite ship a compatible resolution).
+
 ### Fixed
 
 - **Rate limiting redesigned around real client identity.** Three compounding flaws made 429s appear under normal dashboard use, especially behind a reverse proxy:
