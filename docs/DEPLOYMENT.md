@@ -44,7 +44,7 @@ Optional overrides (set in the compose or a `.env` next to it):
 | `DUCKLING_API_KEY` | auto-generated | Pin the superuser API key |
 | `SESSION_SECRET` | auto-generated | Pin JWT signing |
 | `MYSQL_CONNECTION_STRING` | unset | Auto-create one default database from env (otherwise add via UI) |
-| `TRUST_PROXY` | `1` | Trusted proxy hops — the compose defaults to `1` (Traefik/Nginx/Dokploy in front) so rate limiting keys on the real client IP. Set `0` if clients hit port 3000 directly with no proxy (prevents X-Forwarded-For spoofing) |
+| `TRUST_PROXY` | `uniquelocal` | Which peers may set `X-Forwarded-For`. The compose default trusts only private-network peers — a reverse proxy on the Docker network (Traefik/Nginx/Dokploy) — so rate limiting keys on the real client IP behind a proxy, while a client reaching published port 3000 directly (public source IP) cannot spoof its address. Use `<n>` hops only if your proxy connects from a public IP |
 | `PEERDB_SQL_PASSWORD`, `PEERDB_CATALOG_PASSWORD`, `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY` | dev defaults | Harden internal PeerDB credentials (compose-network-internal either way) |
 | `CLICKHOUSE_FINAL_READS` | `true` | Leave on — guarantees deduplicated reads in peerdb mode |
 
@@ -78,7 +78,7 @@ The dashboard's **Diagnose** button shows the full checklist with ✓/✗ per re
 
 ## Dokploy
 
-Use the Compose deploy type pointed at `docker-compose.yml`. Named volumes mean no host-path configuration in the UI. For the domain: service `duckling`, container port `3000`. `TRUST_PROXY=1` is already the compose default, matching Dokploy's Traefik-fronted topology.
+Use the Compose deploy type pointed at `docker-compose.yml`. Named volumes mean no host-path configuration in the UI. For the domain: service `duckling`, container port `3000`. `TRUST_PROXY=uniquelocal` is already the compose default, matching Dokploy's Traefik-fronted topology (Traefik reaches the container over the private Docker network, so its forwarded client IPs are trusted; direct hits on the published port are not).
 
 ## Health & monitoring
 

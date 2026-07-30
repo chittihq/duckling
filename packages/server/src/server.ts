@@ -26,11 +26,12 @@ import { WorkerPool } from './workers/workerPool';
 import { generateToken, verifyToken, extractTokenFromHeader } from './utils/jwtUtils';
 import { isReadOnlyMySQLQuery } from './utils/sqlSafety';
 import { timingSafeEqualStr } from './utils/timingSafe';
-import { preAuthRateLimiter, postAuthRateLimiter, handleFailedAuthRateLimit, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
+import { preAuthRateLimiter, postAuthRateLimiter, handleFailedAuthRateLimit, chargeUnmeteredRequest, acquireStreamSlot, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
 import './middleware/auth'; // pull in global Express.Request.user declaration
 import config, { getAuthSecurityIssues } from './config';
 import { MySQLProtocolServer } from './services/mysqlProtocolServer';
 import { createPortMultiplexer } from './services/portMultiplexer';
+import { normalizeRoutePath } from './utils/routePath';
 import logger from './logger';
 
 class InvalidIdentifierError extends Error {
@@ -196,6 +197,11 @@ class ClickHouseServer {
     const token = authHeader ? extractTokenFromHeader(authHeader) : queryToken;
 
     if (!token) {
+      // Credential-free requests terminate here, before the post-auth
+      // limiter — meter them or unauthenticated floods are free.
+      if (chargeUnmeteredRequest(req, res)) {
+        return;
+      }
       res.status(401).json({
         error: 'Unauthorized',
         message: 'Authentication required. Provide JWT token or API key in Authorization header (or token query parameter for SSE).'
@@ -286,7 +292,9 @@ class ClickHouseServer {
 
     // Block the per-database control plane outright. (The bare GET
     // /api/databases list is still allowed and filtered to the scoped db.)
-    if (/^\/api\/databases\/[^/]+(\/|$)/.test(req.path)) {
+    // Normalized so `/API/DATABASES/...` can't slip past the control-plane
+    // block while Express still routes it to the handler.
+    if (/^\/api\/databases\/[^/]+(\/|$)/.test(normalizeRoutePath(req.path))) {
       res.status(403).json({
         success: false,
         error: 'This API key is scoped to data access only; database administration requires an admin session or the global API key.',
@@ -308,22 +316,28 @@ class ClickHouseServer {
       res.sendFile(path.join(__dirname, '..', 'public', 'openapi.json'));
     });
 
-    // Global authentication middleware - protects API and operational routes
+    // Global authentication middleware - protects API and operational routes.
+    // Path comparisons run on the normalized path: Express matches routes
+    // case-insensitively and ignores trailing slashes, so comparing the raw
+    // path here would let `/API/QUERY` or `/api/login/` reach handlers while
+    // this gate says "not a protected route".
     this.app.use((req, res, next) => {
+      const routePath = normalizeRoutePath(req.path);
       const publicPaths = ['/api/login', '/api/check-auth', '/openapi.json'];
-      if (publicPaths.includes(req.path)) {
+      if (publicPaths.includes(routePath)) {
         return next();
       }
 
       const protectedPrefixes = ['/api/', '/sync/', '/automation/', '/cdc/', '/metrics'];
       const requiresAuth = protectedPrefixes.some(p =>
-        p.endsWith('/') ? req.path.startsWith(p) : req.path === p
-      ) || req.path === '/health' || req.path === '/status';
+        p.endsWith('/') ? routePath.startsWith(p) : routePath === p
+      ) || routePath === '/health' || routePath === '/status';
 
       if (requiresAuth) {
         // EventSource cannot send custom headers; accept ?token= for SSE path
-        if (!req.headers.authorization && req.query.token && req.path === '/sync/events') {
-          req.headers.authorization = `Bearer ${req.query.token}`;
+        const sseToken = typeof req.query.token === 'string' ? req.query.token : '';
+        if (!req.headers.authorization && sseToken && routePath === '/sync/events') {
+          req.headers.authorization = `Bearer ${sseToken}`;
         }
         return this.checkApiKeyOrSession(req, res, next);
       }
@@ -762,6 +776,21 @@ class ClickHouseServer {
   private async syncEvents(req: express.Request, res: express.Response): Promise<void> {
     try {
       const { databaseId, mysql, clickhouse } = req as RequestWithDatabase;
+
+      // Bound concurrent live streams per identity — each one holds a socket,
+      // a heartbeat timer, and a listener until it closes, which per-request
+      // rate limiting cannot cap.
+      const streamSlot = acquireStreamSlot(req);
+      if (!streamSlot.ok) {
+        res.status(429).json({
+          error: 'Too Many Requests',
+          message: 'Too many concurrent event streams for this client. Close an existing stream and retry.',
+          streamLimit: streamSlot.limit,
+          activeStreams: streamSlot.active,
+        });
+        return;
+      }
+
       const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const automationService = ClickHouseAutomationService.getInstance(databaseId, syncService, clickhouse, mysql);
 
@@ -809,6 +838,7 @@ class ClickHouseServer {
       req.on('close', () => {
         syncService.removeListener('syncProgress', listener);
         clearInterval(heartbeat);
+        streamSlot.release();
       });
     } catch (error) {
       logger.error('SSE sync events failed:', error);

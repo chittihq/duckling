@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import config from '../config';
 import logger from '../logger';
+import { normalizeRoutePath } from '../utils/routePath';
 
 type RateLimitCategory = 'auth' | 'read' | 'query' | 'write' | 'monitoring';
 type ClientTier = 'anonymous' | 'jwt' | 'apiKey';
@@ -35,10 +36,13 @@ interface QueryConcurrencyResult {
 interface QueryInFlightEntry {
   count: number;
   updatedAt: number;
+  /** Identifies the acquisition cohort; see acquireQueryConcurrencySlot. */
+  generation: number;
 }
 
 const store = new Map<string, RateLimitBucket>();
 const queryInFlightStore = new Map<string, QueryInFlightEntry>();
+let queryGenerationCounter = 0;
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
 function getRateLimitMode(): RateLimitMode {
@@ -76,7 +80,9 @@ function isMonitoringPath(path: string): boolean {
     path.startsWith('/api/metrics/') ||
     path.startsWith('/api/governor/') ||
     path.startsWith('/api/workers/') ||
-    path.endsWith('/diagnose/stream')
+    // Anchored to the real route shape — a bare `endsWith` would let any
+    // attacker-chosen path ending in /diagnose/stream claim monitoring rates.
+    /^\/api\/databases\/[^/]+\/diagnose\/stream$/.test(path)
   );
 }
 
@@ -97,9 +103,13 @@ function getRequestDatabaseScope(req: Request): string | null {
     return null;
   }
 
+  // Only inputs that actually select the database may scope the bucket.
+  // `X-Database-Id` is NOT one of them (attachDatabaseContext reads ?db /
+  // the scoped key), so honouring it here would hand a caller a fresh bucket
+  // per header value while every request still hit the same database.
+  const routePath = normalizeRoutePath(req.path);
   const queryDb = typeof req.query?.db === 'string' ? req.query.db : null;
-  const headerDb = typeof req.headers['x-database-id'] === 'string' ? req.headers['x-database-id'] : null;
-  const paramDb = req.path.startsWith('/api/databases/') && typeof req.params?.id === 'string'
+  const paramDb = routePath.startsWith('/api/databases/') && typeof req.params?.id === 'string'
     ? req.params.id
     : null;
 
@@ -107,8 +117,8 @@ function getRequestDatabaseScope(req: Request): string | null {
     return sanitizeKeyPart(paramDb);
   }
 
-  if (usesDatabaseContextPath(req.path)) {
-    return sanitizeKeyPart(queryDb || headerDb || 'default');
+  if (usesDatabaseContextPath(routePath)) {
+    return sanitizeKeyPart(queryDb || 'default');
   }
 
   return null;
@@ -120,7 +130,10 @@ function getClientIp(req: Request): string {
 
 // --- Endpoint classification ---
 
-export function classifyEndpoint(method: string, path: string): RateLimitCategory | null {
+export function classifyEndpoint(method: string, rawPath: string): RateLimitCategory | null {
+  // Express matches case-insensitively and ignores trailing slashes; classify
+  // on the same normalized form or `/api/login/` escapes the auth budget.
+  const path = normalizeRoutePath(rawPath);
   if (
     path.startsWith('/_nuxt/') ||
     path === '/openapi.json' ||
@@ -300,11 +313,9 @@ function acquireQueryConcurrencySlot(clientKey: string, tier: ClientTier): Query
   const now = Date.now();
   const staleTtlMs = config.rateLimit.queryConcurrency.staleEntryTtlMs;
   const existing = queryInFlightStore.get(key);
-  const current =
-    existing && now - existing.updatedAt <= staleTtlMs
-      ? existing.count
-      : 0;
-  if (existing && current === 0) {
+  const isFresh = Boolean(existing) && now - existing!.updatedAt <= staleTtlMs;
+  const current = isFresh ? existing!.count : 0;
+  if (existing && !isFresh) {
     queryInFlightStore.delete(key);
   }
   const wouldLimit = current >= maxInFlight;
@@ -319,7 +330,12 @@ function acquireQueryConcurrencySlot(clientKey: string, tier: ClientTier): Query
     };
   }
 
-  queryInFlightStore.set(key, { count: current + 1, updatedAt: now });
+  // Generation tags the entry this acquisition belongs to. A query that
+  // outlives staleEntryTtlMs gets its entry evicted and a later query creates
+  // a fresh one; without the tag, the old query's release would decrement the
+  // NEW occupant's count and let an extra query past the limit.
+  const generation = isFresh ? existing!.generation : ++queryGenerationCounter;
+  queryInFlightStore.set(key, { count: current + 1, updatedAt: now, generation });
   let released = false;
   const release = () => {
     if (released) {
@@ -327,11 +343,16 @@ function acquireQueryConcurrencySlot(clientKey: string, tier: ClientTier): Query
     }
     released = true;
     const currentEntry = queryInFlightStore.get(key);
-    const next = (currentEntry?.count || 1) - 1;
+    if (!currentEntry || currentEntry.generation !== generation) {
+      // Our slot was already evicted as stale; the entry now belongs to
+      // someone else (or nobody). Leave it alone.
+      return;
+    }
+    const next = currentEntry.count - 1;
     if (next <= 0) {
       queryInFlightStore.delete(key);
     } else {
-      queryInFlightStore.set(key, { count: next, updatedAt: Date.now() });
+      queryInFlightStore.set(key, { count: next, updatedAt: Date.now(), generation });
     }
   };
 
@@ -341,6 +362,67 @@ function acquireQueryConcurrencySlot(clientKey: string, tier: ClientTier): Query
     maxInFlight,
     inFlight: current + 1,
     release,
+  };
+}
+
+// --- Long-lived stream slots (SSE) ---
+
+const streamInFlightStore = new Map<string, number>();
+
+function getStreamConcurrencyLimit(tier: ClientTier): number {
+  if (tier === 'apiKey') {
+    return config.rateLimit.streamConcurrency.apiKeyMaxInFlight;
+  }
+  if (tier === 'jwt') {
+    return config.rateLimit.streamConcurrency.jwtMaxInFlight;
+  }
+  return config.rateLimit.streamConcurrency.anonymousMaxInFlight;
+}
+
+/**
+ * Reserve a slot for a long-lived stream (SSE). Request-rate limiting alone
+ * can't bound these: each stream is charged once as a `read` but then holds a
+ * socket, a heartbeat timer, and an event listener indefinitely, so a client
+ * staying under the request rate still accumulates live resources without
+ * limit. Returns `ok: false` when the caller should reject the connection.
+ */
+export function acquireStreamSlot(req: Request): {
+  ok: boolean;
+  limit: number;
+  active: number;
+  release: () => void;
+} {
+  if (!config.rateLimit.enabled || !config.rateLimit.streamConcurrency.enabled) {
+    return { ok: true, limit: 0, active: 0, release: () => {} };
+  }
+
+  const { key, tier } = identifyClient(req);
+  const limit = getStreamConcurrencyLimit(tier);
+  const storeKey = `${key}:stream`;
+  const active = streamInFlightStore.get(storeKey) || 0;
+
+  if (active >= limit && getRateLimitMode() === 'enforce') {
+    return { ok: false, limit, active, release: () => {} };
+  }
+
+  streamInFlightStore.set(storeKey, active + 1);
+  let released = false;
+  return {
+    ok: true,
+    limit,
+    active: active + 1,
+    release: () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      const next = (streamInFlightStore.get(storeKey) || 1) - 1;
+      if (next <= 0) {
+        streamInFlightStore.delete(storeKey);
+      } else {
+        streamInFlightStore.set(storeKey, next);
+      }
+    },
   };
 }
 
@@ -386,24 +468,65 @@ function send429(
 // --- Failed-credential limiter (called from the auth middleware) ---
 
 /**
- * Charge a presented-but-rejected token to the per-IP auth (brute-force)
- * bucket. Returns true when the attempt was over the limit and a 429 was
- * sent — the caller must not also send its 401. Requests with no credentials
- * at all are never charged here: only presented-and-rejected tokens count as
- * credential guessing.
+ * Charge a presented-but-rejected token to a per-IP brute-force bucket.
+ * Returns true when the attempt was over the limit and a 429 was sent — the
+ * caller must not also send its 401. Requests with no credentials at all are
+ * charged by chargeUnmeteredRequest instead; only presented-and-rejected
+ * tokens count as credential guessing.
+ *
+ * The bucket is deliberately SEPARATE from `/api/login`'s (note the distinct
+ * `:badtoken` key). Sharing one bucket means an expired dashboard token — or
+ * anything else auto-retrying with stale credentials — burns the login budget
+ * and 429s the next legitimate password login from the same office/NAT IP
+ * before it is even checked.
  */
 export function handleFailedAuthRateLimit(req: Request, res: Response): boolean {
   if (!config.rateLimit.enabled) {
     return false;
   }
 
-  const clientKey = `ip:${sanitizeKeyPart(getClientIp(req))}`;
+  const clientKey = `ip:${sanitizeKeyPart(getClientIp(req))}:badtoken`;
   const cost = Math.max(1, config.rateLimit.costs.auth || 1);
   const result = checkRateLimit(clientKey, 'auth', 'anonymous', cost);
   setRateLimitHeaders(res, result);
 
   if (result.limited) {
     send429(res, result, 'auth', { reason: 'invalid-credentials' });
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Charge a request that terminates in the auth middleware's missing-credential
+ * branch. Those never reach the post-auth limiter, and the pre-auth limiter
+ * only meters auth/monitoring — so unauthenticated read/query/write requests
+ * (JSON body parsing, logging, up to the body limit) were entirely free.
+ *
+ * Charged to the anonymous per-IP bucket at the request's own category, so a
+ * flood of unauthenticated `POST /api/query` can't drain the login budget.
+ * Returns true when a 429 was sent instead of the caller's 401.
+ */
+export function chargeUnmeteredRequest(req: Request, res: Response): boolean {
+  if (!config.rateLimit.enabled) {
+    return false;
+  }
+
+  const category = classifyEndpoint(req.method, req.path);
+  // auth/monitoring were already charged by the pre-auth limiter — charging
+  // again here would double-count the same request.
+  if (!category || category === 'auth' || category === 'monitoring') {
+    return false;
+  }
+
+  const clientKey = `ip:${sanitizeKeyPart(getClientIp(req))}`;
+  const cost = resolveRequestCost(category, req);
+  const result = checkRateLimit(clientKey, category, 'anonymous', cost);
+  setRateLimitHeaders(res, result);
+
+  if (result.limited) {
+    send429(res, result, category, { tier: 'anonymous' });
     return true;
   }
 
@@ -422,7 +545,11 @@ function isPreRouteSessionPath(path: string): boolean {
 }
 
 function requestHasCredentials(req: Request): boolean {
-  return Boolean(req.headers.authorization) || typeof req.query?.token === 'string';
+  // A present-but-empty `?token=` is NOT credentials: the auth middleware
+  // treats it as missing and 401s before the failed-auth charge, so deferring
+  // on it would leave the request unmetered on both paths.
+  const queryToken = typeof req.query?.token === 'string' ? req.query.token : '';
+  return Boolean(req.headers.authorization) || queryToken.length > 0;
 }
 
 let proxyWarningLogged = false;
@@ -436,7 +563,7 @@ function warnIfProxyNotTrusted(req: Request): void {
   }
   proxyWarningLogged = true;
   logger.warn(
-    'Requests carry X-Forwarded-For but TRUST_PROXY is not set: rate limiting sees every client as the proxy IP, so all clients share one bucket. Set TRUST_PROXY (e.g. TRUST_PROXY=1) when running behind a reverse proxy.'
+    'Requests carry X-Forwarded-For but TRUST_PROXY is not set: rate limiting sees every client as the proxy IP, so all clients share one bucket. Set TRUST_PROXY (e.g. TRUST_PROXY=uniquelocal behind a reverse proxy on a private network) when running behind a proxy.'
   );
 }
 
@@ -617,11 +744,13 @@ export function stopRateLimitCleanup(): void {
   }
   store.clear();
   queryInFlightStore.clear();
+  streamInFlightStore.clear();
 }
 
 // Test helper
 export function __resetRateLimitStateForTests(): void {
   store.clear();
   queryInFlightStore.clear();
+  streamInFlightStore.clear();
   proxyWarningLogged = false;
 }

@@ -366,6 +366,15 @@ export const config = {
       apiKeyMaxInFlight: Math.max(1, parseInt(process.env.RATE_LIMIT_APIKEY_QUERY_MAX_IN_FLIGHT || '12')),
       staleEntryTtlMs: Math.max(1000, parseInt(process.env.RATE_LIMIT_QUERY_INFLIGHT_TTL_MS || '300000')),
     },
+    // Concurrent long-lived streams (SSE) per identity. Request-rate limits
+    // can't bound these — each connection is charged once but holds a socket,
+    // timer, and listener until it closes.
+    streamConcurrency: {
+      enabled: process.env.RATE_LIMIT_STREAM_CONCURRENCY_ENABLED !== 'false',
+      anonymousMaxInFlight: Math.max(1, parseInt(process.env.RATE_LIMIT_ANON_STREAM_MAX || '2')),
+      jwtMaxInFlight: Math.max(1, parseInt(process.env.RATE_LIMIT_JWT_STREAM_MAX || '8')),
+      apiKeyMaxInFlight: Math.max(1, parseInt(process.env.RATE_LIMIT_APIKEY_STREAM_MAX || '16')),
+    },
     cleanupIntervalMs: parseInt(process.env.RATE_LIMIT_CLEANUP_INTERVAL_MS || '60000'),
   }
 };

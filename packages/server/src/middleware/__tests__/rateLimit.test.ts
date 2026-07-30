@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import config from '../../config';
 import {
   __resetRateLimitStateForTests,
+  acquireStreamSlot,
+  chargeUnmeteredRequest,
   classifyEndpoint,
   checkRateLimit,
   handleFailedAuthRateLimit,
@@ -98,6 +100,10 @@ beforeEach(() => {
   config.rateLimit.queryConcurrency.jwtMaxInFlight = 1;
   config.rateLimit.queryConcurrency.apiKeyMaxInFlight = 2;
   config.rateLimit.queryConcurrency.staleEntryTtlMs = 300000;
+  config.rateLimit.streamConcurrency.enabled = true;
+  config.rateLimit.streamConcurrency.anonymousMaxInFlight = 2;
+  config.rateLimit.streamConcurrency.jwtMaxInFlight = 2;
+  config.rateLimit.streamConcurrency.apiKeyMaxInFlight = 3;
 });
 
 afterEach(() => {
@@ -418,5 +424,154 @@ describe('failed-auth limiter', () => {
     config.rateLimit.enabled = false;
     const res = new MockResponse();
     expect(handleFailedAuthRateLimit(buildReq(), res as any)).toBe(false);
+  });
+
+  test('bad tokens do NOT drain the login budget (no shared-IP lockout)', () => {
+    config.rateLimit.categories.auth.maxRequests = 3;
+    const ip = '203.0.113.9';
+
+    // Exhaust the invalid-token budget from this IP.
+    for (let i = 0; i < 3; i++) {
+      handleFailedAuthRateLimit(
+        buildReq({ ip, headers: { authorization: 'Bearer bogus' } }), new MockResponse() as any);
+    }
+    const blocked = new MockResponse();
+    expect(handleFailedAuthRateLimit(
+      buildReq({ ip, headers: { authorization: 'Bearer bogus' } }), blocked as any)).toBe(true);
+
+    // A legitimate password login from the SAME IP must still be accepted:
+    // shared NAT/office IPs would otherwise be locked out by one stale token.
+    const loginRes = new MockResponse();
+    let loginPassed = false;
+    preAuthRateLimiter(
+      buildReq({ method: 'POST', path: '/api/login', ip }), loginRes as any, () => { loginPassed = true; });
+    expect(loginPassed).toBe(true);
+    expect(loginRes.statusCode).toBe(200);
+  });
+});
+
+describe('unmetered-request charging', () => {
+  test('credential-free write requests are charged to the anonymous IP bucket', () => {
+    config.rateLimit.categories.write.maxRequests = 3;
+    config.rateLimit.costs.write = 1;
+
+    const req = buildReq({ method: 'POST', path: '/api/query', body: {} });
+    // /api/query is 'query'; use a write path to exercise the write budget.
+    const writeReq = buildReq({ method: 'POST', path: '/sync/full' });
+
+    for (let i = 0; i < 3; i++) {
+      expect(chargeUnmeteredRequest(writeReq, new MockResponse() as any)).toBe(false);
+    }
+    const res = new MockResponse();
+    expect(chargeUnmeteredRequest(writeReq, res as any)).toBe(true);
+    expect(res.statusCode).toBe(429);
+    expect(req).toBeDefined();
+  });
+
+  test('auth and monitoring are not charged here (pre-auth limiter already did)', () => {
+    config.rateLimit.categories.auth.maxRequests = 1;
+    config.rateLimit.categories.monitoring.maxRequests = 1;
+
+    for (let i = 0; i < 5; i++) {
+      expect(chargeUnmeteredRequest(
+        buildReq({ method: 'POST', path: '/api/login' }), new MockResponse() as any)).toBe(false);
+      expect(chargeUnmeteredRequest(
+        buildReq({ path: '/status' }), new MockResponse() as any)).toBe(false);
+    }
+  });
+});
+
+describe('stream concurrency (SSE)', () => {
+  test('caps concurrent live streams per identity and frees the slot on release', () => {
+    config.rateLimit.streamConcurrency.jwtMaxInFlight = 2;
+    const req = buildReq({
+      path: '/sync/events',
+      user: { username: 'admin', jti: 'session-a', authMethod: 'jwt' },
+    });
+
+    const first = acquireStreamSlot(req);
+    const second = acquireStreamSlot(req);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+
+    const third = acquireStreamSlot(req);
+    expect(third.ok).toBe(false);
+    expect(third.limit).toBe(2);
+
+    first.release();
+    expect(acquireStreamSlot(req).ok).toBe(true);
+  });
+
+  test('release is idempotent (a double close cannot free a stranger\'s slot)', () => {
+    config.rateLimit.streamConcurrency.jwtMaxInFlight = 1;
+    const req = buildReq({
+      path: '/sync/events',
+      user: { username: 'admin', jti: 'session-a', authMethod: 'jwt' },
+    });
+
+    const slot = acquireStreamSlot(req);
+    slot.release();
+    slot.release();
+
+    const held = acquireStreamSlot(req);
+    expect(held.ok).toBe(true);
+    expect(acquireStreamSlot(req).ok).toBe(false);
+  });
+});
+
+describe('path normalization (routing-equivalent paths must not escape limits)', () => {
+  test('uppercase and trailing-slash login variants keep the auth classification', () => {
+    expect(classifyEndpoint('POST', '/API/LOGIN')).toBe('auth');
+    expect(classifyEndpoint('POST', '/api/login/')).toBe('auth');
+    expect(classifyEndpoint('POST', '/Api/Login/')).toBe('auth');
+  });
+
+  test('uppercase protected paths still classify as read/write, not unclassified', () => {
+    expect(classifyEndpoint('GET', '/API/TABLES')).toBe('read');
+    expect(classifyEndpoint('POST', '/API/QUERY')).toBe('query');
+    expect(classifyEndpoint('POST', '/SYNC/FULL')).toBe('write');
+  });
+
+  test('trailing-slash login is rate limited exactly like the canonical path', () => {
+    config.rateLimit.categories.auth.maxRequests = 2;
+
+    const run = (path: string) => {
+      const res = new MockResponse();
+      let called = false;
+      preAuthRateLimiter(buildReq({ method: 'POST', path }), res as any, () => { called = true; });
+      return { res, called };
+    };
+
+    expect(run('/api/login').called).toBe(true);
+    expect(run('/api/login/').called).toBe(true);
+    const third = run('/API/LOGIN');
+    expect(third.called).toBe(false);
+    expect(third.res.statusCode).toBe(429);
+  });
+
+  test('arbitrary paths ending in /diagnose/stream do not claim monitoring rates', () => {
+    expect(classifyEndpoint('GET', '/api/databases/tenant_a/diagnose/stream')).toBe('monitoring');
+    // Attacker-chosen path with the same suffix must fall through to read.
+    expect(classifyEndpoint('GET', '/api/tables/evil/diagnose/stream')).toBe('read');
+  });
+
+  test('X-Database-Id cannot mint a fresh bucket per request', () => {
+    config.rateLimit.identity.includeDatabaseScope = true;
+
+    const a = identifyClient(buildReq({
+      path: '/api/tables',
+      query: { db: 'tenant_a' },
+      headers: { 'x-database-id': 'spoof-1' },
+      user: { username: 'admin', authMethod: 'jwt' },
+    }));
+    const b = identifyClient(buildReq({
+      path: '/api/tables',
+      query: { db: 'tenant_a' },
+      headers: { 'x-database-id': 'spoof-2' },
+      user: { username: 'admin', authMethod: 'jwt' },
+    }));
+
+    expect(a.key).toBe(b.key);
+    expect(a.key).toContain('db:tenant_a');
   });
 });

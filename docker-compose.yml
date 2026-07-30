@@ -68,12 +68,15 @@ services:
     environment:
       - NODE_ENV=production
       - CLICKHOUSE_URL=http://clickhouse:8123
-      # One trusted proxy hop (Traefik/nginx/Dokploy — the typical self-host
-      # topology), so rate limiting keys on the real client IP instead of
-      # collapsing every client into the proxy's bucket. Set TRUST_PROXY=0 if
-      # clients connect straight to port 3000 with no proxy in front
-      # (otherwise a direct client could spoof X-Forwarded-For).
-      - TRUST_PROXY=${TRUST_PROXY:-1}
+      # Trust X-Forwarded-For only when the connecting peer is on a private
+      # network — i.e. a reverse proxy sharing the Docker network
+      # (Traefik/nginx/Dokploy), the typical self-host topology. This keys
+      # rate limiting on the real client IP behind a proxy WITHOUT letting a
+      # client that reaches published port 3000 directly (public source IP,
+      # never trusted) spoof its address via a forged header. Override with
+      # TRUST_PROXY=<n> only if your proxy connects from a public IP.
+      - TRUST_PROXY=${TRUST_PROXY:-uniquelocal}
+      - TRUST_PROXY_HOPS=${TRUST_PROXY_HOPS:-1}
       # --- PeerDB (primary replication mode) ---
       - REPLICATION_BACKEND=peerdb
       - PEERDB_ENABLED=true

@@ -223,7 +223,7 @@ Configure via `.env` (copy from `.env.example`).
 - `REPLICATION_BACKEND` — `duckling` (default) or `peerdb`
 - `PORT` (server HTTP, default 3000)
 - `DUCKLING_API_KEY` — required for `/api/*` programmatic access
-- `TRUST_PROXY` — Express `trust proxy` value (default `false`). Set when behind a reverse proxy so `req.ip` / rate limiting key on the real client, not the proxy. Accepts `true`, a hop count (`1`), `loopback`, or a CIDR list.
+- `TRUST_PROXY` — Express `trust proxy` value (code default `false`; the deploy compose sets `uniquelocal`). Set when behind a reverse proxy so `req.ip` / rate limiting key on the real client, not the proxy. Accepts `true`, a hop count (`1`), `loopback`/`uniquelocal`, or a CIDR list. Prefer `uniquelocal` over a hop count when the app port is also published: a hop count trusts `X-Forwarded-For` from *any* peer, so a direct client can forge its IP; `uniquelocal` trusts only private-network peers (a proxy on the Docker network).
 - `TRUST_PROXY_HOPS` — proxy hop count the WebSocket path trusts in `X-Forwarded-For` (default: the numeric `TRUST_PROXY`, else `0` = ignore the header). Set explicitly when `TRUST_PROXY` is non-numeric.
 - `MYSQL_PROTOCOL_SHARED_PORT` (default `false`) — serve the MySQL wire protocol on the HTTP port (`PORT`) instead of `MYSQL_PROTOCOL_PORT`. A TCP multiplexer (`services/portMultiplexer.ts`) classifies by first bytes: data within `MYSQL_PROTOCOL_DETECTION_TIMEOUT_MS` (default 50 ms) → HTTP/WebSocket; silence → MySQL client waiting for the greeting, injected via `MySQLProtocolServer.injectSocket()` (mysql2's `_handleConnection`, guarded at startup). MySQL is raw TCP in both modes — reachable only via direct `IP:port`, never through an HTTP reverse-proxy domain.
 
@@ -267,6 +267,8 @@ Three credential types:
 - **`DUCKLING_API_KEY`** (global, env) — unscoped superuser; reaches any database and the full control plane.
 - **JWT session** (from `/api/login`) — admin-equivalent for the dashboard.
 - **Per-database API keys** (`dk_…`) — created via `POST /api/databases/:id/api-keys`, scoped to a single database's **data plane only** (query, tables, sync, cdc, automation, health/status under `?db=<that-db>`). A scoped key is 403'd on any other database and on the entire `/api/databases/:id` control plane (editing/deleting the database, replication mode, S3 config, backups, and key management itself). Keys are stored hash-only (`ApiKeyRecord` in `databaseConfig.ts`), shown once at creation, and resolved per-request via an in-memory `sha256 → {dbId, keyId}` index (`DatabaseConfigManager.apiKeyIndex`) — no per-request disk I/O. `lastUsedAt` is updated in memory and persisted at most once/minute. Auth/scoping live in `checkApiKeyOrSession` + `enforceDatabaseScope` (`server.ts`).
+
+**Path handling in security middleware.** Every path comparison that gates auth, scope, or rate limiting MUST go through `normalizeRoutePath()` (`utils/routePath.ts`). Express routes case-insensitively and ignores trailing slashes, so a raw `req.path` comparison disagrees with the router: `/API/QUERY` and `/api/login/` reach the same handlers while a case-sensitive gate reports "not a protected route". That was a real unauthenticated-access bug (fixed; regression tests in `middleware/__tests__/rateLimit.test.ts` under "path normalization"). Adding a new gate on `req.path` without normalizing reintroduces it.
 
 ### Health & status
 
