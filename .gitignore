@@ -58,3 +58,9 @@ packages/sdk/.claude/settings.local.json
 
 .antigravitycli/
 /.tmp
+
+# Stale nested lockfiles: packages/* are pnpm workspace members and resolve
+# via the ROOT lockfile, so nested ones are never read by the installer —
+# they only pin (and get security-flagged for) versions nobody installs.
+packages/*/pnpm-lock.yaml
+packages/*/examples/*/pnpm-lock.yaml

@@ -32,7 +32,21 @@
   "pnpm": {
     "onlyBuiltDependencies": [],
     "overrides": {
-      "rollup": "4.59.1"
+      "rollup": "4.59.1",
+      "jws": "^3.2.3",
+      "path-to-regexp@0.1.12": "0.1.13",
+      "qs": "^6.15.2",
+      "body-parser": "^1.20.6",
+      "fast-xml-parser": "^5.7.0",
+      "@opentelemetry/core": "^2.8.0",
+      "defu": "^6.1.5",
+      "svgo": "^4.0.2",
+      "brace-expansion@1": "^1.1.16",
+      "brace-expansion@2": "^2.1.2",
+      "brace-expansion@5": "^5.0.8",
+      "minimatch@3": "^3.1.4",
+      "minimatch@9": "^9.0.7",
+      "glob@10": "^10.5.0"
     }
   }
 }
