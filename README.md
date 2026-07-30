@@ -36,6 +36,19 @@ curl -X POST http://localhost:3000/api/databases \
 
 Dashboard + API: <http://localhost:3000> (same origin). MySQL wire protocol: `mysql -h 127.0.0.1 -P 3307 -u duckling -p${DUCKLING_API_KEY}`. (Dev stack splits them: dashboard on 3000, API on 3001.)
 
+### Single-port mode (HTTP + MySQL on one port)
+
+Set `MYSQL_PROTOCOL_SHARED_PORT=true` and the MySQL wire protocol rides the HTTP port (3000) instead of its own — one published port total:
+
+```bash
+curl http://SERVER_IP:3000/health                      # HTTP, same as always
+mysql -h SERVER_IP -P 3000 -u duckling -p${DUCKLING_API_KEY}   # MySQL, same port
+```
+
+Detection works because the two protocols initiate differently: HTTP clients send first, MySQL clients silently wait for the server greeting. A connection that stays quiet for `MYSQL_PROTOCOL_DETECTION_TIMEOUT_MS` (default 50 ms) is treated as MySQL. Dashboard, API, and WebSocket are unaffected.
+
+> **Reach it via `IP:port`, not a proxy domain.** The MySQL wire protocol is raw TCP — HTTP reverse proxies (Traefik/Nginx/Dokploy domains) only route HTTP, so MySQL clients must connect directly to the server's IP and port in either mode. Single-port mode just means that direct address is the same port the dashboard uses. Off by default; when off, ports stay separate (3000 + 3307) exactly as before.
+
 ## Deploy (self-host)
 
 For a server deploy, use the **published image** (`chittihq/duckling`, built from the single-container `Dockerfile` — API + dashboard on one port) plus ClickHouse **and the PeerDB CDC stack**. The default [`docker-compose.yml`](docker-compose.yml) is exactly that:

@@ -4,6 +4,7 @@ import cors from 'cors';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as http from 'http';
+import * as net from 'net';
 import { createHash } from 'crypto';
 import ClickHouseConnection from './database/clickhouse';
 import MySQLConnection from './database/mysql';
@@ -29,6 +30,7 @@ import { preAuthRateLimiter, postAuthRateLimiter, handleFailedAuthRateLimit, sta
 import './middleware/auth'; // pull in global Express.Request.user declaration
 import config, { getAuthSecurityIssues } from './config';
 import { MySQLProtocolServer } from './services/mysqlProtocolServer';
+import { createPortMultiplexer } from './services/portMultiplexer';
 import logger from './logger';
 
 class InvalidIdentifierError extends Error {
@@ -119,6 +121,7 @@ class ClickHouseServer {
   private websocketService: WebSocketService;
   private logBufferService: LogBufferService;
   private mysqlProtocolServer: MySQLProtocolServer | null = null;
+  private sharedServer: net.Server | null = null;
 
   constructor() {
     this.app = express();
@@ -2595,14 +2598,50 @@ class ClickHouseServer {
       console.log('Starting HTTP server...');
       this.server = http.createServer(this.app);
 
-      this.server.listen(config.port, () => {
+      const sharedPortMode = config.mysqlProtocol.enabled && config.mysqlProtocol.sharedPort;
+
+      const logStartupBanner = () => {
         console.log(`ClickHouse Server running on port ${config.port}`);
         console.log(`WebSocket available at ws://localhost:${config.port}/ws`);
         console.log(`Architecture: ClickHouse MergeTree (${config.replication.backend === 'peerdb' ? 'PeerDB CDC' : 'in-repo polling sync'})`);
         console.log('Features: Watermark-based incremental, streaming batches, WebSocket, multi-database');
         console.log(`Databases initialized: ${allDatabases.length}`);
         console.log('Ready for manual operations via UI/API');
-      });
+      };
+
+      if (sharedPortMode) {
+        // Single-port mode: a TCP multiplexer owns config.port. First bytes
+        // arriving → HTTP/WebSocket; silence → MySQL client waiting for the
+        // server greeting. If the MySQL side fails to start (e.g. mysql2
+        // internals changed), the port degrades to HTTP-only.
+        try {
+          this.mysqlProtocolServer = new MySQLProtocolServer({ sharedMode: true });
+          await this.mysqlProtocolServer.start();
+        } catch (err) {
+          console.error('Failed to start MySQL protocol server in shared-port mode (port serves HTTP only):', err);
+          this.mysqlProtocolServer = null;
+        }
+
+        this.sharedServer = createPortMultiplexer(
+          {
+            handleHttpSocket: (socket) => {
+              this.server!.emit('connection', socket);
+            },
+            handleMysqlSocket: (socket) =>
+              this.mysqlProtocolServer ? this.mysqlProtocolServer.injectSocket(socket) : false,
+          },
+          config.mysqlProtocol.detectionTimeoutMs
+        );
+
+        this.sharedServer.listen(config.port, () => {
+          logStartupBanner();
+          if (this.mysqlProtocolServer) {
+            console.log(`MySQL protocol multiplexed on port ${config.port} (shared with HTTP)`);
+          }
+        });
+      } else {
+        this.server.listen(config.port, logStartupBanner);
+      }
 
       // Initialize WebSocket service
       console.log('Initializing WebSocket service...');
@@ -2614,8 +2653,9 @@ class ClickHouseServer {
 
       // Start system metrics collection
       SystemMetricsService.getInstance().start();
-      // Start MySQL wire protocol server
-      if (config.mysqlProtocol.enabled) {
+      // Start MySQL wire protocol server (dedicated port; in shared-port mode
+      // it was already started above without a listener)
+      if (config.mysqlProtocol.enabled && !sharedPortMode) {
         try {
           this.mysqlProtocolServer = new MySQLProtocolServer();
           await this.mysqlProtocolServer.start();
@@ -2761,8 +2801,28 @@ class ClickHouseServer {
       }
     }
 
+    // Close the shared-port multiplexer (owns the listening socket in
+    // shared-port mode; the HTTP server below never listened itself).
+    const wasSharedPortMode = this.sharedServer !== null;
+    if (this.sharedServer) {
+      await new Promise<void>((resolve) => {
+        this.sharedServer!.close(() => resolve());
+        setTimeout(resolve, 5000);
+      });
+      this.sharedServer = null;
+    }
+
     return new Promise((resolve, reject) => {
       if (!this.server) {
+        resolve();
+        return;
+      }
+
+      if (wasSharedPortMode) {
+        // The HTTP server never listened (sockets were injected), so close()
+        // would error with ERR_SERVER_NOT_RUNNING. Just drop connections.
+        (this.server as any).closeAllConnections?.();
+        logger.info('HTTP server closed successfully (shared-port mode)');
         resolve();
         return;
       }

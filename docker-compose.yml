@@ -62,7 +62,9 @@ services:
         condition: service_started
     ports:
       - "3000:3000"     # dashboard + REST API + WebSocket (same origin)
-      - "3307:3307"     # MySQL wire protocol (optional; remove if unused)
+      - "3307:3307"     # MySQL wire protocol (optional; remove if unused —
+                        # or set MYSQL_PROTOCOL_SHARED_PORT=true to serve it
+                        # on port 3000 and drop this mapping entirely)
     environment:
       - NODE_ENV=production
       - CLICKHOUSE_URL=http://clickhouse:8123

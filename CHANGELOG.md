@@ -6,6 +6,10 @@ The format is based on Keep a Changelog, with the latest unreleased work listed 
 
 ## [Unreleased]
 
+### Added
+
+- **Single-port mode: MySQL wire protocol and HTTP can share one port** (#64). Opt-in via `MYSQL_PROTOCOL_SHARED_PORT=true`: a TCP multiplexer on the HTTP port classifies connections by first bytes — HTTP/WebSocket clients send first, MySQL clients silently await the server greeting (`MYSQL_PROTOCOL_DETECTION_TIMEOUT_MS`, default 50 ms). Dashboard, API, WebSocket, and MySQL clients all use one published port; default behavior (separate 3000 + 3307) is unchanged. MySQL remains raw TCP, so it's reachable via direct `IP:port`, not through HTTP reverse-proxy domains.
+
 ### Fixed
 
 - **Rate limiting redesigned around real client identity.** Three compounding flaws made 429s appear under normal dashboard use, especially behind a reverse proxy:

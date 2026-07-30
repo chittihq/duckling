@@ -225,6 +225,7 @@ Configure via `.env` (copy from `.env.example`).
 - `DUCKLING_API_KEY` — required for `/api/*` programmatic access
 - `TRUST_PROXY` — Express `trust proxy` value (default `false`). Set when behind a reverse proxy so `req.ip` / rate limiting key on the real client, not the proxy. Accepts `true`, a hop count (`1`), `loopback`, or a CIDR list.
 - `TRUST_PROXY_HOPS` — proxy hop count the WebSocket path trusts in `X-Forwarded-For` (default: the numeric `TRUST_PROXY`, else `0` = ignore the header). Set explicitly when `TRUST_PROXY` is non-numeric.
+- `MYSQL_PROTOCOL_SHARED_PORT` (default `false`) — serve the MySQL wire protocol on the HTTP port (`PORT`) instead of `MYSQL_PROTOCOL_PORT`. A TCP multiplexer (`services/portMultiplexer.ts`) classifies by first bytes: data within `MYSQL_PROTOCOL_DETECTION_TIMEOUT_MS` (default 50 ms) → HTTP/WebSocket; silence → MySQL client waiting for the greeting, injected via `MySQLProtocolServer.injectSocket()` (mysql2's `_handleConnection`, guarded at startup). MySQL is raw TCP in both modes — reachable only via direct `IP:port`, never through an HTTP reverse-proxy domain.
 
 ### Sync
 

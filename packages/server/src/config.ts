@@ -296,6 +296,12 @@ export const config = {
   mysqlProtocol: {
     enabled: process.env.MYSQL_PROTOCOL_ENABLED !== 'false', // enabled by default
     port: parseInt(process.env.MYSQL_PROTOCOL_PORT || '3307'),
+    // Serve MySQL wire protocol on the HTTP port (single-port mode). Works by
+    // first-byte detection: HTTP clients speak first, MySQL clients wait for
+    // the server greeting. Off by default (separate ports).
+    sharedPort: process.env.MYSQL_PROTOCOL_SHARED_PORT === 'true',
+    // How long to wait for first bytes before assuming a MySQL client.
+    detectionTimeoutMs: parseInt(process.env.MYSQL_PROTOCOL_DETECTION_TIMEOUT_MS || '50'),
     defaultDatabase: process.env.MYSQL_PROTOCOL_DEFAULT_DB || 'default',
     maxConnections: parseInt(process.env.MYSQL_PROTOCOL_MAX_CONNECTIONS || '50'),
     username: process.env.MYSQL_PROTOCOL_USER || 'duckling',

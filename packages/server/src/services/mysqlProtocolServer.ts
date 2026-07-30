@@ -27,6 +27,7 @@ import {
 } from './mysqlProtocolUtils';
 import config from '../config';
 import logger from '../logger';
+import * as net from 'net';
 import * as path from 'path';
 
 // mysql2 is CommonJS — use require for the server-side API
@@ -189,8 +190,11 @@ export class MySQLProtocolServer {
   private passwordDoubleSha1: Buffer | null = null;
   private preparedStatements: Map<number, string> = new Map();
   private nextStatementId = 1;
+  /** Shared-port mode: sockets are injected by the port multiplexer instead of listen(). */
+  private readonly sharedMode: boolean;
 
-  constructor() {
+  constructor(options: { sharedMode?: boolean } = {}) {
+    this.sharedMode = options.sharedMode ?? false;
     this.port = config.mysqlProtocol.port;
     this.maxConnections = config.mysqlProtocol.maxConnections;
     this.username = config.mysqlProtocol.username;
@@ -216,6 +220,22 @@ export class MySQLProtocolServer {
           this.handleConnection(conn);
         });
 
+        if (this.sharedMode) {
+          // Shared-port mode: the port multiplexer owns the listening socket
+          // and feeds us sockets via injectSocket(). Guard against mysql2
+          // internal API drift up front so the feature fails at startup, not
+          // on the first connection.
+          if (typeof this.server._handleConnection !== 'function') {
+            reject(new Error(
+              'mysql2 Server no longer exposes _handleConnection; shared-port mode is unavailable with this mysql2 version'
+            ));
+            return;
+          }
+          logger.info('MySQL protocol server ready (shared-port mode, no dedicated listener)');
+          resolve();
+          return;
+        }
+
         this.server.listen(this.port, () => {
           logger.info(`MySQL protocol server listening on port ${this.port}`);
           resolve();
@@ -233,6 +253,26 @@ export class MySQLProtocolServer {
     });
   }
 
+  /**
+   * Shared-port mode: hand a raw TCP socket (already classified as a MySQL
+   * client by the port multiplexer) to mysql2, which wraps it in a server
+   * Connection and sends the greeting. Returns false when the server isn't
+   * running or mysql2's internals don't cooperate — the caller destroys the
+   * socket.
+   */
+  injectSocket(socket: net.Socket): boolean {
+    if (!this.server || typeof this.server._handleConnection !== 'function') {
+      return false;
+    }
+    try {
+      this.server._handleConnection(socket);
+      return true;
+    } catch (err) {
+      logger.error('MySQL protocol socket injection failed:', err);
+      return false;
+    }
+  }
+
   stop(): Promise<void> {
     return new Promise((resolve) => {
       if (!this.server) {
@@ -245,6 +285,14 @@ export class MySQLProtocolServer {
         if (state.idleTimer) clearTimeout(state.idleTimer);
       }
       this.connections.clear();
+
+      if (this.sharedMode) {
+        // No listening socket of our own — the port multiplexer owns it.
+        this.server = null;
+        logger.info('MySQL protocol server stopped (shared-port mode)');
+        resolve();
+        return;
+      }
 
       this.server.close(() => {
         clearTimeout(forceTimer);
