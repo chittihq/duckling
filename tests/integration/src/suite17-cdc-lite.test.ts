@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import { clickhouseScalar, clickhouseScalarStrict } from './helpers/clickhouse.js';
 import { mysqlExec } from './helpers/mysql.js';
-import { triggerTableSync } from './helpers/sync.js';
+import { triggerTableSync, waitForSyncIdle } from './helpers/sync.js';
 import { cdcStart, cdcStop, cdcStatus, waitForCdc, waitForCdcRunning, sleep } from './helpers/cdc.js';
 import { TIMEOUT_CDC } from './helpers/config.js';
 
@@ -109,6 +109,8 @@ describe('Suite 17: CDC-lite delete tombstones', () => {
     // CDC begins fresh there.
     await cdcStop();
     await sleep(1500);
+    // Let any in-flight nudge/poller sync drain before the next suite reads.
+    await waitForSyncIdle(30_000);
     await mysqlExec(`DROP TABLE IF EXISTS ${TABLE};`);
   });
 });

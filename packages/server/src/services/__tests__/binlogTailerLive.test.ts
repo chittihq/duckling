@@ -241,4 +241,129 @@ describe.skipIf(!DOCKER_OK)('CDC-lite against a real spec-exact MySQL instance',
     }, 15_000, 500);
     expect(hasGtid).toBe(true);
   }, 20_000);
+
+  // ── Full operation matrix under MINIMAL metadata ─────────────────────────
+
+  test('UPDATE on the source triggers a sync nudge', async () => {
+    const nudgesBefore = nudgedTables.filter((t) => t === 'widgets').length;
+    mysqlInContainer("UPDATE widgets SET name = 'one-renamed' WHERE id = 1;", DB);
+    const nudged = await waitFor(
+      () => nudgedTables.filter((t) => t === 'widgets').length > nudgesBefore,
+      20_000,
+      250,
+    );
+    expect(nudged).toBe(true);
+  }, 30_000);
+
+  test('composite-PK table: DELETE tombstones carry every key column', async () => {
+    mysqlInContainer(
+      'CREATE TABLE order_lines (order_id INT, line_no INT, sku VARCHAR(32), PRIMARY KEY (order_id, line_no)); ' +
+      "INSERT INTO order_lines VALUES (100, 1, 'a'), (100, 2, 'b');",
+      DB,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    mysqlInContainer('DELETE FROM order_lines WHERE order_id = 100 AND line_no = 2;', DB);
+
+    const arrived = await waitFor(
+      () => capturedInserts.some((entry) => entry.table === 'order_lines__raw'),
+      20_000,
+      250,
+    );
+    expect(arrived).toBe(true);
+    const row = capturedInserts.find((entry) => entry.table === 'order_lines__raw')!.rows[0];
+    expect(Number(row.order_id)).toBe(100);
+    expect(Number(row.line_no)).toBe(2);
+    expect(row.sku).toBeUndefined();
+    expect(row._sync_deleted).toBe(1);
+  }, 30_000);
+
+  test('ALTER TABLE adding a column: subsequent DELETE still tombstones correctly', async () => {
+    mysqlInContainer('ALTER TABLE widgets ADD COLUMN color VARCHAR(16) DEFAULT NULL;', DB);
+    mysqlInContainer("INSERT INTO widgets (id, name, color) VALUES (10, 'ten', 'red');", DB);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+
+    const before = tombstoneIds().length;
+    mysqlInContainer('DELETE FROM widgets WHERE id = 10;', DB);
+    const arrived = await waitFor(() => tombstoneIds().length > before, 20_000, 250);
+    expect(arrived).toBe(true);
+    expect(tombstoneIds()).toContain(10);
+  }, 30_000);
+
+  test('ALTER TABLE changing the PRIMARY KEY: tombstones switch to the new key', async () => {
+    mysqlInContainer(
+      'CREATE TABLE rekeyed (id INT PRIMARY KEY, code VARCHAR(16) NOT NULL UNIQUE); ' +
+      "INSERT INTO rekeyed VALUES (1, 'aa'), (2, 'bb');",
+      DB,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    // Warm the dedup-key cache with the OLD key.
+    mysqlInContainer('DELETE FROM rekeyed WHERE id = 1;', DB);
+    await waitFor(() => capturedInserts.some((entry) => entry.table === 'rekeyed__raw'), 20_000, 250);
+
+    // Change the PK — the DDL query event must invalidate the cached key.
+    mysqlInContainer('ALTER TABLE rekeyed DROP PRIMARY KEY, DROP INDEX code, ADD PRIMARY KEY (code);', DB);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    mysqlInContainer("DELETE FROM rekeyed WHERE code = 'bb';", DB);
+
+    const arrived = await waitFor(
+      () => capturedInserts.filter((entry) => entry.table === 'rekeyed__raw')
+        .flatMap((entry) => entry.rows).some((row) => row.code === 'bb'),
+      20_000,
+      250,
+    );
+    expect(arrived).toBe(true);
+    const newTombstone = capturedInserts.filter((entry) => entry.table === 'rekeyed__raw')
+      .flatMap((entry) => entry.rows).find((row) => row.code === 'bb')!;
+    expect(newTombstone.id).toBeUndefined();   // keyed on the NEW pk, not the stale one
+  }, 40_000);
+
+  test('temporary tables and views generate no row events and break nothing', async () => {
+    const tombstonesBefore = tombstoneIds().length;
+    const nudgesBefore = nudgedTables.length;
+    // Temp-table writes and view DDL are not row-logged in ROW binlog mode.
+    mysqlInContainer(
+      'CREATE TEMPORARY TABLE scratch (x INT); INSERT INTO scratch VALUES (1), (2); ' +
+      'CREATE OR REPLACE VIEW widgets_view AS SELECT id, name FROM widgets;',
+      DB,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    expect(tombstoneIds().length).toBe(tombstonesBefore);
+    expect(nudgedTables.length).toBe(nudgesBefore);
+
+    // Stream is still healthy afterwards: a real delete still tombstones.
+    mysqlInContainer("INSERT INTO widgets (id, name) VALUES (11, 'eleven');", DB);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    mysqlInContainer('DELETE FROM widgets WHERE id = 11;', DB);
+    const arrived = await waitFor(() => tombstoneIds().includes(11), 20_000, 250);
+    expect(arrived).toBe(true);
+  }, 40_000);
+
+  test('rolled-back transaction produces NO tombstone', async () => {
+    const before = tombstoneIds().length;
+    mysqlInContainer('SET autocommit=0; BEGIN; DELETE FROM widgets WHERE id = 1; ROLLBACK;', DB);
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    expect(tombstoneIds().length).toBe(before);
+    // The row is genuinely still there on the source.
+    expect(mysqlInContainer('SELECT COUNT(*) FROM widgets WHERE id = 1;', DB)).toBe('1');
+  }, 30_000);
+
+  test('TRUNCATE emits no row events and the stream survives it', async () => {
+    mysqlInContainer("CREATE TABLE trunc_me (id INT PRIMARY KEY); INSERT INTO trunc_me VALUES (1), (2), (3);", DB);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const before = capturedInserts.filter((entry) => entry.table === 'trunc_me__raw').length;
+    mysqlInContainer('TRUNCATE TABLE trunc_me;', DB);
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    // No deleterows for TRUNCATE — the poller's count-drop rebuild owns this case.
+    expect(capturedInserts.filter((entry) => entry.table === 'trunc_me__raw').length).toBe(before);
+
+    // Stream alive: inserts on another table still nudge.
+    const nudgesBefore = nudgedTables.filter((t) => t === 'widgets').length;
+    mysqlInContainer("INSERT INTO widgets (id, name) VALUES (12, 'twelve');", DB);
+    const nudged = await waitFor(
+      () => nudgedTables.filter((t) => t === 'widgets').length > nudgesBefore,
+      20_000,
+      250,
+    );
+    expect(nudged).toBe(true);
+  }, 40_000);
 });

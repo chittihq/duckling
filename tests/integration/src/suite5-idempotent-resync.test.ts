@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import { clickhouseScalarStrict } from './helpers/clickhouse.js';
-import { triggerFullSync } from './helpers/sync.js';
+import { triggerFullSync, waitForSyncIdle } from './helpers/sync.js';
 import { getValidation } from './helpers/validation.js';
 
 describe('Suite 5: Idempotent Re-sync', () => {
@@ -14,7 +14,11 @@ describe('Suite 5: Idempotent Re-sync', () => {
     productsBefore = await clickhouseScalarStrict('SELECT COUNT(*) AS cnt FROM products_simple', 'cnt');
 
     await triggerFullSync();
-  });
+    // The sync continues rebuilding tables after the HTTP response; wait for
+    // idle so the assertions below (and later suites) never race a
+    // drop-and-recreate window.
+    expect(await waitForSyncIdle()).toBe(true);
+  }, 150_000);
 
   test('users no duplicates after re-sync', async () => {
     expect(await clickhouseScalarStrict('SELECT COUNT(*) AS cnt FROM users_with_timestamps', 'cnt')).toBe(usersBefore);

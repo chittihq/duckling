@@ -9,7 +9,6 @@ import BootstrapService, { BootstrapOptions, BootstrapResult } from './bootstrap
 import CdcCompatibilityService from './cdcCompatibilityService';
 import BinlogTailerService from './binlogTailerService';
 import PeerDBOrchestratorService from './peerdbOrchestratorService';
-import config from '../config';
 import ClickHouseSyncService from './clickhouseSyncService';
 import { ReplicationCapability, safeDetectReplicationCapability } from './replicationModeDetector';
 import logger from '../logger';
@@ -252,13 +251,18 @@ class ReplicationCoordinator {
 
   /**
    * CDC-lite: best-effort binlog tailer that augments polling (delete
-   * tombstones + immediate sync nudges). Needs only ROW binlogs + replication
-   * grants — works with binlog_row_metadata=MINIMAL, i.e. on sources that
-   * fail the full PeerDB probe. Any failure here leaves pure polling running,
-   * which is the pre-CDC-lite behavior.
+   * tombstones + immediate sync nudges). Purely capability-driven PER
+   * DATABASE — no flag. The replication ladder is:
+   *
+   *   full CDC capability (ROW + FULL image + FULL metadata + grants) → peerdb
+   *   partial capability  (ROW binlogs + grants)                      → polling + CDC-lite
+   *   no binlog capability                                            → pure polling
+   *
+   * Works with binlog_row_metadata=MINIMAL, i.e. on sources that fail the
+   * full PeerDB probe. Any failure here (or at runtime) leaves pure polling
+   * running, which is the pre-CDC-lite behavior.
    */
   private async maybeStartCdcLite(_bootstrapResult: BootstrapResult): Promise<void> {
-    if (!config.cdcLite.enabled) return;
     try {
       const capability = await safeDetectReplicationCapability(this.mysql);
       const { log_bin, binlog_format } = capability.variables;

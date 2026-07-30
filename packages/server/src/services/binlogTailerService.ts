@@ -218,7 +218,11 @@ class BinlogTailerService {
     });
 
     const startOptions: Record<string, unknown> = {
-      includeEvents: ['tablemap', 'writerows', 'updaterows', 'deleterows', 'rotate', 'gtidlog'],
+      // 'query' carries DDL (ALTER/RENAME/TRUNCATE/DROP) — needed to
+      // invalidate cached dedup keys on schema changes. Row events for
+      // temporary tables and views never appear in ROW binlogs, so those
+      // need no special handling.
+      includeEvents: ['tablemap', 'writerows', 'updaterows', 'deleterows', 'rotate', 'gtidlog', 'query'],
       includeSchema: { [options.database]: true },
       serverId: this.deriveServerId(),
     };
@@ -277,6 +281,19 @@ class BinlogTailerService {
         this.status.binlogName = event.binlogName ?? this.status.binlogName;
         this.status.binlogPosition = Number(event.position ?? 0);
         this.checkpointDirty = true;
+        return;
+      }
+
+      if (name === 'query') {
+        // DDL invalidates cached schema knowledge: an ALTER can change the
+        // PK/UNIQUE key a tombstone must carry. Cheap + safe: drop the whole
+        // cache and let the next delete re-introspect. (TRUNCATE emits no
+        // deleterows — the poller's count-drop rebuild handles it.)
+        const query = String(event.query ?? '');
+        if (/\b(ALTER|RENAME|TRUNCATE|DROP|CREATE)\b/i.test(query)) {
+          this.dedupKeyCache.clear();
+          this.noKeyWarned.clear();
+        }
         return;
       }
 

@@ -244,7 +244,7 @@ Configure via `.env` (copy from `.env.example`).
 
 - `CDC_ENABLED` (default false)
 - `CDC_AUTO_START` (default false)
-- `CDC_LITE_ENABLED` (default true) — binlog tailer augmenting polling mode (delete tombstones + sync nudges); best-effort, degrades to pure polling
+- (CDC-lite has no flag — capability-driven per database; see Phase 2B)
 
 ### PeerDB (when `REPLICATION_BACKEND=peerdb`)
 

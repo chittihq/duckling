@@ -154,6 +154,30 @@ describe('CDC-lite binlog tailer', () => {
     expect(mocks.syncService.syncSingleTable).toHaveBeenCalledWith('users');
   });
 
+  test('ALTER TABLE (query event) invalidates the cached dedup key', async () => {
+    // First delete caches ['id'] as the key.
+    fakeZongjis[0].emit('binlog', rowEvent('deleterows', 'users', [{ id: 1, uid: 'a' }]));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mocks.clickhouse.insert.mock.calls[0][1][0].id).toBe(1);
+
+    // Schema change swaps the PK column; without invalidation the stale
+    // cached key would produce tombstones keyed on the wrong column.
+    mocks.mysql.getPrimaryKeyColumns.mockResolvedValue(['uid']);
+    fakeZongjis[0].emit('binlog', {
+      getEventName: () => 'query',
+      query: 'ALTER TABLE users DROP PRIMARY KEY, ADD PRIMARY KEY (uid)',
+      nextPosition: 2345,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    fakeZongjis[0].emit('binlog', rowEvent('deleterows', 'users', [{ id: 2, uid: 'b' }]));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const secondTombstone = mocks.clickhouse.insert.mock.calls[1][1][0];
+    expect(secondTombstone.uid).toBe('b');
+    expect(secondTombstone.id).toBeUndefined();
+  });
+
   test('stream error schedules reconnect instead of crashing', async () => {
     fakeZongjis[0].emit('error', new Error('server gone away'));
     expect(tailer.getStatus().reconnects).toBe(1);
