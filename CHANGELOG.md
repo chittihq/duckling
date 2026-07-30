@@ -4,7 +4,9 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with the latest unreleased work listed first.
 
-## [Unreleased]
+## [0.5.2] - 2026-07-31
+
+Follow-up hardening to [0.5.1]. If you have not upgraded past 0.5.0 yet, read the 0.5.1 notes first — that release fixes an unauthenticated-access bug affecting all earlier versions.
 
 ### Security
 

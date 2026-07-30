@@ -1,6 +1,6 @@
 {
   "name": "@chittihq/duckling-server",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "ClickHouse server with MySQL replication",
   "private": true,
   "main": "dist/index.js",

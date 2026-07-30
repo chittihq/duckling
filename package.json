@@ -1,6 +1,6 @@
 {
   "name": "duckling-monorepo",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Duckling - ClickHouse server with MySQL replication (monorepo)",
   "private": true,
   "scripts": {
