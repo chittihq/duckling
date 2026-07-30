@@ -483,17 +483,20 @@ describe('Suite 6: CDC Real-Time Replication', () => {
     });
 
     test('checkpoint does not advance past failed apply', async () => {
-      // Drop the projection view to cause a real apply failure. Do NOT
-      // swallow drop errors: if the DROP silently fails (query-governor
-      // timeout, transient ClickHouse error under load), the failure
-      // injection never happens, CDC progresses normally, and the checkpoint
-      // assertions below measure the wrong thing. Retry, then verify the
-      // precondition actually holds before continuing.
+      // Drop the projection view AND the raw table to cause a real apply
+      // failure. Both must go: CDC-lite's tailer refreshes projection views
+      // on start (CREATE OR REPLACE VIEW), so a dropped view alone gets
+      // self-healed over the intact raw table and the injected failure
+      // evaporates. With the raw table gone the refresh itself fails and the
+      // failure holds. Do NOT swallow drop errors: if the DROP silently
+      // fails, CDC progresses normally and the checkpoint assertions below
+      // measure the wrong thing. Retry, then verify the precondition.
       let dropped = false;
       for (let attempt = 0; attempt < 3 && !dropped; attempt++) {
         await clickhouseQuery('DROP TABLE IF EXISTS products_simple').catch(() => {});
+        await clickhouseQuery('DROP TABLE IF EXISTS products_simple__raw').catch(() => {});
         const visible = await clickhouseScalarStrict(
-          `SELECT COUNT(*) AS cnt FROM system.tables WHERE database = currentDatabase() AND name = 'products_simple'`,
+          `SELECT COUNT(*) AS cnt FROM system.tables WHERE database = currentDatabase() AND name IN ('products_simple', 'products_simple__raw')`,
           'cnt',
         );
         dropped = Number(visible) === 0;

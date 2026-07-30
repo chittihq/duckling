@@ -196,6 +196,8 @@ Activated when the capability probe fails on the source MySQL (binlog disabled, 
 
 `CdcCompatibilityService` (opt-in via `/cdc/start` API or `CDC_AUTO_START=true`) drives near-real-time updates by polling MySQL `getTableRowCount()` + `getTableChangeToken()` every second and triggering per-table incremental syncs when deltas appear. This is **not** real CDC — for binlog-based CDC, use Phase 2A.
 
+**CDC-lite (`BinlogTailerService`)** augments polling when the source has ROW binlogs + replication grants (works with `binlog_row_metadata=MINIMAL`, i.e. sources that fail the full PeerDB probe — the managed-MySQL default). Started by the coordinator alongside the poller (`CDC_LITE_ENABLED`, default true); best-effort — any failure degrades to pure polling. Two jobs: (1) DELETE row events → tombstone rows (`_sync_deleted=1`, dedup-key columns only) into `<table>__raw`, which the tombstone-aware projection view (dedup FIRST, then delete-filter — order matters, see `buildProjectionViewSql`) turns into read-time deletion — closing the count-neutral delete+insert blind spot; (2) INSERT/UPDATE events → debounced per-table incremental-sync nudges (data still flows through the normal sync path, so binlog decoding can never corrupt values). Uses `@vlasky/zongji` (mysql2-based). Checkpoints prefer GTID sets (survive rotation/failover) with file+position fallback, stored in `cdc_binlog_position` under `<databaseId>::binlog-tailer`. Tables with no PK and no UNIQUE key can't be tombstoned (no dedup key) — they still rely on count-drop rebuilds. Covered by `suite17-cdc-lite.test.ts` + `cdcLite.test.ts`/`tombstoneView.test.ts` unit tests.
+
 ### Automation (`ClickHouseAutomationService`)
 
 Per-database service that runs three loops:
@@ -242,6 +244,7 @@ Configure via `.env` (copy from `.env.example`).
 
 - `CDC_ENABLED` (default false)
 - `CDC_AUTO_START` (default false)
+- `CDC_LITE_ENABLED` (default true) — binlog tailer augmenting polling mode (delete tombstones + sync nudges); best-effort, degrades to pure polling
 
 ### PeerDB (when `REPLICATION_BACKEND=peerdb`)
 
@@ -341,6 +344,7 @@ cd tests/integration
 - `suite14-incremental-crash-probe.test.ts`
 - `suite15-clear-all-data.test.ts`
 - `suite16-unique-constraints.test.ts` — PK / composite-PK / secondary-UNIQUE / PK-less-UNIQUE dedup edge cases
+- `suite17-cdc-lite.test.ts` — CDC-lite binlog tailer: the count-neutral delete+insert blind-spot case, plain deletes, delete-then-reinsert, tombstone counters (runs under `binlog_row_metadata=MINIMAL`)
 
 Server port for the integration stack is **3002** (avoids collision with a running dev instance on 3001).
 

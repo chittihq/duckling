@@ -10,6 +10,7 @@ import MySQLConnection from './database/mysql';
 import ClickHouseSyncService from './services/clickhouseSyncService';
 import ClickHouseAutomationService from './services/clickhouseAutomationService';
 import CdcCompatibilityService from './services/cdcCompatibilityService';
+import BinlogTailerService from './services/binlogTailerService';
 import PeerDBOrchestratorService from './services/peerdbOrchestratorService';
 import WebSocketService from './services/websocketService';
 import LogBufferService from './services/logBufferService';
@@ -1316,9 +1317,13 @@ class ClickHouseServer {
       }
       const syncService = ClickHouseSyncService.getInstance(databaseId, mysql, clickhouse);
       const cdcService = CdcCompatibilityService.getInstance(databaseId, syncService, clickhouse, mysql);
+      const tailer = BinlogTailerService.getInstance(databaseId, mysql, clickhouse, syncService);
       res.json({
         success: true,
-        status: cdcService.getStatus(),
+        status: {
+          ...cdcService.getStatus(),
+          cdcLite: tailer.getStatus(),
+        },
         architecture: 'clickhouse-compat',
       });
     } catch (error) {
@@ -1663,6 +1668,7 @@ class ClickHouseServer {
       // pools; leaving them running after deletion leaks resources and keeps
       // hammering a source that no longer exists (issue #70).
       await CdcCompatibilityService.closeInstance(id);
+      await BinlogTailerService.closeInstance(id);
       ClickHouseAutomationService.closeInstance(id);
 
       dbManager.deleteDatabase(id);

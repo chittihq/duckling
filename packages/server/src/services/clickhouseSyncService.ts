@@ -597,29 +597,49 @@ class ClickHouseSyncService extends EventEmitter {
 
     if (primaryKeyColumns.length === 0) {
       return `
-        CREATE VIEW ${this.q(tableName)} AS
+        CREATE OR REPLACE VIEW ${this.q(tableName)} AS
         SELECT ${innerProjection}
         FROM ${this.q(rawTableName)}
         WHERE _sync_deleted = 0
       `;
     }
 
+    // Dedup FIRST (tombstones compete in the window and win on newer
+    // _sync_timestamp), THEN filter deleted winners. Filtering _sync_deleted
+    // before the window would make a tombstone invisible while the older live
+    // row still wins — deletes could never take effect at read time.
     const partitionBy = primaryKeyColumns.map((column) => this.q(column)).join(', ');
     return `
-      CREATE VIEW ${this.q(tableName)} AS
+      CREATE OR REPLACE VIEW ${this.q(tableName)} AS
       SELECT ${outerProjection}
       FROM (
         SELECT
           ${innerProjection},
+          _sync_deleted,
           row_number() OVER (
             PARTITION BY ${partitionBy}
             ORDER BY _sync_timestamp DESC, _sync_batch_id DESC
           ) AS _sync_row_num
         FROM ${this.q(rawTableName)}
-        WHERE _sync_deleted = 0
       )
-      WHERE _sync_row_num = 1
+      WHERE _sync_row_num = 1 AND _sync_deleted = 0
     `;
+  }
+
+  /**
+   * Recreate the projection view for an existing table without re-dumping it.
+   * Used by CDC-lite on startup so pre-existing tables get the
+   * tombstone-aware view shape (dedup before delete-filter).
+   */
+  async refreshProjectionView(tableName: string): Promise<void> {
+    const schema = await this.mysql.getTableSchema(tableName);
+    const primaryKeyColumns = await this.mysql.getPrimaryKeyColumns(tableName);
+    const dedupKeyColumns = primaryKeyColumns.length > 0
+      ? primaryKeyColumns
+      : await this.mysql.getUniqueKeyColumns(tableName);
+    await this.clickhouse.run(
+      this.buildProjectionViewSql(tableName, this.getRawTableName(tableName), schema, dedupKeyColumns),
+    );
   }
 
   private serializeRow(

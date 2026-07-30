@@ -7,7 +7,9 @@ import {
 } from '../database/databaseConfig';
 import BootstrapService, { BootstrapOptions, BootstrapResult } from './bootstrapService';
 import CdcCompatibilityService from './cdcCompatibilityService';
+import BinlogTailerService from './binlogTailerService';
 import PeerDBOrchestratorService from './peerdbOrchestratorService';
+import config from '../config';
 import ClickHouseSyncService from './clickhouseSyncService';
 import { ReplicationCapability, safeDetectReplicationCapability } from './replicationModeDetector';
 import logger from '../logger';
@@ -192,6 +194,7 @@ class ReplicationCoordinator {
         this.mysql,
       );
       await cdc.stop();
+      await BinlogTailerService.closeInstance(this.databaseId);
     }
   }
 
@@ -243,7 +246,42 @@ class ReplicationCoordinator {
       this.mysql,
     );
     const status = await cdc.start();
+    await this.maybeStartCdcLite(bootstrapResult);
     return { mode: 'polling', status };
+  }
+
+  /**
+   * CDC-lite: best-effort binlog tailer that augments polling (delete
+   * tombstones + immediate sync nudges). Needs only ROW binlogs + replication
+   * grants — works with binlog_row_metadata=MINIMAL, i.e. on sources that
+   * fail the full PeerDB probe. Any failure here leaves pure polling running,
+   * which is the pre-CDC-lite behavior.
+   */
+  private async maybeStartCdcLite(_bootstrapResult: BootstrapResult): Promise<void> {
+    if (!config.cdcLite.enabled) return;
+    try {
+      const capability = await safeDetectReplicationCapability(this.mysql);
+      const { log_bin, binlog_format } = capability.variables;
+      const isOn = (v: string | null | undefined): boolean => v != null && /^(ON|1)$/i.test(String(v).trim());
+      const grants = capability.grants.join(' ').toUpperCase();
+      const hasGrants = grants.includes('REPLICATION SLAVE') && grants.includes('REPLICATION CLIENT');
+      if (!isOn(log_bin) || String(binlog_format).toUpperCase() !== 'ROW' || !hasGrants) {
+        logger.info(
+          `CDC-lite unavailable for ${this.databaseId} ` +
+          `(log_bin=${log_bin}, binlog_format=${binlog_format}, replication grants=${hasGrants}); pure polling only`,
+        );
+        return;
+      }
+      const tailer = BinlogTailerService.getInstance(
+        this.databaseId,
+        this.mysql,
+        this.clickhouse,
+        this.syncService,
+      );
+      await tailer.start();
+    } catch (error) {
+      logger.warn(`CDC-lite failed to start for ${this.databaseId}; pure polling only:`, error);
+    }
   }
 
   private requireDatabase(): DatabaseConfig {

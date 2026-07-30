@@ -26,6 +26,21 @@ class MySQLConnection {
     });
   }
 
+  /**
+   * Parsed connection parameters for consumers that open their own socket
+   * (the CDC-lite binlog tailer) rather than going through the pool.
+   */
+  getConnectionOptions(): { host: string; port: number; user: string; password: string; database: string } {
+    const url = new URL(this.connectionString);
+    return {
+      host: url.hostname,
+      port: url.port ? parseInt(url.port, 10) : 3306,
+      user: decodeURIComponent(url.username),
+      password: decodeURIComponent(url.password),
+      database: url.pathname.replace(/^\//, ''),
+    };
+  }
+
   async reconnect(): Promise<void> {
     try {
       await this.pool.end();

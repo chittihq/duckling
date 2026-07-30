@@ -167,6 +167,14 @@ export const config = {
     finalReads: process.env.CLICKHOUSE_FINAL_READS !== 'false',
   },
 
+  // CDC-lite: binlog tailer that augments polling mode (delete tombstones +
+  // immediate sync nudges). Works with binlog_row_metadata=MINIMAL; needs
+  // only ROW binlogs + REPLICATION SLAVE/CLIENT grants. Best-effort — any
+  // failure degrades to pure polling.
+  cdcLite: {
+    enabled: process.env.CDC_LITE_ENABLED !== 'false',
+  },
+
   replication: {
     // Process-wide default for new databases when `replicationMode` isn't pinned
     // in `databases.json`. Per-database settings always win.

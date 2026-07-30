@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with the latest unreleased work listed first.
 
+## [Unreleased]
+
+### Added
+
+- **CDC-lite** (`CDC_LITE_ENABLED`, default on): a lightweight binlog tailer (`BinlogTailerService`, built on `@vlasky/zongji`) that augments polling mode. DELETE row events become tombstone rows that the projection view resolves at read time — closing the count-neutral delete+insert blind spot — and INSERT/UPDATE events trigger immediate per-table incremental syncs. Works with `binlog_row_metadata=MINIMAL` (the managed-MySQL default that blocks full PeerDB CDC); needs only ROW binlogs + `REPLICATION SLAVE`/`CLIENT` grants. Best-effort: any failure degrades to exactly the previous pure-polling behavior. Checkpoints prefer GTID sets (survive binlog rotation and failover) with file+position fallback. New integration suite 17 covers the blind-spot case end-to-end under MINIMAL metadata.
+
+### Fixed
+
+- **Projection views are now tombstone-aware**: the dedup window runs over all row versions first and the delete-filter applies to the winner (previously `_sync_deleted` was filtered before dedup, so a tombstone could never shadow the live row it was deleting). No-op for existing data; views are refreshed in place when CDC-lite starts.
+
 ## [0.4.0] - 2026-07-30
 
 ### Added
