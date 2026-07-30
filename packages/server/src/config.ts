@@ -95,15 +95,30 @@ function loadOrGenerateManagedSecrets(): {
       // won't survive a restart. Surface it so the operator can fix perms.
       console.warn(`[secrets] could not persist auto-generated secrets to ${SECRETS_FILE}:`, error);
     }
-    // One-time notice (only on the boot that generated them) so the operator
-    // can retrieve the credentials. They are also in <DATA_PATH>/.secrets.json.
+    // One-time notice (only on the boot that generated them) telling the
+    // operator WHERE the credentials are — never printing the values.
+    //
+    // stdout is not a private channel: container logs are retained by the
+    // platform, streamed into deploy UIs, and shipped to log aggregators, so
+    // anything printed here outlives the boot and is readable by anyone with
+    // log access. The secrets file is 0600 on the data volume; fetching from
+    // it is one command and keeps the values out of every log sink.
+    const generatedNames = [
+      generated.includes('adminPassword') ? 'ADMIN_PASSWORD' : null,
+      generated.includes('apiKey') ? 'DUCKLING_API_KEY' : null,
+      generated.includes('sessionSecret') ? 'SESSION_SECRET' : null,
+    ].filter(Boolean).join(', ');
+
     console.log(
       '\n========================================================================\n' +
-      '  Duckling generated missing credentials on first boot (persisted to\n' +
-      `  ${SECRETS_FILE}). Set these in the environment to manage them yourself.\n` +
-      (generated.includes('adminPassword') ? `    ADMIN_USERNAME=${adminUsername}\n    ADMIN_PASSWORD=${adminPassword}\n` : '') +
-      (generated.includes('apiKey') ? `    DUCKLING_API_KEY=${apiKey}\n` : '') +
-      (generated.includes('sessionSecret') ? '    SESSION_SECRET=(generated 32-byte secret)\n' : '') +
+      '  Duckling generated missing credentials on first boot:\n' +
+      `    ${generatedNames}\n` +
+      `  Values are NOT printed here (logs are not a safe channel). They are\n` +
+      `  stored with 0600 permissions in:\n` +
+      `    ${SECRETS_FILE}\n` +
+      '  Read them once, then set them in the environment to manage yourself:\n' +
+      '    docker compose exec duckling cat /app/data/.secrets.json\n' +
+      `  Admin username: ${adminUsername}\n` +
       '========================================================================\n',
     );
   }
@@ -267,6 +282,15 @@ export const config = {
   
   server: {
     enableCors: true,
+    // Explicit cross-origin allowlist (comma-separated origins). Empty means
+    // "no cross-origin reflection" in production — the shipped deploy serves
+    // the dashboard and API same-origin on one port, so it needs none. The dev
+    // stack (frontend :3000 -> API :3001) is genuinely cross-origin, so
+    // reflection stays on outside production for convenience.
+    corsOrigins: (process.env.CORS_ORIGINS || '')
+      .split(',')
+      .map(o => o.trim())
+      .filter(Boolean),
     requestTimeout: 30000,
     // Express `trust proxy` value; governs how req.ip / X-Forwarded-For is
     // resolved for HTTP (and therefore IP-based rate limiting).

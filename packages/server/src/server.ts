@@ -139,11 +139,22 @@ class ClickHouseServer {
     // Defaults to `false` (no trust) unless TRUST_PROXY is set.
     this.app.set('trust proxy', config.server.trustProxy);
 
+    // CORS. `origin: true` reflects whatever Origin the caller sends, and with
+    // `credentials: true` that lets ANY website make authenticated
+    // cross-origin calls using a visitor's session cookie. The production
+    // deploy serves dashboard + API same-origin, so it needs no reflection at
+    // all; the dev stack (frontend :3000 -> API :3001) does.
     if (config.server.enableCors) {
-      this.app.use(cors({
-        origin: true, // Allow requests from any origin in development
-        credentials: true // Allow credentials (authorization headers)
-      }));
+      const allowlist = config.server.corsOrigins;
+      if (allowlist.length > 0) {
+        this.app.use(cors({ origin: allowlist, credentials: true }));
+      } else if (config.env !== 'production') {
+        this.app.use(cors({ origin: true, credentials: true }));
+      } else {
+        // Production with no allowlist: same-origin only. Cross-origin callers
+        // that need access set CORS_ORIGINS explicitly.
+        logger.info('CORS: same-origin only (set CORS_ORIGINS to allow specific cross-origin callers)');
+      }
     }
 
     this.app.use(express.json({ limit: '10mb' }));
