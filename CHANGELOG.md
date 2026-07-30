@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with the latest unreleased work listed first.
 
+## [Unreleased]
+
+### Security
+
+- **Generated credentials are no longer printed to logs.** The first-boot banner echoed `ADMIN_PASSWORD` and `DUCKLING_API_KEY` in plaintext to stdout, where container logs are retained by the platform, streamed into deploy UIs, and shipped to log aggregators. It now names which secrets were generated and where to read them (`0600` `.secrets.json` on the data volume), never the values.
+- **CORS is no longer permissive in production.** `cors({ origin: true, credentials: true })` reflected any `Origin` while allowing credentials, so any website could make authenticated cross-origin calls with a visitor's session cookie. Now: a `CORS_ORIGINS` allowlist when set, same-origin only in production when unset (the deploy serves dashboard and API on one origin), reflection retained outside production for the dev stack.
+- **27 of 31 dependency advisories patched** via pnpm overrides — notably `jws` (the HMAC-verification path inside `jsonwebtoken`, i.e. JWT session auth), the Express 4 request chain (`path-to-regexp`, `qs`, `body-parser`), `fast-xml-parser` (AWS S3 responses), `@opentelemetry/core`, and `defu`. The 4 remaining are not actionable: one is a false positive (`brace-expansion@2.1.4` already carries the 2.x fix; the advisory's `<=5.0.7` range spuriously matches all 2.x), one needs a major bump of a transitive dep for an unreachable code path (`uuid` via `node-cron`), and two are build-only (`esbuild`, `diff`).
+- Removed `packages/sdk/pnpm-lock.yaml` and `packages/sdk/examples/lib-example/pnpm-lock.yaml` (untouched since Oct 2025). Workspace members resolve through the root lockfile, so these were never read by the installer — they only pinned, and drew security alerts for, versions nobody installs.
+
 ## [0.5.1] - 2026-07-31
 
 **Security release — upgrade immediately.** The case-variant path bypass below allows unauthenticated reads of database configuration (including MySQL connection strings) and arbitrary SQL execution on any instance reachable by an untrusted network. It affects all prior releases, not only 0.5.0.
