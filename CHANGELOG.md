@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with the latest unreleased work listed first.
 
+## [Unreleased]
+
+### Changed
+
+- Deploy compose now pins `chittihq/duckling` to the exact release tag (overridable via `DUCKLING_IMAGE`) instead of `:latest`, so redeploys are deterministic — `docker compose up` reuses a cached `:latest` and silently skips new releases. Release procedure: bump the pin in `docker-compose.yml` alongside the version bump.
+
 ## [0.5.0] - 2026-07-30
 
 ### Added

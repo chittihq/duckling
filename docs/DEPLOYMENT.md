@@ -16,7 +16,7 @@ Open `http://<host>:3000`, log in, and add your MySQL database from the dashboar
 
 | Service | Image | Purpose |
 |---|---|---|
-| `duckling` | `chittihq/duckling:latest` | Dashboard + REST API + WebSocket (port **3000**), MySQL wire protocol (port **3307**) |
+| `duckling` | `chittihq/duckling:0.5.0` (pinned; override via `DUCKLING_IMAGE`) | Dashboard + REST API + WebSocket (port **3000**), MySQL wire protocol (port **3307**) |
 | `clickhouse` | `clickhouse/clickhouse-server:25.8` | The analytical store — your replicated data lives here |
 | `flow-api`, `flow-worker`, `flow-snapshot-worker` | `chittihq/peerdb-flow-*:v0.36.19-zerodate-v3` | PeerDB CDC engine (**zero-date-patched builds** — stock upstream v0.36 corrupts MySQL `0000-00-00`) |
 | `peerdb` | `ghcr.io/peerdb-io/peerdb-server` | PeerDB SQL control surface |
@@ -89,11 +89,15 @@ Use the Compose deploy type pointed at `docker-compose.yml`. Named volumes mean 
 
 ## Upgrades
 
+The compose pins `chittihq/duckling` to an exact release tag, so upgrades are explicit: pull the latest repo (each release bumps the pinned tag), then
+
 ```bash
-docker compose pull && docker compose up -d
+git pull && docker compose pull && docker compose up -d
 ```
 
-Image tags: `chittihq/duckling:latest` tracks releases; pin `:0.x.y` for controlled rollouts (multi-arch amd64+arm64). The patched PeerDB flow images are pinned by exact version tag and only change when the upstream PeerDB pin is bumped (see `.github/workflows/publish-peerdb-patched.yml`).
+To run a different version without editing the file, set `DUCKLING_IMAGE=chittihq/duckling:<tag>` in the environment. Avoid `:latest` in deployments — `docker compose up` reuses a locally cached `latest` and silently skips new releases unless you remember to `pull` first; an exact tag makes every recreate deterministic.
+
+Image tags: `:0.x.y` exact versions (recommended; multi-arch amd64+arm64), `:latest` tracks releases. The patched PeerDB flow images are pinned by exact version tag and only change when the upstream PeerDB pin is bumped (see `.github/workflows/publish-peerdb-patched.yml`).
 
 ## Migrating from the old DuckDB deployment
 
