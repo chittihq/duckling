@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
 import { toast } from '@/components/ui/toast'
+import SqlEditor from '@/components/SqlEditor.vue'
 
 definePageMeta({
   middleware: 'auth',
@@ -41,6 +42,17 @@ const queryExecuting = ref(false)
 const queryExecutionTime = ref<number | null>(null)
 const selectedDatabase = ref<'clickhouse' | 'mysql'>('clickhouse')
 const selectedExample = ref('')
+
+// Table names for the editor's autocompletion (best-effort; editor works without).
+const completionTables = ref<string[]>([])
+const loadCompletionTables = async () => {
+  try {
+    const tables = await get<string[]>(getApiUrlWithDatabase('/api/tables'))
+    completionTables.value = Array.isArray(tables) ? tables.filter((t) => typeof t === 'string') : []
+  } catch {
+    completionTables.value = []
+  }
+}
 const queryCurrentPage = ref(1)
 const queryItemsPerPage = ref(100)
 
@@ -261,6 +273,7 @@ const queryTotalPages = computed(() => {
 
 onMounted(() => {
   refreshData()
+  loadCompletionTables()
   setInterval(() => {
     if (!operating.value) {
       refreshData()
@@ -271,6 +284,7 @@ onMounted(() => {
 // Watch for database changes and reload data
 watch(selectedDatabaseId, () => {
   refreshData()
+  loadCompletionTables()
   // Clear query results when switching databases
   queryResults.value = []
   queryResultColumns.value = []
@@ -338,21 +352,19 @@ watch(selectedDatabaseId, () => {
         </CardHeader>
         <CardContent>
           <div class="flex gap-2">
-            <textarea
+            <SqlEditor
               v-model="sqlQuery"
-              class="flex-1 h-20 px-3 py-2 border border-input rounded-md font-mono text-sm resize-none bg-background"
-              placeholder="Enter your SQL query here...
-
-Example:
-SELECT * FROM sync_log ORDER BY created_at DESC LIMIT 100;"
-              @keydown.ctrl.enter="executeQuery()"
-            ></textarea>
+              class="flex-1 min-w-0"
+              :tables="completionTables"
+              placeholder="Enter your SQL query here — e.g. SELECT * FROM sync_log ORDER BY created_at DESC LIMIT 100;"
+              @run="executeQuery()"
+            />
             <div class="flex flex-col gap-2">
               <Button
                 @click="executeQuery()"
                 :disabled="!sqlQuery.trim() || queryExecuting"
                 size="icon"
-                title="Execute Query (Ctrl+Enter)"
+                title="Execute Query (Cmd/Ctrl+Enter)"
               >
                 <svg v-if="!queryExecuting" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polygon points="5 3 19 12 5 21 5 3"/>

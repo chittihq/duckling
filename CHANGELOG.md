@@ -8,6 +8,7 @@ The format is based on Keep a Changelog, with the latest unreleased work listed 
 
 ### Added
 
+- **CodeMirror 6 SQL editor in the dashboard** (#74). The query editor's plain `<textarea>` is replaced with a CodeMirror 6 component: SQL syntax highlighting, line numbers, bracket matching/auto-close, undo history, and autocompletion — SQL keywords plus live table names fetched from `/api/tables` (refreshed on database switch). Cmd/Ctrl+Enter still runs the query. Styled with the app's design tokens, so it follows the shadcn theme (including `.dark` if a theme toggle ever lands).
 - **Single-port mode: MySQL wire protocol and HTTP can share one port** (#64). Opt-in via `MYSQL_PROTOCOL_SHARED_PORT=true`: a TCP multiplexer on the HTTP port classifies connections by first bytes — HTTP/WebSocket clients send first, MySQL clients silently await the server greeting (`MYSQL_PROTOCOL_DETECTION_TIMEOUT_MS`, default 50 ms). Dashboard, API, WebSocket, and MySQL clients all use one published port; default behavior (separate 3000 + 3307) is unchanged. MySQL remains raw TCP, so it's reachable via direct `IP:port`, not through HTTP reverse-proxy domains.
 
 ### Fixed
