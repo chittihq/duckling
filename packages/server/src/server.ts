@@ -25,7 +25,7 @@ import { WorkerPool } from './workers/workerPool';
 import { generateToken, verifyToken, extractTokenFromHeader } from './utils/jwtUtils';
 import { isReadOnlyMySQLQuery } from './utils/sqlSafety';
 import { timingSafeEqualStr } from './utils/timingSafe';
-import { preAuthRateLimiter, postAuthRateLimiter, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
+import { preAuthRateLimiter, postAuthRateLimiter, handleFailedAuthRateLimit, startRateLimitCleanup, stopRateLimitCleanup } from './middleware/rateLimit';
 import './middleware/auth'; // pull in global Express.Request.user declaration
 import config, { getAuthSecurityIssues } from './config';
 import { MySQLProtocolServer } from './services/mysqlProtocolServer';
@@ -231,7 +231,13 @@ class ClickHouseServer {
       return;
     }
 
-    // Token provided but invalid
+    // Token provided but invalid — charge the brute-force budget so
+    // credential guessing can't hide behind free 401s (monitoring paths
+    // with credentials skip the pre-auth limiter and would otherwise be
+    // unmetered on this path).
+    if (handleFailedAuthRateLimit(req, res)) {
+      return;
+    }
     res.status(401).json({
       error: 'Unauthorized',
       message: 'Invalid or expired token'

@@ -6,6 +6,13 @@ The format is based on Keep a Changelog, with the latest unreleased work listed 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Rate limiting redesigned around real client identity.** Three compounding flaws made 429s appear under normal dashboard use, especially behind a reverse proxy:
+  - `/api/check-auth` (called by the dashboard on every navigation) and `/api/logout` shared the strict 10/min login brute-force budget. They are now classified as monitoring; only `/api/login` draws from the auth budget.
+  - Auth/monitoring endpoints were only ever limited pre-auth on the anonymous per-IP bucket, so a logged-in dashboard got the smallest budget in the system. Monitoring requests presenting credentials now defer to the post-auth limiter, which keys on the authenticated identity with the tier multiplier. Presented-but-rejected tokens are charged to the per-IP brute-force budget instead (invalid-credential hammering can no longer hide behind free 401s).
+  - The deploy compose never set `TRUST_PROXY`, so behind Traefik/Dokploy every client collapsed into one shared per-IP bucket (the proxy's). The compose now defaults `TRUST_PROXY=1` (set `0` when exposing port 3000 directly), and the server logs a one-time warning when rate limiting sees `X-Forwarded-For` while `TRUST_PROXY` is unset.
+
 ### Changed
 
 - Deploy compose now pins `chittihq/duckling` to the exact release tag (overridable via `DUCKLING_IMAGE`) instead of `:latest`, so redeploys are deterministic — `docker compose up` reuses a cached `:latest` and silently skips new releases. Release procedure: bump the pin in `docker-compose.yml` alongside the version bump.

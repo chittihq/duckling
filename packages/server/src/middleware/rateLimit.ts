@@ -69,6 +69,8 @@ function isMonitoringPath(path: string): boolean {
     path === '/health' ||
     path === '/status' ||
     path === '/metrics' ||
+    path === '/api/check-auth' ||
+    path === '/api/logout' ||
     path === '/api/logs' ||
     path === '/api/sync-logs' ||
     path.startsWith('/api/metrics/') ||
@@ -138,11 +140,10 @@ export function classifyEndpoint(method: string, path: string): RateLimitCategor
 
   const upperMethod = method.toUpperCase();
 
-  if (
-    path === '/api/login' ||
-    path === '/api/logout' ||
-    path === '/api/check-auth'
-  ) {
+  // Only the credential-issuing endpoint gets the strict brute-force budget.
+  // /api/check-auth and /api/logout are cheap session bookkeeping the
+  // dashboard calls on every navigation — they classify as monitoring below.
+  if (path === '/api/login') {
     return 'auth';
   }
 
@@ -382,7 +383,62 @@ function send429(
   });
 }
 
+// --- Failed-credential limiter (called from the auth middleware) ---
+
+/**
+ * Charge a presented-but-rejected token to the per-IP auth (brute-force)
+ * bucket. Returns true when the attempt was over the limit and a 429 was
+ * sent — the caller must not also send its 401. Requests with no credentials
+ * at all are never charged here: only presented-and-rejected tokens count as
+ * credential guessing.
+ */
+export function handleFailedAuthRateLimit(req: Request, res: Response): boolean {
+  if (!config.rateLimit.enabled) {
+    return false;
+  }
+
+  const clientKey = `ip:${sanitizeKeyPart(getClientIp(req))}`;
+  const cost = Math.max(1, config.rateLimit.costs.auth || 1);
+  const result = checkRateLimit(clientKey, 'auth', 'anonymous', cost);
+  setRateLimitHeaders(res, result);
+
+  if (result.limited) {
+    send429(res, result, 'auth', { reason: 'invalid-credentials' });
+    return true;
+  }
+
+  return false;
+}
+
 // --- Pre-auth middleware ---
+
+/**
+ * Session endpoints routed BEFORE the auth middleware and the post-auth
+ * limiter (see setupRoutes): if they aren't charged here, they are never
+ * charged at all.
+ */
+function isPreRouteSessionPath(path: string): boolean {
+  return path === '/api/check-auth' || path === '/api/logout';
+}
+
+function requestHasCredentials(req: Request): boolean {
+  return Boolean(req.headers.authorization) || typeof req.query?.token === 'string';
+}
+
+let proxyWarningLogged = false;
+
+function warnIfProxyNotTrusted(req: Request): void {
+  if (proxyWarningLogged || config.server.trustProxy) {
+    return;
+  }
+  if (!req.headers['x-forwarded-for']) {
+    return;
+  }
+  proxyWarningLogged = true;
+  logger.warn(
+    'Requests carry X-Forwarded-For but TRUST_PROXY is not set: rate limiting sees every client as the proxy IP, so all clients share one bucket. Set TRUST_PROXY (e.g. TRUST_PROXY=1) when running behind a reverse proxy.'
+  );
+}
 
 export function preAuthRateLimiter(req: Request, res: Response, next: NextFunction): void {
   if (!config.rateLimit.enabled) {
@@ -390,8 +446,26 @@ export function preAuthRateLimiter(req: Request, res: Response, next: NextFuncti
     return;
   }
 
+  warnIfProxyNotTrusted(req);
+
   const category = classifyEndpoint(req.method, req.path);
   if (category !== 'auth' && category !== 'monitoring') {
+    next();
+    return;
+  }
+
+  // Monitoring requests that present credentials are deferred to the
+  // post-auth limiter, which keys on the authenticated identity and applies
+  // the tier multiplier instead of the shared per-IP anonymous bucket.
+  // Invalid credentials are charged to the brute-force budget by
+  // handleFailedAuthRateLimit in the auth middleware. Pre-route session
+  // paths respond before the post-auth limiter runs, so they are always
+  // charged here.
+  if (
+    category === 'monitoring' &&
+    requestHasCredentials(req) &&
+    !isPreRouteSessionPath(req.path)
+  ) {
     next();
     return;
   }
@@ -427,8 +501,11 @@ export function postAuthRateLimiter(req: Request, res: Response, next: NextFunct
     return;
   }
 
+  // Monitoring is handled here for authenticated requests (deferred by the
+  // pre-auth limiter) so a logged-in dashboard gets its identity-keyed,
+  // tier-multiplied budget instead of the shared anonymous IP bucket.
   const category = classifyEndpoint(req.method, req.path);
-  if (!category || category === 'auth' || category === 'monitoring') {
+  if (!category || category === 'auth') {
     next();
     return;
   }
@@ -546,4 +623,5 @@ export function stopRateLimitCleanup(): void {
 export function __resetRateLimitStateForTests(): void {
   store.clear();
   queryInFlightStore.clear();
+  proxyWarningLogged = false;
 }

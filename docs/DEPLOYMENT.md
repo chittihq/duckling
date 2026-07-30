@@ -44,7 +44,7 @@ Optional overrides (set in the compose or a `.env` next to it):
 | `DUCKLING_API_KEY` | auto-generated | Pin the superuser API key |
 | `SESSION_SECRET` | auto-generated | Pin JWT signing |
 | `MYSQL_CONNECTION_STRING` | unset | Auto-create one default database from env (otherwise add via UI) |
-| `TRUST_PROXY` | unset | Set `1` behind a reverse proxy (Traefik/Nginx/Dokploy) so rate limiting keys on the real client IP |
+| `TRUST_PROXY` | `1` | Trusted proxy hops — the compose defaults to `1` (Traefik/Nginx/Dokploy in front) so rate limiting keys on the real client IP. Set `0` if clients hit port 3000 directly with no proxy (prevents X-Forwarded-For spoofing) |
 | `PEERDB_SQL_PASSWORD`, `PEERDB_CATALOG_PASSWORD`, `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY` | dev defaults | Harden internal PeerDB credentials (compose-network-internal either way) |
 | `CLICKHOUSE_FINAL_READS` | `true` | Leave on — guarantees deduplicated reads in peerdb mode |
 
@@ -78,7 +78,7 @@ The dashboard's **Diagnose** button shows the full checklist with ✓/✗ per re
 
 ## Dokploy
 
-Use the Compose deploy type pointed at `docker-compose.yml`. Named volumes mean no host-path configuration in the UI. For the domain: service `duckling`, container port `3000`. Set `TRUST_PROXY=1` on the duckling service (Traefik fronts it).
+Use the Compose deploy type pointed at `docker-compose.yml`. Named volumes mean no host-path configuration in the UI. For the domain: service `duckling`, container port `3000`. `TRUST_PROXY=1` is already the compose default, matching Dokploy's Traefik-fronted topology.
 
 ## Health & monitoring
 

@@ -4,8 +4,10 @@ import {
   __resetRateLimitStateForTests,
   classifyEndpoint,
   checkRateLimit,
+  handleFailedAuthRateLimit,
   identifyClient,
   postAuthRateLimiter,
+  preAuthRateLimiter,
 } from '../rateLimit';
 
 type AnyReq = any;
@@ -274,5 +276,147 @@ describe('route classification', () => {
     expect(classifyEndpoint('GET', '/api/databases/tenant_a/diagnose/stream')).toBe('monitoring');
     expect(classifyEndpoint('GET', '/api/replica/status')).toBe('read');
     expect(classifyEndpoint('POST', '/api/databases/tenant_a/s3/test')).toBe('write');
+  });
+
+  test('only /api/login gets the brute-force auth budget', () => {
+    expect(classifyEndpoint('POST', '/api/login')).toBe('auth');
+    // Session bookkeeping the dashboard calls on every navigation must not
+    // drain the login brute-force budget.
+    expect(classifyEndpoint('GET', '/api/check-auth')).toBe('monitoring');
+    expect(classifyEndpoint('POST', '/api/logout')).toBe('monitoring');
+  });
+});
+
+describe('pre-auth limiter credential deferral', () => {
+  test('unauthenticated monitoring requests are charged to the IP bucket', () => {
+    config.rateLimit.categories.monitoring.maxRequests = 2;
+
+    const run = () => {
+      const res = new MockResponse();
+      let called = false;
+      preAuthRateLimiter(buildReq({ path: '/status' }), res as any, () => { called = true; });
+      return { res, called };
+    };
+
+    expect(run().called).toBe(true);
+    expect(run().called).toBe(true);
+    const third = run();
+    expect(third.called).toBe(false);
+    expect(third.res.statusCode).toBe(429);
+  });
+
+  test('credentialed monitoring requests defer to the post-auth limiter', () => {
+    config.rateLimit.categories.monitoring.maxRequests = 1;
+
+    // Far more requests than the limit: all pass pre-auth untouched because
+    // the (validated) identity is charged post-auth instead.
+    for (let i = 0; i < 5; i++) {
+      const res = new MockResponse();
+      let called = false;
+      preAuthRateLimiter(
+        buildReq({ path: '/status', headers: { authorization: 'Bearer some-token' } }),
+        res as any,
+        () => { called = true; },
+      );
+      expect(called).toBe(true);
+      expect(res.statusCode).toBe(200);
+    }
+  });
+
+  test('check-auth is always charged pre-auth (it responds before the post-auth limiter)', () => {
+    config.rateLimit.categories.monitoring.maxRequests = 2;
+
+    const run = () => {
+      const res = new MockResponse();
+      let called = false;
+      preAuthRateLimiter(
+        buildReq({ path: '/api/check-auth', headers: { authorization: 'Bearer some-token' } }),
+        res as any,
+        () => { called = true; },
+      );
+      return { res, called };
+    };
+
+    expect(run().called).toBe(true);
+    expect(run().called).toBe(true);
+    const third = run();
+    expect(third.called).toBe(false);
+    expect(third.res.statusCode).toBe(429);
+  });
+
+  test('login is still IP-limited pre-auth even with credentials attached', () => {
+    config.rateLimit.categories.auth.maxRequests = 1;
+
+    const run = () => {
+      const res = new MockResponse();
+      let called = false;
+      preAuthRateLimiter(
+        buildReq({ method: 'POST', path: '/api/login', headers: { authorization: 'Bearer x' } }),
+        res as any,
+        () => { called = true; },
+      );
+      return { res, called };
+    };
+
+    expect(run().called).toBe(true);
+    const second = run();
+    expect(second.called).toBe(false);
+    expect(second.res.statusCode).toBe(429);
+  });
+});
+
+describe('post-auth limiter monitoring tier', () => {
+  test('authenticated monitoring traffic gets the identity-keyed, tier-multiplied budget', () => {
+    config.rateLimit.categories.monitoring.maxRequests = 2;
+    config.rateLimit.tiers.jwt = 2; // effective limit 4
+
+    const run = (ip: string) => {
+      const res = new MockResponse();
+      let called = false;
+      postAuthRateLimiter(
+        buildReq({
+          path: '/api/logs',
+          ip,
+          user: { username: 'admin', jti: 'session-a', authMethod: 'jwt' },
+        }),
+        res as any,
+        () => { called = true; },
+      );
+      return { res, called };
+    };
+
+    // Keyed on the user, not the IP: alternating IPs share the same budget.
+    expect(run('10.0.0.1').called).toBe(true);
+    expect(run('10.0.0.2').called).toBe(true);
+    expect(run('10.0.0.1').called).toBe(true);
+    expect(run('10.0.0.2').called).toBe(true);
+    const fifth = run('10.0.0.3');
+    expect(fifth.called).toBe(false);
+    expect(fifth.res.statusCode).toBe(429);
+  });
+});
+
+describe('failed-auth limiter', () => {
+  test('presented-and-rejected tokens drain the brute-force budget until 429', () => {
+    config.rateLimit.categories.auth.maxRequests = 3;
+
+    const req = buildReq({ path: '/status', headers: { authorization: 'Bearer bogus' } });
+
+    for (let i = 0; i < 3; i++) {
+      const res = new MockResponse();
+      expect(handleFailedAuthRateLimit(req, res as any)).toBe(false);
+      expect(res.statusCode).toBe(200); // caller sends its own 401
+    }
+
+    const res = new MockResponse();
+    expect(handleFailedAuthRateLimit(req, res as any)).toBe(true);
+    expect(res.statusCode).toBe(429);
+    expect(res.body?.reason).toBe('invalid-credentials');
+  });
+
+  test('disabled rate limiting never blocks the 401 path', () => {
+    config.rateLimit.enabled = false;
+    const res = new MockResponse();
+    expect(handleFailedAuthRateLimit(buildReq(), res as any)).toBe(false);
   });
 });

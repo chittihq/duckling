@@ -66,6 +66,12 @@ services:
     environment:
       - NODE_ENV=production
       - CLICKHOUSE_URL=http://clickhouse:8123
+      # One trusted proxy hop (Traefik/nginx/Dokploy — the typical self-host
+      # topology), so rate limiting keys on the real client IP instead of
+      # collapsing every client into the proxy's bucket. Set TRUST_PROXY=0 if
+      # clients connect straight to port 3000 with no proxy in front
+      # (otherwise a direct client could spoof X-Forwarded-For).
+      - TRUST_PROXY=${TRUST_PROXY:-1}
       # --- PeerDB (primary replication mode) ---
       - REPLICATION_BACKEND=peerdb
       - PEERDB_ENABLED=true
@@ -93,9 +99,6 @@ services:
       # - ADMIN_PASSWORD=change-me
       # - DUCKLING_API_KEY=your-api-key
       # - SESSION_SECRET=your-32-byte-secret
-      #
-      # Behind a reverse proxy (so rate limiting keys on the real client IP):
-      # - TRUST_PROXY=1
     volumes:
       - duckling-data:/app/data   # databases.json + generated secrets
     restart: unless-stopped
