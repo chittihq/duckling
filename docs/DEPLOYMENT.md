@@ -63,6 +63,56 @@ Named volumes — nothing to map by hand, works the same under the Compose CLI o
 
 For off-host backups, use the built-in S3 backups (`/backups` dashboard page or `/api/databases/:id/backups`) — ClickHouse-native `BACKUP TO S3(...)` against AWS S3 or any S3-compatible store.
 
+### Putting the data on an attached volume
+
+Named volumes live under `/var/lib/docker/volumes` on the host's **boot disk**. If you attached a dedicated block volume (DigitalOcean Volumes, Hetzner Volumes, EBS), the data does *not* move there on its own — the compose has to say so.
+
+Note that the volume that grows is `clickhouse-data`, and it belongs to the ClickHouse container. duckling's own `/app/data` is kilobytes (`databases.json`, secrets, logs), so relocating it with `DATA_PATH` does nothing for disk pressure.
+
+**1. Prepare the host** (once). The directories must exist before the stack starts — a bind-backed volume fails to mount rather than creating them:
+
+```bash
+export ROOT=/mnt/YOUR_VOLUME/duckling          # your attached volume's mount point
+sudo mkdir -p $ROOT/{clickhouse,duckling,rustfs,catalog}
+sudo chown -R 10001:10001 $ROOT/rustfs         # RustFS runs as uid 10001
+```
+
+Only RustFS needs the `chown`: ClickHouse, Postgres, and duckling all start as root and fix their own ownership. Confirm the volume remounts on reboot with `grep /mnt /etc/fstab`.
+
+**2. Enable the storage block** in `docker-compose.yml` — uncomment the `driver_opts` volumes block at the bottom of the file and set the mount point in the environment:
+
+```bash
+DUCKLING_STORAGE_ROOT=/mnt/YOUR_VOLUME/duckling
+```
+
+Commit the uncommented block to the compose you deploy from. Platforms that re-clone the repo on every deploy (Dokploy) overwrite edits made on the server, but read `DUCKLING_STORAGE_ROOT` from their own environment settings — so the path itself stays out of git.
+
+**3. Move existing data, if any.** Docker will not repoint a volume that already exists, so the old ones have to go. To keep the data, copy it first — `cp -a` preserves the ownership the containers set:
+
+```bash
+docker compose -p YOUR_PROJECT down
+docker volume ls | grep duckling               # volumes are prefixed with the project name
+for v in clickhouse duckling rustfs catalog; do
+  sudo cp -a /var/lib/docker/volumes/YOUR_PROJECT_${v}-data/_data/. $ROOT/${v}/
+done
+docker volume rm YOUR_PROJECT_clickhouse-data YOUR_PROJECT_duckling-data \
+                 YOUR_PROJECT_rustfs-data YOUR_PROJECT_catalog-data
+```
+
+Starting fresh instead? Just remove the volumes — but set `ADMIN_PASSWORD` and `DUCKLING_API_KEY` explicitly first, since discarding `duckling-data` discards the generated ones.
+
+**4. Verify.** Every boot prints the resolved paths and their capacity:
+
+```
+💾 Storage locations:
+   duckling data:  /app/data — 495 GB free of 500 GB
+   ClickHouse "default": /var/lib/clickhouse/ — 495 GB free of 500 GB
+```
+
+If the reported capacity is the boot disk's rather than the attached volume's, the mount did not take effect. `df -h $ROOT` and `du -sh $ROOT/*` confirm it from the host side.
+
+> Moving Docker's entire data root (`{"data-root": "..."}` in `/etc/docker/daemon.json`) is the alternative — it relocates images and build cache too, which is what usually fills a boot disk. It also relocates every other container on the host, so treat it as a maintenance-window change rather than part of this one.
+
 ## Sizing
 
 The PeerDB stack wants roughly **4 GB RAM** on top of duckling + ClickHouse; plan ~8 GB total for a small production host. If you only need polling mode on a tiny host: remove the PeerDB services from the compose and pin databases to `replicationMode: 'polling'` — duckling runs fine with just `clickhouse` + `duckling`.

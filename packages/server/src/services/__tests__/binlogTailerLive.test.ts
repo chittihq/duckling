@@ -116,18 +116,29 @@ describe.skipIf(!DOCKER_OK)('CDC-lite against a real spec-exact MySQL instance',
       120_000,
     );
 
+    // Readiness must be a real query against the FINAL server. `mysqladmin
+    // ping` answers during the image's init phase too — the entrypoint runs a
+    // temporary server, then restarts it — so pinging alone lets setup race
+    // the restart and fail with a connection error mid-statement.
     const ready = await waitFor(() => {
-      sh(`docker exec ${CONTAINER} mysqladmin ping -uroot -p${ROOT_PASS} --silent 2>/dev/null`, 15_000);
+      sh(`docker exec ${CONTAINER} mysql -uroot -p${ROOT_PASS} -N -e "SELECT 1" ${DB} 2>/dev/null`, 15_000);
       return true;
-    }, 120_000, 2_000);
+    }, 180_000, 2_000);
     if (!ready) throw new Error('MySQL container failed to become ready');
 
-    // 2. Replication user with exactly the grants CDC-lite needs.
-    mysqlInContainer(
-      `CREATE USER '${REPL_USER}'@'%' IDENTIFIED BY '${REPL_PASS}'; ` +
-      `GRANT SELECT ON ${DB}.* TO '${REPL_USER}'@'%'; ` +
-      `GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO '${REPL_USER}'@'%'; FLUSH PRIVILEGES;`,
-    );
+    // 2. Replication user with exactly the grants CDC-lite needs. Idempotent
+    // and retried: a leftover user (or a restart landing between statements)
+    // must not fail the whole suite.
+    const granted = await waitFor(() => {
+      mysqlInContainer(
+        `DROP USER IF EXISTS '${REPL_USER}'@'%'; ` +
+        `CREATE USER '${REPL_USER}'@'%' IDENTIFIED BY '${REPL_PASS}'; ` +
+        `GRANT SELECT ON ${DB}.* TO '${REPL_USER}'@'%'; ` +
+        `GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO '${REPL_USER}'@'%'; FLUSH PRIVILEGES;`,
+      );
+      return true;
+    }, 60_000, 2_000);
+    if (!granted) throw new Error('failed to provision the replication user');
     mysqlInContainer(
       'CREATE TABLE widgets (id INT PRIMARY KEY, name VARCHAR(64) NOT NULL); ' +
       "INSERT INTO widgets VALUES (1, 'one'), (2, 'two'), (3, 'three');",

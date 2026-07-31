@@ -5,6 +5,7 @@ import logger from './logger';
 import config from './config';
 import * as fs from 'fs';
 import * as path from 'path';
+import { logStorageReport } from './utils/storageReport';
 
 // Enable garbage collection if available
 if (global.gc) {
@@ -188,6 +189,11 @@ async function main() {
 
     await server.start();
     console.log('Server started successfully');
+
+    // Report where data actually lands. The bulk of it lives in ClickHouse's
+    // container, so this is the only place an operator can see at a glance
+    // whether an attached volume is really in use.
+    await logStorageReport(dataDir);
 
     // Note: Initial sync is handled by the automation service
     // See automationService.ts startPeriodicSync() for automatic sync configuration

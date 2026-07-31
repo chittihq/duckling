@@ -323,6 +323,57 @@ networks:
   duckling:
     name: duckling-network
 
+# ── Storage ───────────────────────────────────────────────────────────────
+# By default these are Docker-managed named volumes, which live under
+# /var/lib/docker/volumes on the HOST'S BOOT DISK. That is fine for a single
+# disk, but if you attached a dedicated block volume (DigitalOcean Volumes,
+# Hetzner Volumes, EBS...) the data will NOT go there unless you say so.
+#
+# To put the data on an attached disk, uncomment the block below and set
+# DUCKLING_STORAGE_ROOT to its mount point. Do this once, in the compose file
+# you deploy from, so it survives redeploys (a platform that re-clones the repo
+# on each deploy — e.g. Dokploy — will overwrite hand-edits made on the server;
+# the value itself comes from the environment, so only the block is committed).
+#
+# One-time host setup (see docs/DEPLOYMENT.md for migration of existing data):
+#   sudo mkdir -p /mnt/YOUR_VOLUME/duckling/{clickhouse,duckling,rustfs,catalog}
+#   sudo chown -R 10001:10001 /mnt/YOUR_VOLUME/duckling/rustfs   # RustFS runs as uid 10001
+# The directories MUST exist before the stack starts — a bind-backed volume
+# fails to mount rather than creating them. ClickHouse, Postgres and duckling
+# start as root and fix their own ownership, so only RustFS needs the chown.
+#
+# Keep these as block mappings, not the inline `{ ... }` form: in YAML flow
+# style the `}` of ${DUCKLING_STORAGE_ROOT} closes the mapping and the file
+# fails to parse.
+#
+# volumes:
+#   clickhouse-data:
+#     driver: local
+#     driver_opts:
+#       type: none
+#       o: bind
+#       device: ${DUCKLING_STORAGE_ROOT}/clickhouse
+#   duckling-data:
+#     driver: local
+#     driver_opts:
+#       type: none
+#       o: bind
+#       device: ${DUCKLING_STORAGE_ROOT}/duckling
+#   rustfs-data:
+#     driver: local
+#     driver_opts:
+#       type: none
+#       o: bind
+#       device: ${DUCKLING_STORAGE_ROOT}/rustfs
+#   catalog-data:
+#     driver: local
+#     driver_opts:
+#       type: none
+#       o: bind
+#       device: ${DUCKLING_STORAGE_ROOT}/catalog
+#
+# The server prints the resolved storage paths and their free/total space on
+# every boot ("Storage locations"), so you can confirm the mount took effect.
 volumes:
   clickhouse-data:
   duckling-data:
