@@ -56,7 +56,7 @@ services:
       - duckling
 
   duckling:
-    image: ${DUCKLING_IMAGE:-chittihq/duckling:0.5.3}
+    image: ${DUCKLING_IMAGE:-chittihq/duckling:0.5.4}
     container_name: duckling
     depends_on:
       clickhouse:
