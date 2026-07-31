@@ -117,15 +117,15 @@ const loadExampleQuery = () => {
     table_count: "SELECT COUNT(*) as totalRecords FROM Action;",
     recent_data: `SELECT *
 FROM Action
-WHERE createdAt >= CURRENT_DATE - INTERVAL 7 DAY
+WHERE createdAt >= today() - INTERVAL 7 DAY
 ORDER BY createdAt DESC
 LIMIT 100;`,
     aggregation: `SELECT
-  DATE_TRUNC('day', createdAt) as day,
-  COUNT(*) as actionCount,
-  COUNT(DISTINCT adminId) as uniqueUsers
+  toStartOfDay(createdAt) AS day,
+  COUNT(*) AS actionCount,
+  uniqExact(adminId) AS uniqueUsers
 FROM Action
-WHERE createdAt >= CURRENT_DATE - INTERVAL 30 DAY
+WHERE createdAt >= today() - INTERVAL 30 DAY
 GROUP BY day
 ORDER BY day DESC;`,
     join: `SELECT

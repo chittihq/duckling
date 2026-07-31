@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with the latest unreleased work listed first.
 
+## [Unreleased]
+
+### Fixed
+
+- **The dashboard's built-in example queries were written in MySQL dialect and failed on ClickHouse.** `CURRENT_DATE` does not exist in ClickHouse 25.8 (the version the compose pins — it was added in a later release), and `DATE_TRUNC('day', col)` errors on a String column. Replaced with `today()`, `toStartOfDay()`, and `uniqExact()`, each verified against a real 25.8 server.
+
 ## [0.5.4] - 2026-07-31
 
 ### Added
