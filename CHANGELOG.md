@@ -6,6 +6,10 @@ The format is based on Keep a Changelog, with the latest unreleased work listed 
 
 ## [Unreleased]
 
+### Added
+
+- `DUCKLING_HTTP_PORT` / `DUCKLING_MYSQL_PORT` set the **host** side of the published port mappings (defaults `3000` / `3307`), so a deployment can publish on a different host port without editing `docker-compose.yml` — the edit would otherwise be overwritten by platforms that re-clone the repo on each deploy. The container keeps listening on 3000/3307, and a reverse proxy sharing the compose network connects to the container port, so domain routing is unaffected.
+
 ### Fixed
 
 - **The dashboard's built-in example queries were written in MySQL dialect and failed on ClickHouse.** `CURRENT_DATE` does not exist in ClickHouse 25.8 (the version the compose pins — it was added in a later release), and `DATE_TRUNC('day', col)` errors on a String column. Replaced with `today()`, `toStartOfDay()`, and `uniqExact()`, each verified against a real 25.8 server.
