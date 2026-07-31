@@ -8,7 +8,7 @@ The format is based on Keep a Changelog, with the latest unreleased work listed 
 
 ### Added
 
-- `DUCKLING_HTTP_PORT` / `DUCKLING_MYSQL_PORT` set the **host** side of the published port mappings (defaults `3000` / `3307`), so a deployment can publish on a different host port without editing `docker-compose.yml` — the edit would otherwise be overwritten by platforms that re-clone the repo on each deploy. The container keeps listening on 3000/3307, and a reverse proxy sharing the compose network connects to the container port, so domain routing is unaffected.
+- `DUCKLING_HTTP_PORT` / `DUCKLING_MYSQL_PORT` / `DUCKLING_BIND_ADDR` control the published port mappings without editing `docker-compose.yml` (an edit platforms like Dokploy overwrite when they re-clone the repo). The first two set the **host** port (defaults `3000` / `3307`); `DUCKLING_BIND_ADDR=127.0.0.1` restricts both to the host itself, so the ports are reachable over an SSH tunnel but not from the internet — the right setting when other services reach duckling over the Docker network. The container keeps listening on 3000/3307 and a reverse proxy sharing the compose network connects to the container port, so domain routing is unaffected either way.
 
 ### Fixed
 

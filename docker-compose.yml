@@ -64,16 +64,19 @@ services:
       flow-api:
         condition: service_started
     ports:
-      # HOST:CONTAINER. Override the host side with DUCKLING_HTTP_PORT /
-      # DUCKLING_MYSQL_PORT (e.g. DUCKLING_HTTP_PORT=31671) — no file edit, so
-      # the value survives redeploys on platforms that re-clone the repo.
-      # A reverse proxy on the compose network (Traefik/Dokploy) talks to the
-      # CONTAINER port directly, so changing the host port does not affect
-      # domain routing.
-      - "${DUCKLING_HTTP_PORT:-3000}:3000"     # dashboard + REST API + WebSocket (same origin)
-      - "${DUCKLING_MYSQL_PORT:-3307}:3307"    # MySQL wire protocol (optional; remove if unused —
-                                               # or set MYSQL_PROTOCOL_SHARED_PORT=true to serve it
-                                               # on the HTTP port and drop this mapping entirely)
+      # [BIND:]HOST:CONTAINER. Set via the environment so values survive
+      # redeploys on platforms that re-clone the repo:
+      #   DUCKLING_HTTP_PORT=31671      publish on a different host port
+      #   DUCKLING_BIND_ADDR=127.0.0.1  reachable only from the host itself
+      #                                 (use an SSH tunnel to get in) — the
+      #                                 right setting when other services talk
+      #                                 to duckling over the Docker network and
+      #                                 nothing should be internet-facing.
+      # A reverse proxy sharing the compose network (Traefik/Dokploy) connects
+      # to the CONTAINER port directly, so neither setting affects domain
+      # routing — the dashboard keeps working over its domain either way.
+      - "${DUCKLING_BIND_ADDR:-0.0.0.0}:${DUCKLING_HTTP_PORT:-3000}:3000"    # dashboard + REST API + WebSocket
+      - "${DUCKLING_BIND_ADDR:-0.0.0.0}:${DUCKLING_MYSQL_PORT:-3307}:3307"   # MySQL wire protocol
     environment:
       - NODE_ENV=production
       - CLICKHOUSE_URL=http://clickhouse:8123
