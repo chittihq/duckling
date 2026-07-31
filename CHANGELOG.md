@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with the latest unreleased work listed first.
 
+## [0.5.3] - 2026-07-31
+
+### Added
+
+- **`DUCKLING_STORAGE_ROOT` — put the stack's data on an attached volume.** Named volumes live on the host's boot disk, so an attached block volume (DigitalOcean/Hetzner Volumes, EBS) goes unused unless the compose says otherwise — and the volume that grows is `clickhouse-data`, which belongs to the ClickHouse container, so no duckling-side setting can relocate it. `docker-compose.yml` now ships a documented, ready-to-uncomment volumes block binding all four volumes under `${DUCKLING_STORAGE_ROOT}`. Uncomment it once in the compose you deploy from and the path itself comes from the environment, so platforms that re-clone the repo on every deploy (Dokploy) stop overwriting it. Default behaviour is unchanged — plain named volumes, zero configuration. `docs/DEPLOYMENT.md` covers host preparation, the `uid 10001` ownership RustFS needs, migrating existing volumes, and verification.
+- **Startup storage report.** The server now prints where data actually lands: its own data directory plus, queried from ClickHouse's `system.disks`, every disk with its path and free/total space. Capacity that reads as the boot disk's is the signal that an intended mount did not take effect. Degrades to a note when ClickHouse isn't up yet and never blocks boot.
+
+### Changed
+
+- **Release builds are ~3× faster** (10m46s → ~3m25s). The publish workflow built both architectures on one amd64 runner, so the arm64 image — `pnpm install`, three TypeScript builds, the Nuxt build — ran entirely under QEMU emulation, sequentially with amd64; that was 608 of 646 seconds on the v0.5.2 release. Each architecture now builds on a runner of its own architecture in parallel and a merge job assembles the multi-arch manifest. Also adds per-platform build cache scopes (the two platforms previously evicted each other's layers), `latest=auto` so a prerelease tag can't move `latest`, and a verification step that fails the release if an architecture is missing from the published manifest.
+
+### Fixed
+
+- Live CDC-lite test provisioning raced MySQL's startup: readiness was checked with `mysqladmin ping`, which answers during the image's init phase before the entrypoint restarts the server, so setup could fail mid-statement. Readiness is now a real query against the final server, with idempotent and retried user creation.
+
 ## [0.5.2] - 2026-07-31
 
 Follow-up hardening to [0.5.1]. If you have not upgraded past 0.5.0 yet, read the 0.5.1 notes first — that release fixes an unauthenticated-access bug affecting all earlier versions.
