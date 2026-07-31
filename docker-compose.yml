@@ -41,7 +41,10 @@ services:
     environment:
       - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
     volumes:
-      - clickhouse-data:/var/lib/clickhouse   # <-- your replicated data lives here
+      # Your replicated data. Set DUCKLING_CLICKHOUSE_DATA to an absolute host
+      # path (e.g. an attached block volume) to store it there instead of in a
+      # Docker named volume on the boot disk. See "Storage" at the bottom.
+      - ${DUCKLING_CLICKHOUSE_DATA:-clickhouse-data}:/var/lib/clickhouse
     healthcheck:
       test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' || exit 1"]
       interval: 5s
@@ -105,7 +108,7 @@ services:
       # - DUCKLING_API_KEY=your-api-key
       # - SESSION_SECRET=your-32-byte-secret
     volumes:
-      - duckling-data:/app/data   # databases.json + generated secrets
+      - ${DUCKLING_APP_DATA:-duckling-data}:/app/data   # databases.json + generated secrets
     restart: unless-stopped
     networks:
       - duckling
@@ -124,7 +127,10 @@ services:
       - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY:-peerdbsecret}
       - RUSTFS_REGION=${RUSTFS_REGION:-us-east-1}
     volumes:
-      - rustfs-data:/data
+      # NOTE: RustFS runs as uid 10001. If you point this at a host path,
+      # create it and chown it to 10001:10001 BEFORE first start - unlike the
+      # others, this container cannot fix the ownership itself.
+      - ${DUCKLING_RUSTFS_DATA:-rustfs-data}:/data
     restart: unless-stopped
     networks:
       - duckling
@@ -139,7 +145,7 @@ services:
       - POSTGRES_PASSWORD=${PEERDB_CATALOG_PASSWORD:-postgres}
       - POSTGRES_INITDB_ARGS=--locale=C.UTF-8
     volumes:
-      - catalog-data:/var/lib/postgresql
+      - ${DUCKLING_CATALOG_DATA:-catalog-data}:/var/lib/postgresql
     healthcheck:
       test: ["CMD", "pg_isready", "-d", "postgres", "-U", "postgres"]
       interval: 10s
@@ -324,56 +330,37 @@ networks:
     name: duckling-network
 
 # ── Storage ───────────────────────────────────────────────────────────────
-# By default these are Docker-managed named volumes, which live under
-# /var/lib/docker/volumes on the HOST'S BOOT DISK. That is fine for a single
-# disk, but if you attached a dedicated block volume (DigitalOcean Volumes,
-# Hetzner Volumes, EBS...) the data will NOT go there unless you say so.
+# By default each service uses a Docker named volume, which lives under
+# /var/lib/docker/volumes on the host's BOOT DISK. If you attached a dedicated
+# block volume (DigitalOcean/Hetzner Volumes, EBS), the data does not go there
+# on its own.
 #
-# To put the data on an attached disk, uncomment the block below and set
-# DUCKLING_STORAGE_ROOT to its mount point. Do this once, in the compose file
-# you deploy from, so it survives redeploys (a platform that re-clones the repo
-# on each deploy — e.g. Dokploy — will overwrite hand-edits made on the server;
-# the value itself comes from the environment, so only the block is committed).
+# To relocate it, set any of these to an ABSOLUTE host path - no edits to this
+# file required, so the setting survives redeploys on platforms that re-clone
+# the repo (e.g. Dokploy):
 #
-# One-time host setup (see docs/DEPLOYMENT.md for migration of existing data):
-#   sudo mkdir -p /mnt/YOUR_VOLUME/duckling/{clickhouse,duckling,rustfs,catalog}
-#   sudo chown -R 10001:10001 /mnt/YOUR_VOLUME/duckling/rustfs   # RustFS runs as uid 10001
-# The directories MUST exist before the stack starts — a bind-backed volume
-# fails to mount rather than creating them. ClickHouse, Postgres and duckling
-# start as root and fix their own ownership, so only RustFS needs the chown.
+#   DUCKLING_CLICKHOUSE_DATA=/mnt/your_volume/duckling/clickhouse   # the big one
+#   DUCKLING_APP_DATA=/mnt/your_volume/duckling/app
+#   DUCKLING_RUSTFS_DATA=/mnt/your_volume/duckling/rustfs
+#   DUCKLING_CATALOG_DATA=/mnt/your_volume/duckling/catalog
 #
-# Keep these as block mappings, not the inline `{ ... }` form: in YAML flow
-# style the `}` of ${DUCKLING_STORAGE_ROOT} closes the mapping and the file
-# fails to parse.
+# Compose treats a value starting with "/" as a bind mount and anything else as
+# a named volume, so leaving a variable unset keeps the default exactly. Set
+# only the ones you care about - relocating just ClickHouse is a valid setup.
 #
-# volumes:
-#   clickhouse-data:
-#     driver: local
-#     driver_opts:
-#       type: none
-#       o: bind
-#       device: ${DUCKLING_STORAGE_ROOT}/clickhouse
-#   duckling-data:
-#     driver: local
-#     driver_opts:
-#       type: none
-#       o: bind
-#       device: ${DUCKLING_STORAGE_ROOT}/duckling
-#   rustfs-data:
-#     driver: local
-#     driver_opts:
-#       type: none
-#       o: bind
-#       device: ${DUCKLING_STORAGE_ROOT}/rustfs
-#   catalog-data:
-#     driver: local
-#     driver_opts:
-#       type: none
-#       o: bind
-#       device: ${DUCKLING_STORAGE_ROOT}/catalog
+# Docker creates missing bind directories automatically (owned by root), and
+# ClickHouse, Postgres and duckling all fix their own ownership on startup.
+# RustFS is the exception - it runs as uid 10001 and cannot, so if you set
+# DUCKLING_RUSTFS_DATA, prepare that one first:
 #
-# The server prints the resolved storage paths and their free/total space on
-# every boot ("Storage locations"), so you can confirm the mount took effect.
+#   sudo mkdir -p /mnt/your_volume/duckling/rustfs
+#   sudo chown -R 10001:10001 /mnt/your_volume/duckling/rustfs
+#
+# Docker will not repoint a volume that already holds data: stop the stack and
+# remove the old named volumes (copying their contents across first if you want
+# to keep them) - see docs/DEPLOYMENT.md. The server prints the resolved paths
+# and their free/total space on every boot ("Storage locations"), so you can
+# confirm the change took effect.
 volumes:
   clickhouse-data:
   duckling-data:

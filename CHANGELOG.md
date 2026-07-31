@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with the latest unreleased work listed first.
 
+## [Unreleased]
+
+### Changed
+
+- **Relocating data to an attached volume no longer requires editing `docker-compose.yml`.** 0.5.3 shipped `DUCKLING_STORAGE_ROOT` as a commented-out `driver_opts` block that had to be uncommented by hand — which reintroduced the per-deploy file editing it was meant to remove, since platforms like Dokploy re-clone the repo on every deployment. Each volume source is now a variable with the current named volume as its default: `DUCKLING_CLICKHOUSE_DATA`, `DUCKLING_APP_DATA`, `DUCKLING_RUSTFS_DATA`, `DUCKLING_CATALOG_DATA`. Compose reads a value starting with `/` as a bind mount and anything else as a named volume, so setting a variable relocates that data and leaving it unset preserves today's behaviour exactly — no upgrade hazard, no file edits. Docker creates missing bind directories automatically. Set only the ones you need; relocating just ClickHouse is a valid setup, and a single root path can drive all four (`DUCKLING_CLICKHOUSE_DATA=${DUCKLING_STORAGE_ROOT}/clickhouse`) because Compose expands variables that reference other variables.
+
+  Note the one service that still needs preparation: RustFS runs as uid 10001 and cannot chown an auto-created root-owned directory, so `chown -R 10001:10001` it before first start. ClickHouse, Postgres, and duckling all start as root and fix their own ownership — verified against a real ClickHouse container on a plain `755 root:root` bind mount.
+
 ## [0.5.3] - 2026-07-31
 
 ### Added

@@ -65,43 +65,54 @@ For off-host backups, use the built-in S3 backups (`/backups` dashboard page or 
 
 ### Putting the data on an attached volume
 
-Named volumes live under `/var/lib/docker/volumes` on the host's **boot disk**. If you attached a dedicated block volume (DigitalOcean Volumes, Hetzner Volumes, EBS), the data does *not* move there on its own — the compose has to say so.
+Named volumes live under `/var/lib/docker/volumes` on the host's **boot disk**. If you attached a dedicated block volume (DigitalOcean Volumes, Hetzner Volumes, EBS), the data does *not* move there on its own.
 
-Note that the volume that grows is `clickhouse-data`, and it belongs to the ClickHouse container. duckling's own `/app/data` is kilobytes (`databases.json`, secrets, logs), so relocating it with `DATA_PATH` does nothing for disk pressure.
+Note which volume actually grows: `clickhouse-data`, owned by the ClickHouse container. duckling's own `/app/data` is kilobytes (`databases.json`, secrets, logs), so relocating it with `DATA_PATH` does nothing for disk pressure.
 
-**1. Prepare the host** (once). The directories must exist before the stack starts — a bind-backed volume fails to mount rather than creating them:
+**Set an absolute host path** for whichever data you want moved — no compose edits, so the setting survives redeploys on platforms that re-clone the repo (Dokploy):
+
+| Variable | Moves | Default |
+|---|---|---|
+| `DUCKLING_CLICKHOUSE_DATA` | **The replicated data** — set this one first | `clickhouse-data` |
+| `DUCKLING_APP_DATA` | `databases.json` + generated secrets | `duckling-data` |
+| `DUCKLING_RUSTFS_DATA` | CDC snapshot staging | `rustfs-data` |
+| `DUCKLING_CATALOG_DATA` | PeerDB catalog | `catalog-data` |
+
+Compose reads a value starting with `/` as a bind mount and anything else as a named volume, so leaving a variable unset keeps the default exactly. Setting only `DUCKLING_CLICKHOUSE_DATA` is a perfectly good setup.
 
 ```bash
-export ROOT=/mnt/YOUR_VOLUME/duckling          # your attached volume's mount point
-sudo mkdir -p $ROOT/{clickhouse,duckling,rustfs,catalog}
-sudo chown -R 10001:10001 $ROOT/rustfs         # RustFS runs as uid 10001
+DUCKLING_CLICKHOUSE_DATA=/mnt/your_volume/duckling/clickhouse
+DUCKLING_APP_DATA=/mnt/your_volume/duckling/app
+DUCKLING_RUSTFS_DATA=/mnt/your_volume/duckling/rustfs
+DUCKLING_CATALOG_DATA=/mnt/your_volume/duckling/catalog
 ```
 
-Only RustFS needs the `chown`: ClickHouse, Postgres, and duckling all start as root and fix their own ownership. Confirm the volume remounts on reboot with `grep /mnt /etc/fstab`.
-
-**2. Enable the storage block** in `docker-compose.yml` — uncomment the `driver_opts` volumes block at the bottom of the file and set the mount point in the environment:
+**Permissions.** Docker creates missing bind directories automatically, and ClickHouse, Postgres, and duckling all start as root and fix their own ownership — nothing to `chmod`. RustFS is the exception: it runs as uid 10001 and cannot, so prepare that one before first start:
 
 ```bash
-DUCKLING_STORAGE_ROOT=/mnt/YOUR_VOLUME/duckling
+sudo mkdir -p /mnt/your_volume/duckling/rustfs
+sudo chown -R 10001:10001 /mnt/your_volume/duckling/rustfs
 ```
 
-Commit the uncommented block to the compose you deploy from. Platforms that re-clone the repo on every deploy (Dokploy) overwrite edits made on the server, but read `DUCKLING_STORAGE_ROOT` from their own environment settings — so the path itself stays out of git.
+Avoid `chmod 777` — it is unnecessary here and would make `databases.json` (which holds your MySQL connection strings) world-readable.
 
-**3. Move existing data, if any.** Docker will not repoint a volume that already exists, so the old ones have to go. To keep the data, copy it first — `cp -a` preserves the ownership the containers set:
+**Existing deployments.** Docker will not repoint a volume that already holds data, so the old named volumes have to go. To keep what is in them, copy first — `cp -a` preserves the ownership the containers set:
 
 ```bash
 docker compose -p YOUR_PROJECT down
-docker volume ls | grep duckling               # volumes are prefixed with the project name
-for v in clickhouse duckling rustfs catalog; do
-  sudo cp -a /var/lib/docker/volumes/YOUR_PROJECT_${v}-data/_data/. $ROOT/${v}/
-done
+docker volume ls | grep duckling            # volumes are prefixed with the project name
+sudo mkdir -p /mnt/your_volume/duckling/{clickhouse,app,rustfs,catalog}
+sudo cp -a /var/lib/docker/volumes/YOUR_PROJECT_clickhouse-data/_data/. /mnt/your_volume/duckling/clickhouse/
+sudo cp -a /var/lib/docker/volumes/YOUR_PROJECT_duckling-data/_data/.   /mnt/your_volume/duckling/app/
+sudo cp -a /var/lib/docker/volumes/YOUR_PROJECT_catalog-data/_data/.    /mnt/your_volume/duckling/catalog/
+sudo chown -R 10001:10001 /mnt/your_volume/duckling/rustfs              # staging is transient; no copy needed
 docker volume rm YOUR_PROJECT_clickhouse-data YOUR_PROJECT_duckling-data \
                  YOUR_PROJECT_rustfs-data YOUR_PROJECT_catalog-data
 ```
 
-Starting fresh instead? Just remove the volumes — but set `ADMIN_PASSWORD` and `DUCKLING_API_KEY` explicitly first, since discarding `duckling-data` discards the generated ones.
+Starting fresh instead? Just remove the volumes — but set `ADMIN_PASSWORD` and `DUCKLING_API_KEY` explicitly first, since discarding the duckling data volume discards the generated ones.
 
-**4. Verify.** Every boot prints the resolved paths and their capacity:
+**Verify.** Every boot prints the resolved paths and their capacity:
 
 ```
 💾 Storage locations:
@@ -109,9 +120,9 @@ Starting fresh instead? Just remove the volumes — but set `ADMIN_PASSWORD` and
    ClickHouse "default": /var/lib/clickhouse/ — 495 GB free of 500 GB
 ```
 
-If the reported capacity is the boot disk's rather than the attached volume's, the mount did not take effect. `df -h $ROOT` and `du -sh $ROOT/*` confirm it from the host side.
+If the reported capacity is the boot disk's rather than the attached volume's, the variable did not reach the container — check it is set on the **duckling service's** environment and that the stack was recreated (not just restarted). `df -h` and `du -sh` confirm from the host side.
 
-> Moving Docker's entire data root (`{"data-root": "..."}` in `/etc/docker/daemon.json`) is the alternative — it relocates images and build cache too, which is what usually fills a boot disk. It also relocates every other container on the host, so treat it as a maintenance-window change rather than part of this one.
+> Moving Docker's entire data root (`{"data-root": "..."}` in `/etc/docker/daemon.json`) is the alternative — it relocates images and build cache too, which is what usually fills a boot disk. It also relocates every other container on the host, so treat it as a maintenance-window change.
 
 ## Sizing
 
