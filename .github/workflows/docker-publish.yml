@@ -146,9 +146,14 @@ jobs:
           version='${{ steps.meta.outputs.version }}'
           echo "Inspecting ${IMAGE_NAME}:${version}"
           docker buildx imagetools inspect "${IMAGE_NAME}:${version}"
-          # Fail loudly if an architecture silently went missing.
+          # Fail loudly if an architecture silently went missing. Parse with
+          # jq rather than grepping the raw JSON: it is pretty-printed, so a
+          # naive "architecture":"amd64" pattern never matches.
+          raw="$(docker buildx imagetools inspect "${IMAGE_NAME}:${version}" --raw)"
           for arch in amd64 arm64; do
-            docker buildx imagetools inspect "${IMAGE_NAME}:${version}" --raw \
-              | grep -q "\"architecture\":\"${arch}\"" \
-              || { echo "::error::${arch} missing from the published manifest"; exit 1; }
+            jq -e --arg arch "$arch" \
+              'any(.manifests[]?; .platform.os == "linux" and .platform.architecture == $arch)' \
+              >/dev/null <<< "$raw" \
+              || { echo "::error::linux/${arch} missing from the published manifest"; exit 1; }
+            echo "  ✓ linux/${arch}"
           done
