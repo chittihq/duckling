@@ -142,18 +142,27 @@ function isUtcSpec(value: string): boolean {
   return v === 'UTC' || v === '+00:00' || v === 'GMT' || v === 'ETC/UTC';
 }
 
-/** Map MySQL numeric UTC offsets to IANA-ish names ClickHouse accepts. */
-function normalizeTimezone(value: string): string | null {
+/**
+ * Interpret a MySQL timezone spec.
+ *
+ * An IANA name maps to toTimeZone directly. A numeric offset (+05:30) has no
+ * ClickHouse zone — Etc/GMT* only covers whole hours — but converting FROM UTC
+ * to a fixed offset is by definition just adding that offset, so those become
+ * an INTERVAL shift instead. India's +05:30 is exactly this case, and it is
+ * the form the consumer codebases use.
+ */
+type TzTarget =
+  | { kind: 'zone'; name: string }
+  | { kind: 'offsetMinutes'; minutes: number };
+
+function parseTimezoneTarget(value: string): TzTarget | null {
   const raw = unquote(value);
-  if (/^[A-Za-z]+\/[A-Za-z_+\-0-9]+$/.test(raw)) return raw; // already IANA
-  const offset = raw.match(/^([+-])(\d{2}):(\d{2})$/);
+  if (/^[A-Za-z]+\/[A-Za-z_+\-0-9]+$/.test(raw)) return { kind: 'zone', name: raw };
+  const offset = raw.match(/^([+-])(\d{1,2}):(\d{2})$/);
   if (!offset) return null;
   const [, sign, hh, mm] = offset;
-  // Etc/GMT signs are inverted relative to the offset they represent.
-  if (mm !== '00') return null; // ClickHouse has no Etc zone for :30 offsets
-  const hours = parseInt(hh, 10);
-  const flipped = sign === '+' ? '-' : '+';
-  return `Etc/GMT${flipped}${hours}`;
+  const minutes = (parseInt(hh, 10) * 60 + parseInt(mm, 10)) * (sign === '-' ? -1 : 1);
+  return { kind: 'offsetMinutes', minutes };
 }
 
 export function applyMysqlCompat(sql: string): CompatRewriteResult {
@@ -214,8 +223,12 @@ export function applyMysqlCompat(sql: string): CompatRewriteResult {
   {
     const r = replaceFunctionCalls(out, 'CONVERT_TZ', (args) => {
       if (args.length !== 3 || !isUtcSpec(resolve(args[1]))) return null;
-      const tz = normalizeTimezone(resolve(args[2]));
-      return tz ? `toTimeZone(${args[0]}, '${tz}')` : null;
+      const target = parseTimezoneTarget(resolve(args[2]));
+      if (!target) return null;
+      if (target.kind === 'zone') return `toTimeZone(${args[0]}, '${target.name}')`;
+      if (target.minutes === 0) return args[0];
+      const op = target.minutes > 0 ? '+' : '-';
+      return `(${args[0]} ${op} INTERVAL ${Math.abs(target.minutes)} MINUTE)`;
     });
     if (r.count > 0) { out = r.sql; note('CONVERT_TZ -> toTimeZone'); }
   }
@@ -264,12 +277,13 @@ export function applyMysqlCompat(sql: string): CompatRewriteResult {
       /^\u0001L\d+\u0001$/.test(arg.trim()) ? `parseDateTimeBestEffort(${arg.trim()})` : arg;
     const r = replaceFunctionCalls(out, 'TIMESTAMPDIFF', (args) => {
       if (args.length !== 3) return null;
-      if (!/^\u0001L\d+\u0001$/.test(args[1].trim()) && !/^\u0001L\d+\u0001$/.test(args[2].trim())) {
-        return null; // both are expressions already — nothing to fix
-      }
-      return `TIMESTAMPDIFF(${args[0]}, ${coerce(args[1])}, ${coerce(args[2])})`;
+      // age() counts FULL units elapsed, which is MySQL's behaviour.
+      // ClickHouse's dateDiff (what TIMESTAMPDIFF aliases to) counts unit
+      // BOUNDARIES crossed, so 23:59:59 -> 00:00:00 next day is 1 minute for
+      // dateDiff but 0 for MySQL. Verified differentially.
+      return `age('${unquote(args[0]).toLowerCase()}', ${coerce(args[1])}, ${coerce(args[2])})`;
     });
-    if (r.count > 0) { out = r.sql; note('TIMESTAMPDIFF literal coercion'); }
+    if (r.count > 0) { out = r.sql; note('TIMESTAMPDIFF -> age (full units)'); }
   }
 
   // CAST(x AS SIGNED/UNSIGNED). Both engines accept this, but they disagree

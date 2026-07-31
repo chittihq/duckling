@@ -203,7 +203,15 @@ class ClickHouseConnection {
    * single enforcement point. Opt out via CLICKHOUSE_FINAL_READS=false.
    */
   private readSettings(): Record<string, number> {
-    return config.clickhouse.finalReads ? { final: 1 } : {};
+    return {
+      ...(config.clickhouse.finalReads ? { final: 1 } : {}),
+      // MySQL fills unmatched LEFT/RIGHT JOIN columns with NULL; ClickHouse
+      // defaults to the column's zero value (0, '', 1970-01-01), which
+      // silently breaks IS NULL checks, COALESCE, and any aggregate that
+      // should skip missing rows. Verified differentially against MySQL 8.4:
+      // with this on, both engines return NULL.
+      ...(config.clickhouse.joinUseNulls ? { join_use_nulls: 1 } : {}),
+    };
   }
 
   async execute(sql: string, params?: any[]): Promise<JsonRow[]> {

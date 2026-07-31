@@ -180,6 +180,9 @@ export const config = {
     // Requires ClickHouse >= 23.2. Disable for raw scan speed over
     // read-time consistency.
     finalReads: process.env.CLICKHOUSE_FINAL_READS !== 'false',
+    // Make LEFT/RIGHT JOIN produce NULL for unmatched rows, as MySQL does,
+    // instead of ClickHouse's default of the column's zero value.
+    joinUseNulls: process.env.CLICKHOUSE_JOIN_USE_NULLS !== 'false',
   },
 
   replication: {

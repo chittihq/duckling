@@ -53,15 +53,16 @@ function mysqlQuery(sql: string): string {
   const escaped = JSON.stringify(oneLine(sql));
   return sh(
     `docker exec ${MYSQL_C} mysql -uroot -p${MYSQL_PASS} ${DB} -N -B -e ${escaped} 2>/dev/null`,
-  ).trim();
+  );
 }
 
 /** Run SQL on ClickHouse, tab-separated, no headers. */
 function clickhouseQuery(sql: string): string {
   const escaped = JSON.stringify(oneLine(sql));
   return sh(
-    `docker exec ${CH_C} clickhouse-client --password ${CH_PASS} -d ${DB} --format TabSeparated --query ${escaped}`,
-  ).trim();
+    `docker exec ${CH_C} clickhouse-client --password ${CH_PASS} -d ${DB} ` +
+      `--join_use_nulls 1 --format TabSeparated --query ${escaped}`,
+  );
 }
 
 /**
@@ -69,7 +70,11 @@ function clickhouseQuery(sql: string): string {
  * trailing decimal zeros, NULL spelling, and line-ending noise.
  */
 function normalize(out: string): string {
+  // NB: split lines BEFORE trimming. Trimming the whole blob eats a trailing
+  // tab on the final row, which makes a legitimately NULL last column look
+  // like a missing one.
   return out
+    .replace(/\n+$/, '')
     .split('\n')
     .map(line =>
       line
@@ -78,7 +83,9 @@ function normalize(out: string): string {
           const v = cell.trim();
           if (v === 'NULL' || v === '\\N' || v === '') return 'NULL';
           // 10.50 and 10.5 are the same number rendered differently.
-          if (/^-?\d+\.\d+$/.test(v)) return String(parseFloat(v));
+          // MySQL returns DECIMAL (6 dp) where ClickHouse returns Float64;
+          // compare at MySQL's precision rather than on rendering.
+          if (/^-?\d+\.\d+$/.test(v)) return String(Number(parseFloat(v).toFixed(6)));
           return v;
         })
         .join('|'),
@@ -128,6 +135,10 @@ describe.skipIf(!RUN_DIFFERENTIAL)('MySQL vs ClickHouse differential results', (
       "(2,'beta','2026-01-10 23:15:00',20.00,'{\"tier\":\"silver\",\"n\":1}','active')",
       "(3,'gamma','2026-02-01 00:05:00',5.25,'{\"tier\":\"gold\",\"n\":7}','closed')",
       "(4,'delta','2026-02-14 18:45:00',0.00,'{\"tier\":\"bronze\",\"n\":0}','closed')",
+      // Edge values: NULLs, a negative amount, an empty name, and a
+      // year boundary — the places where engines most often disagree.
+      "(5,'','2025-12-31 23:59:59',-3.75,'{\"tier\":null,\"n\":-2}','active')",
+      "(6,'zeta','2026-06-30 12:00:00',999999.99,'{\"tier\":\"gold\"}','pending')",
     ].join(',');
 
     sh(
@@ -212,6 +223,44 @@ describe.skipIf(!RUN_DIFFERENTIAL)('MySQL vs ClickHouse differential results', (
     ['SUBSTRING_INDEX', "SELECT SUBSTRING_INDEX('a.b.c','.',2) AS d"],
     ['CURDATE comparison', 'SELECT COUNT(*) FROM events WHERE createdAt < CURDATE()'],
     ['ORDER BY FIELD', "SELECT id FROM events ORDER BY FIELD(status,'closed','active'), id"],
+
+    // --- edge values ------------------------------------------------------
+    ['negative amount CAST UNSIGNED-safe SIGNED', 'SELECT id, CAST(amount AS SIGNED) AS d FROM events ORDER BY id'],
+    ['rounding boundaries', 'SELECT id, CAST(amount AS SIGNED) AS r FROM events WHERE amount IN (10.50, 5.25, -3.75) ORDER BY id'],
+    ['empty string handling', "SELECT id, CONCAT(name,'!') AS d, LENGTH(name) AS l FROM events ORDER BY id"],
+    ['NULL propagation through JSON', "SELECT id, JSON_UNQUOTE(JSON_EXTRACT(payload,'$.tier')) AS d FROM events ORDER BY id"],
+    ['missing JSON key yields NULL', "SELECT id, JSON_UNQUOTE(JSON_EXTRACT(payload,'$.nope')) AS d FROM events ORDER BY id"],
+    ['numeric JSON value', "SELECT id, JSON_UNQUOTE(JSON_EXTRACT(payload,'$.n')) AS d FROM events ORDER BY id"],
+    ['year boundary DATEDIFF', "SELECT id, DATEDIFF(createdAt,'2026-01-01') AS d FROM events ORDER BY id"],
+    ['WEEKDAY across the week', 'SELECT id, WEEKDAY(createdAt) AS w, DAYNAME(createdAt) AS n FROM events ORDER BY id'],
+
+    // --- timezone, the heaviest real-world category -----------------------
+    ['CONVERT_TZ numeric offset (+05:30)', "SELECT id, CONVERT_TZ(createdAt,'+00:00','+05:30') AS d FROM events ORDER BY id"],
+    ['CONVERT_TZ crossing midnight', "SELECT id, DATE(CONVERT_TZ(createdAt,'UTC','Asia/Kolkata')) AS d FROM events ORDER BY id"],
+    ['INTERVAL 330 MINUTE (the manual IST idiom)', 'SELECT id, createdAt + INTERVAL 330 MINUTE AS d FROM events ORDER BY id'],
+    ['grouping by IST date', "SELECT DATE(CONVERT_TZ(createdAt,'UTC','Asia/Kolkata')) AS d, COUNT(*) c FROM events GROUP BY d ORDER BY d"],
+
+    // --- composition: rewrites nested inside each other -------------------
+    ['DATEDIFF over CONVERT_TZ', "SELECT id, DATEDIFF(CONVERT_TZ(createdAt,'UTC','Asia/Kolkata'),'2026-01-01') AS d FROM events ORDER BY id"],
+    ['aggregate over rewritten expr', 'SELECT status, SUM(CAST(amount AS SIGNED)) AS s FROM events GROUP BY status ORDER BY status'],
+    ['rewrite inside CASE', "SELECT id, CASE WHEN WEEKDAY(createdAt) < 5 THEN 'weekday' ELSE 'weekend' END AS d FROM events ORDER BY id"],
+    ['rewrite in WHERE and ORDER BY', "SELECT id FROM events WHERE WEEKDAY(createdAt) >= 0 ORDER BY FIELD(status,'pending','closed','active'), id"],
+    ['GROUP_CONCAT over a rewritten expr', "SELECT status, GROUP_CONCAT(DAYNAME(createdAt) SEPARATOR ',') AS d FROM events GROUP BY status ORDER BY status"],
+
+    // --- shapes their controllers actually use ----------------------------
+    ['UNION ALL (explicitly parenthesised)', 'SELECT id FROM (SELECT id FROM events WHERE amount > 10 UNION ALL SELECT id FROM events WHERE amount < 1) u ORDER BY id'],
+    ['subquery in WHERE', 'SELECT id FROM events WHERE amount = (SELECT MAX(amount) FROM events)'],
+    // Unmatched LEFT JOIN columns: MySQL gives NULL, ClickHouse gives the
+    // type's zero value unless join_use_nulls is on (the server sets it).
+    ['LEFT JOIN unmatched is NULL', "SELECT a.id, b.id FROM events a LEFT JOIN events b ON a.status = b.status AND b.id > 900 ORDER BY a.id"],
+    ['LEFT JOIN with matches (equi)', 'SELECT a.id, b.id FROM events a LEFT JOIN events b ON a.status = b.status ORDER BY a.id, b.id'],
+    ['INNER JOIN', 'SELECT a.id, b.id FROM events a JOIN events b ON a.status = b.status AND a.id < b.id ORDER BY a.id, b.id'],
+    ['COUNT DISTINCT', 'SELECT COUNT(DISTINCT status) AS d FROM events'],
+    ['nested aggregates with HAVING', 'SELECT status, AVG(amount) AS a FROM events GROUP BY status HAVING AVG(amount) > 0 ORDER BY status'],
+    ['DATE_FORMAT month grouping', "SELECT DATE_FORMAT(createdAt,'%Y-%m') AS m, COUNT(*) c FROM events GROUP BY m ORDER BY m"],
+    ['LIMIT with OFFSET keyword', 'SELECT id FROM events ORDER BY id LIMIT 2 OFFSET 1'],
+    ['IN list', "SELECT id FROM events WHERE status IN ('active','pending') ORDER BY id"],
+    ['LIKE prefix match', "SELECT id FROM events WHERE name LIKE 'a%' ORDER BY id"],
   ];
 
   for (const [name, sql] of cases) {
@@ -230,6 +279,35 @@ describe.skipIf(!RUN_DIFFERENTIAL)('MySQL vs ClickHouse differential results', (
    * this without changing what the query means, so it is a caveat operators
    * must know about rather than something the layer papers over.
    */
+  /**
+   * join_use_nulls is a trade-off, recorded here so it is a decision rather
+   * than a surprise. Without it ClickHouse fills unmatched LEFT JOIN columns
+   * with the type's zero value, which silently corrupts IS NULL checks and
+   * COALESCE. With it, ClickHouse refuses LEFT JOINs whose ON clause carries
+   * an inequality spanning both tables. Failing loudly is the better of the
+   * two, but the constraint is real: such joins must be rewritten as an
+   * INNER JOIN or moved into a WHERE clause.
+   */
+  test('KNOWN LIMITATION: join_use_nulls rejects a cross-table inequality in LEFT JOIN ON', () => {
+    const sql = 'SELECT a.id, b.id FROM events a LEFT JOIN events b ON a.status = b.status AND a.id < b.id ORDER BY a.id';
+    expect(() => clickhouseQuery(applyMysqlCompat(sql).sql)).toThrow(/INVALID_JOIN_ON_EXPRESSION/);
+    // The same query is fine on MySQL, so this is a genuine porting task.
+    expect(() => mysqlQuery(sql)).not.toThrow();
+  }, 60_000);
+
+  /**
+   * ClickHouse binds a trailing ORDER BY to the LAST select of a UNION, while
+   * MySQL orders the combined result. Wrapping the union in a subquery makes
+   * both engines agree; there is no safe automatic rewrite, so this is pinned
+   * as a difference operators must know about.
+   */
+  test('KNOWN DIFFERENCE: ORDER BY after UNION ALL binds differently', () => {
+    const sql = 'SELECT id FROM events WHERE amount > 10 UNION ALL SELECT id FROM events WHERE amount < 1 ORDER BY id';
+    const mysqlResult = normalize(mysqlQuery(sql));
+    const chResult = normalize(clickhouseQuery(applyMysqlCompat(sql).sql));
+    expect(chResult).not.toBe(mysqlResult);
+  }, 60_000);
+
   test('KNOWN DIFFERENCE: string equality is case-insensitive on MySQL only', () => {
     const sql = "SELECT COUNT(*) FROM events WHERE name = 'ALPHA'";
     const mysqlResult = normalize(mysqlQuery(sql));
