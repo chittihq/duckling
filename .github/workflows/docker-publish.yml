@@ -18,17 +18,34 @@ permissions:
 env:
   IMAGE_NAME: chittihq/duckling
 
+# Each architecture builds on a runner of its OWN architecture, in parallel,
+# then a merge job stitches the two digests into one multi-arch tag.
+#
+# The previous single-job version passed platforms: linux/amd64,linux/arm64 to
+# one amd64 runner, so the arm64 half ran under QEMU emulation — pnpm install,
+# three tsc builds and the Nuxt build all interpreted — and the two platforms
+# built sequentially. That was ~10 minutes of an ~11 minute release.
 jobs:
-  publish:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            slug: amd64
+          - platform: linux/arm64
+            # Native arm64 runner (free for public repositories). Swap back to
+            # ubuntu-latest + docker/setup-qemu-action if this ever becomes
+            # unavailable — correctness is identical, only speed changes.
+            runner: ubuntu-24.04-arm
+            slug: arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -44,21 +61,94 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Push an untagged, digest-addressed image; the merge job below
+          # attaches the human-readable tags to the combined manifest.
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          # Per-platform cache scope: a shared scope makes the two jobs evict
+          # each other's layers on every run.
+          cache-from: type=gha,scope=${{ matrix.slug }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.slug }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.slug }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          # latest=auto tags `latest` only for a non-prerelease semver tag, so
+          # a v1.2.3-rc.1 can be published without moving `latest`.
+          flavor: |
+            latest=auto
           tags: |
             type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ github.event_name == 'push' || inputs.push_latest }}
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_dispatch' && inputs.push_latest }}
 
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          # Word splitting is deliberate here: the first expansion produces one
+          # "-t <tag>" pair per tag, the second one "<image>@sha256:<digest>"
+          # per architecture. Quoting either would pass a single argument.
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Verify published manifest
+        run: |
+          version='${{ steps.meta.outputs.version }}'
+          echo "Inspecting ${IMAGE_NAME}:${version}"
+          docker buildx imagetools inspect "${IMAGE_NAME}:${version}"
+          # Fail loudly if an architecture silently went missing.
+          for arch in amd64 arm64; do
+            docker buildx imagetools inspect "${IMAGE_NAME}:${version}" --raw \
+              | grep -q "\"architecture\":\"${arch}\"" \
+              || { echo "::error::${arch} missing from the published manifest"; exit 1; }
+          done
