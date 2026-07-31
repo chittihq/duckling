@@ -243,8 +243,9 @@ Configure via `.env` (copy from `.env.example`).
 
 ### CDC compatibility
 
-- `CDC_ENABLED` (default false)
-- `CDC_AUTO_START` (default false)
+- **Continuous replication is a per-database setting**, stored as `cdcEnabled` in `databases.json` and toggled from the dashboard (Settings → each database → Continuous replication) or via `POST /cdc/start` / `POST /cdc/stop` with `?db=<id>`. Both endpoints persist the choice, and the server restarts replication for every database with `cdcEnabled: true` during boot. Which *mode* runs (peerdb vs polling + CDC-lite) is still decided by the capability probe — this flag only controls whether Phase 2 runs at all.
+- `CDC_AUTO_START` (default false) — supplies the default `cdcEnabled` for **newly added** databases only; it does not affect existing ones.
+- `CDC_ENABLED` — legacy, unused. Kept only so existing `.env` files don't break.
 - (CDC-lite has no flag — capability-driven per database; see Phase 2B)
 
 ### PeerDB (when `REPLICATION_BACKEND=peerdb`)

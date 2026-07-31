@@ -1359,6 +1359,9 @@ class ClickHouseServer {
           status: {
             backend: 'peerdb',
             isRunning: mirrors.length > 0,
+            // The operator's persisted choice, distinct from whether it is
+            // running right now (a source can be down, or boot may have failed).
+            cdcEnabled: DatabaseConfigManager.getInstance().getDatabase(databaseId)?.cdcEnabled === true,
             mirrors,
           },
           architecture: 'peerdb',
@@ -1372,6 +1375,7 @@ class ClickHouseServer {
         success: true,
         status: {
           ...cdcService.getStatus(),
+          cdcEnabled: DatabaseConfigManager.getInstance().getDatabase(databaseId)?.cdcEnabled === true,
           cdcLite: tailer.getStatus(),
         },
         architecture: 'clickhouse-compat',
@@ -1396,6 +1400,9 @@ class ClickHouseServer {
       // same start semantics. `bootstrapAndStart` is idempotent — when
       // bootstrap is already completed it just (re)starts Phase 2.
       const result = await coordinator.bootstrapAndStart();
+      // Persist the choice so it is restored on boot: without this, CDC
+      // stopped silently on every restart/redeploy.
+      DatabaseConfigManager.getInstance().updateDatabase(databaseId, { cdcEnabled: true });
       res.json({
         success: true,
         message: `Replication started (mode=${result.effectiveMode})`,
@@ -1418,6 +1425,9 @@ class ClickHouseServer {
       const coordinator = new ReplicationCoordinator(databaseId, mysql, clickhouse, syncService);
 
       await coordinator.stopPhase2();
+      // Persist, so a restart does not silently resurrect replication the
+      // operator deliberately stopped.
+      DatabaseConfigManager.getInstance().updateDatabase(databaseId, { cdcEnabled: false });
       const dbConfig = DatabaseConfigManager.getInstance().getDatabase(databaseId);
       res.json({
         success: true,
@@ -2626,6 +2636,21 @@ class ClickHouseServer {
           await automationService.start(syncOffsetMs);
 
           console.log(`✓ Database ${dbConfig.name} initialized successfully${syncOffsetMs > 0 ? ` (sync offset: ${syncOffsetMs / 1000 / 60}min)` : ''}`);
+
+          // Restore continuous replication for databases where an operator
+          // turned it on. Best-effort: a source that is unreachable at boot
+          // must not stop the server from coming up, and the periodic sync
+          // loop above still runs regardless.
+          if (dbConfig.cdcEnabled) {
+            try {
+              const ReplicationCoordinator = (await import('./services/replicationCoordinator')).default;
+              const coordinator = new ReplicationCoordinator(dbConfig.id, mysql, clickhouse, syncService);
+              const result = await coordinator.bootstrapAndStart();
+              console.log(`  ↻ Continuous replication resumed for ${dbConfig.name} (mode=${result.effectiveMode})`);
+            } catch (error) {
+              console.error(`  ✗ Could not resume continuous replication for ${dbConfig.name}:`, error);
+            }
+          }
         } catch (error) {
           console.error(`✗ Failed to initialize database ${dbConfig.name}:`, error);
           // Continue with other databases even if one fails

@@ -6,6 +6,15 @@ The format is based on Keep a Changelog, with the latest unreleased work listed 
 
 ## [Unreleased]
 
+### Added
+
+- **Continuous replication is now a per-database setting with a dashboard toggle** (Settings → each database → Continuous replication). Previously it could only be started through `POST /cdc/start` and **the choice was not persisted**, so every restart or redeploy silently dropped databases back to periodic-sync-only. `/cdc/start` and `/cdc/stop` now write `cdcEnabled` to `databases.json`, and the server restores replication on boot for each database that has it on (best-effort — an unreachable source logs and is skipped rather than blocking startup). Which *mode* runs is still decided by the capability probe; this only controls whether Phase 2 runs at all.
+- `GET /cdc/status` now reports `cdcEnabled` (the operator's persisted intent) alongside `isRunning` (whether it is actually running right now), so the UI can distinguish "turned off" from "turned on but currently failing".
+
+### Fixed
+
+- **`CDC_ENABLED` and `CDC_AUTO_START` were dead flags** — defined in config but read by nothing, so setting them had no effect whatsoever. `CDC_AUTO_START` now has a real, narrow meaning: it supplies the default `cdcEnabled` for newly added databases. `CDC_ENABLED` is retained as a no-op so existing `.env` files don't break.
+
 ### Changed
 
 - **Relocating data to an attached volume no longer requires editing `docker-compose.yml`.** 0.5.3 shipped `DUCKLING_STORAGE_ROOT` as a commented-out `driver_opts` block that had to be uncommented by hand — which reintroduced the per-deploy file editing it was meant to remove, since platforms like Dokploy re-clone the repo on every deployment. Each volume source is now a variable with the current named volume as its default: `DUCKLING_CLICKHOUSE_DATA`, `DUCKLING_APP_DATA`, `DUCKLING_RUSTFS_DATA`, `DUCKLING_CATALOG_DATA`. Compose reads a value starting with `/` as a bind mount and anything else as a named volume, so setting a variable relocates that data and leaving it unset preserves today's behaviour exactly — no upgrade hazard, no file edits. Docker creates missing bind directories automatically. Set only the ones you need; relocating just ClickHouse is a valid setup, and a single root path can drive all four (`DUCKLING_CLICKHOUSE_DATA=${DUCKLING_STORAGE_ROOT}/clickhouse`) because Compose expands variables that reference other variables.

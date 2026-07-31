@@ -63,6 +63,38 @@
               <dt class="text-muted-foreground">Updated:</dt>
               <dd>{{ formatDate(db.updatedAt) }}</dd>
             </dl>
+
+            <!-- Continuous replication, per database. The mode itself
+                 (peerdb / polling + CDC-lite) is chosen by the capability
+                 probe; this only controls whether it runs. -->
+            <div class="mt-4 flex items-start justify-between gap-4 p-3 border rounded-md">
+              <div class="min-w-0">
+                <p class="text-sm font-medium">Continuous replication</p>
+                <p class="text-xs text-muted-foreground mt-0.5">
+                  <template v-if="cdcState[db.id]?.cdcEnabled">
+                    Enabled — changes replicate continuously and this resumes automatically on restart.
+                    <span v-if="cdcState[db.id]?.mode"> Mode: <span class="font-mono">{{ cdcState[db.id].mode }}</span>.</span>
+                    <span v-if="cdcState[db.id]?.cdcEnabled && cdcState[db.id]?.isRunning === false" class="text-amber-600">
+                      Not currently running — check the source connection.
+                    </span>
+                  </template>
+                  <template v-else>
+                    Disabled — data refreshes on the periodic sync only (every {{ syncIntervalMinutes }} min).
+                  </template>
+                </p>
+              </div>
+              <Button
+                @click="toggleCdc(db)"
+                :disabled="togglingCdc === db.id"
+                :variant="cdcState[db.id]?.cdcEnabled ? 'outline' : 'default'"
+                size="sm"
+                class="shrink-0"
+              >
+                {{ togglingCdc === db.id
+                  ? (cdcState[db.id]?.cdcEnabled ? 'Disabling...' : 'Enabling...')
+                  : (cdcState[db.id]?.cdcEnabled ? 'Disable' : 'Enable') }}
+              </Button>
+            </div>
             <div v-if="connectionStatus[db.id]" class="mt-4 p-3 bg-muted rounded-md">
               <p class="text-sm font-medium mb-2">Connection Status:</p>
               <div class="flex gap-4 text-sm">
@@ -304,6 +336,59 @@ const testing = ref('');
 const deleting = ref('');
 const connectionStatus = ref<Record<string, { mysql: string; clickhouse: string }>>({});
 
+// --- Continuous replication (per database) ---
+type CdcState = { cdcEnabled: boolean; isRunning?: boolean; mode?: string };
+const cdcState = ref<Record<string, CdcState>>({});
+const togglingCdc = ref('');
+const syncIntervalMinutes = ref(15);
+
+async function loadCdcState(db: Database) {
+  try {
+    const res = await get<{ success: boolean; status?: any }>(`/cdc/status?db=${encodeURIComponent(db.id)}`);
+    const status = res?.status ?? {};
+    cdcState.value = {
+      ...cdcState.value,
+      [db.id]: {
+        cdcEnabled: status.cdcEnabled === true,
+        isRunning: status.isRunning,
+        mode: status.backend ?? status.mode,
+      },
+    };
+  } catch {
+    // A source that is unreachable shouldn't blank the toggle; assume the
+    // persisted value we already have (if any).
+    cdcState.value = { ...cdcState.value, [db.id]: cdcState.value[db.id] ?? { cdcEnabled: false } };
+  }
+}
+
+async function toggleCdc(db: Database) {
+  const enabled = cdcState.value[db.id]?.cdcEnabled === true;
+  togglingCdc.value = db.id;
+  try {
+    const path = enabled ? '/cdc/stop' : '/cdc/start';
+    const res = await post<{ success: boolean; message?: string; error?: string }>(
+      `${path}?db=${encodeURIComponent(db.id)}`, {}
+    );
+    if (res?.success) {
+      toast({
+        title: enabled ? 'Continuous replication disabled' : 'Continuous replication enabled',
+        description: res.message,
+      });
+    } else {
+      toast({ title: 'Failed', description: res?.error || 'Unknown error', variant: 'destructive' });
+    }
+  } catch (err: any) {
+    toast({
+      title: 'Failed',
+      description: err?.data?.error || err?.message || 'Unknown error',
+      variant: 'destructive',
+    });
+  } finally {
+    togglingCdc.value = '';
+    await loadCdcState(db);
+  }
+}
+
 // --- Diagnose dialog state ---
 const diagnosing = ref('');
 const showDiagnoseDialog = ref(false);
@@ -339,6 +424,9 @@ async function loadDatabases() {
     const data = await get<{ success: boolean; databases: Database[]; error?: string }>('/api/databases');
     if (data.success) {
       databases.value = data.databases;
+      // Per-database replication state drives the toggle; best-effort and
+      // parallel so one unreachable source doesn't hold up the page.
+      await Promise.all(data.databases.map(loadCdcState));
     } else {
       error.value = data.error || 'Failed to load databases';
     }

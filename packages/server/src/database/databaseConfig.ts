@@ -125,6 +125,21 @@ export interface DatabaseConfig {
    * and picks the best supported mode automatically. Set explicitly to pin.
    */
   replicationMode?: ReplicationMode;
+  /**
+   * Whether continuous replication (Phase 2) runs for this database, and
+   * whether it is restarted automatically on server boot.
+   *
+   * Per-database rather than global: which sources can sustain CDC is a
+   * property of the source, not the deployment, so one database being on a
+   * managed MySQL without full binlog metadata must not decide the behaviour
+   * of the others. `/cdc/start` and `/cdc/stop` persist this, so an operator's
+   * choice survives a restart — previously it did not, and CDC silently
+   * stopped on every redeploy.
+   *
+   * Unset means "not started": new databases inherit CDC_AUTO_START, which is
+   * the only remaining role of that environment variable.
+   */
+  cdcEnabled?: boolean;
   /** Optional ClickHouse-native BACKUP TO S3 config; see S3BackupConfig. */
   s3Backup?: S3BackupConfig;
   /** Per-database API keys (hash-only); see ApiKeyRecord. */
@@ -144,6 +159,10 @@ export interface ApiKeyMatch {
 export function hashApiKey(secret: string): string {
   return crypto.createHash('sha256').update(secret).digest('hex');
 }
+
+// `addDatabase` takes a parameter named `config`, which shadows the module
+// import inside that function; this alias keeps the app config reachable there.
+const appConfig = config;
 
 // Use config to ensure correct path in both dev and production
 const CONFIG_FILE = path.join(config.paths.data, 'databases.json');
@@ -430,6 +449,9 @@ export class DatabaseConfigManager {
         status: 'pending',
         tableProgress: {},
       },
+      // Continuous replication is a per-database setting; CDC_AUTO_START only
+      // supplies the default for databases added from here on.
+      cdcEnabled: config.cdcEnabled ?? appConfig.cdc.autoStart,
     };
     this.databases.set(id, newConfig);
     this.saveConfig();
