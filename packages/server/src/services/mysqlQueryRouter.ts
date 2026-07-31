@@ -16,6 +16,7 @@ import {
   type MySQLColumnDefinition,
 } from './mysqlResultFormatter';
 import logger from '../logger';
+import { applyMysqlCompat, detectUnsupported } from './mysqlCompat';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -159,71 +160,6 @@ function buildEmptyProjectedResult(norm: string): InterceptedResult {
 }
 
 
-/**
- * MySQL constructs that ClickHouse does not accept verbatim.
- *
- * ClickHouse already aliases most of MySQL's function library (DATE_ADD,
- * DATE_SUB, DATE_FORMAT, IFNULL, IF, CONCAT, GROUP_CONCAT, SUBSTRING,
- * STR_TO_DATE, YEAR/MONTH, COUNT(DISTINCT), CAST(... AS SIGNED) all work), so
- * this is deliberately a small alias table rather than a dialect translator.
- *
- * A general MySQL->ClickHouse translator is not worth building: the residual
- * incompatibilities are semantic, not syntactic, and a translator turns loud
- * failures into silently different answers. The clearest example is collation
- * — MySQL's default utf8mb4_general_ci makes 'a' = 'A' TRUE while ClickHouse
- * compares case-sensitively — which no rewrite can fix without changing what
- * the query means.
- *
- * Each entry must be a strict widening: a query that worked before must
- * still work, and produce the same rows.
- */
-const MYSQL_COMPAT_REWRITES: Array<{ pattern: RegExp; replacement: string; note: string }> = [
-  // Bare keyword forms parse as identifiers in ClickHouse (UNKNOWN_IDENTIFIER)
-  // while the parenthesised forms resolve as functions. Negative lookahead so
-  // an already-called CURRENT_DATE() is left alone, and a lookbehind so we
-  // never touch a quoted identifier of the same name.
-  {
-    pattern: /(?<!["'`.\w])\bCURRENT_DATE\b(?!\s*\()/gi,
-    replacement: 'CURRENT_DATE()',
-    note: 'CURRENT_DATE -> CURRENT_DATE()',
-  },
-  {
-    pattern: /(?<!["'`.\w])\bCURRENT_TIMESTAMP\b(?!\s*\()/gi,
-    replacement: 'CURRENT_TIMESTAMP()',
-    note: 'CURRENT_TIMESTAMP -> CURRENT_TIMESTAMP()',
-  },
-  // No ClickHouse alias exists for this one.
-  {
-    pattern: /(?<!["'`.\w])\bUNIX_TIMESTAMP\s*\(/gi,
-    replacement: 'toUnixTimestamp(',
-    note: 'UNIX_TIMESTAMP( -> toUnixTimestamp(',
-  },
-];
-
-/**
- * Apply the MySQL compatibility rewrites, skipping anything inside string
- * literals so a value like 'CURRENT_DATE' is never altered.
- */
-export function applyMysqlCompatRewrites(sql: string): { sql: string; applied: string[] } {
-  const applied: string[] = [];
-  // Split on single-quoted literals, keeping them; rewrite only the code parts.
-  const parts = sql.split(/('(?:[^']|'')*')/);
-  const rewrittenParts = parts.map((part, index) => {
-    if (index % 2 === 1) return part; // string literal — leave untouched
-    let out = part;
-    for (const rule of MYSQL_COMPAT_REWRITES) {
-      if (rule.pattern.test(out)) {
-        rule.pattern.lastIndex = 0;
-        out = out.replace(rule.pattern, rule.replacement);
-        if (!applied.includes(rule.note)) applied.push(rule.note);
-      }
-      rule.pattern.lastIndex = 0;
-    }
-    return out;
-  });
-  return { sql: rewrittenParts.join(''), applied };
-}
-
 function rewriteForClickHouse(norm: string, currentDatabase: string): string {
   let rewritten = norm;
 
@@ -246,11 +182,18 @@ function rewriteForClickHouse(norm: string, currentDatabase: string): string {
   rewritten = rewritten.replace(/\bROUTINE_SCHEMA\s*=\s*'[^']*'/ig, "ROUTINE_SCHEMA = 'main'");
 
   // MySQL-dialect constructs ClickHouse rejects verbatim.
-  const compat = applyMysqlCompatRewrites(rewritten);
+  const compat = applyMysqlCompat(rewritten);
   if (compat.applied.length > 0) {
     logger.debug(`MySQL compat rewrites applied: ${compat.applied.join(', ')}`);
   }
   rewritten = compat.sql;
+
+  // Anything we knowingly cannot translate: log it so a failure is
+  // explainable instead of a bare ClickHouse error.
+  const unsupported = detectUnsupported(rewritten);
+  if (unsupported.length > 0) {
+    logger.warn(`Query uses MySQL constructs with no ClickHouse translation: ${unsupported.join('; ')}`);
+  }
 
   return rewritten;
 }
