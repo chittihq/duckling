@@ -1,3 +1,7 @@
+#### This project is deprecated in favour of [Pintail](https://github.com/chitthq/pintail)
+
+---------------------------
+
 ![Duckling Banner](docs/images/banner.jpg)
 
 # Duckling
