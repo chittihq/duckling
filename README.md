@@ -1,4 +1,4 @@
-#### This project is deprecated in favour of [Pintail](https://github.com/chitthq/pintail)
+#### This project is deprecated in favour of [Pintail](https://github.com/chittihq/pintail)
 
 ---------------------------
 
